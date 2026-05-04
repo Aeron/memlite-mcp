@@ -6,27 +6,25 @@ use tracing_subscriber::{EnvFilter, fmt};
 mod config;
 mod db;
 mod embedding;
-mod error;
-mod server;
+mod mcp;
 
 use config::Config;
 use db::MemoryStore;
 use embedding::EmbeddingService;
-use server::MemServer;
+use mcp::MemServer;
 
-// Replaces the default system allocator with mimalloc for better throughput
-// when allocating the many small buffers produced by embedding inference.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Structured logging; defaults to INFO unless RUST_LOG is set.
+    // Setting up structured logging; defaults to INFO unless RUST_LOG is set
     fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
 
+    // Parsing the configuration
     let config = Config::parse();
     info!(
         project = %config.project_path,
@@ -35,17 +33,21 @@ async fn main() -> anyhow::Result<()> {
         "starting memlite-mcp"
     );
 
+    // Resolving the database path and opening the store
     let db_path = config.db_path();
     info!(path = ?db_path, "opening database");
     let store = MemoryStore::open(db_path.as_deref()).await?;
 
-    // Load the embedding model (may download on first run).
+    // Loading the embedding model (may download on first run)
+    info!("loading embedding model");
     let embedding = EmbeddingService::new(config.embedding_model.into())?;
 
+    // Creating the server and starting the service
     let server = MemServer::new(config, store, embedding);
-
     let service = server.serve(rmcp::transport::stdio()).await?;
     info!("memlite-mcp ready");
+
     service.waiting().await?;
+
     Ok(())
 }

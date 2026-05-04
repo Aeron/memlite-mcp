@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use libsql::{Builder, Database, Value};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use anyhow::{Result, anyhow};
 
 /// A single stored memory row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,8 +17,8 @@ pub struct Memory {
     pub updated_at: i64,
 }
 
-/// Wraps the libsql Database; each operation opens a fresh Connection so this
-/// type is cheaply Clone without any mutex contention.
+/// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
+/// type is cheaply [`Clone`] without any mutex contention.
 #[derive(Clone)]
 pub struct MemoryStore {
     db: Arc<Database>,
@@ -72,7 +72,7 @@ impl MemoryStore {
         let row = rows
             .next()
             .await?
-            .ok_or_else(|| Error::Internal("INSERT RETURNING yielded no row".into()))?;
+            .ok_or_else(|| anyhow!("INSERT RETURNING yielded no row"))?;
         Ok(row.get(0)?)
     }
 
@@ -234,18 +234,14 @@ impl MemoryStore {
     }
 }
 
-// Parses columns 0-6 from a memories SELECT row (rowid first, then schema cols).
+/// Parses a row from the memories table into a [`Memory`] struct.
 fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
     let summary = match row.get_value(2)? {
         Value::Null => None,
         Value::Text(s) => Some(s),
-        other => {
-            return Err(Error::Internal(format!(
-                "unexpected type for summary: {other:?}"
-            )));
-        }
+        other => return Err(anyhow!("unexpected type for summary: {other:?}")),
     };
     let tags_json: String = row.get(3)?;
     let agent: String = row.get(4)?;
@@ -300,11 +296,9 @@ mod tests {
         (store, tmp)
     }
 
-    // 2-D unit vectors used throughout: cheap, no model download needed.
+    // 2-D unit vectors used throughout: cheap, no model download needed
     const V1: [f32; 2] = [1.0, 0.0];
     const V2: [f32; 2] = [0.0, 1.0];
-
-    // --- floats_to_json ---
 
     #[test]
     fn floats_to_json_empty() {
@@ -320,8 +314,6 @@ mod tests {
             assert!((a - b).abs() < 1e-6, "{a} != {b}");
         }
     }
-
-    // --- insert / list ---
 
     #[tokio::test]
     async fn insert_returns_positive_id() {
@@ -386,8 +378,6 @@ mod tests {
         assert!(ids0.iter().all(|id| !ids1.contains(id)));
     }
 
-    // --- delete ---
-
     #[tokio::test]
     async fn delete_existing_returns_true() {
         let (store, _tmp) = fresh().await;
@@ -401,8 +391,6 @@ mod tests {
         let (store, _tmp) = fresh().await;
         assert!(!store.delete(999).await.unwrap());
     }
-
-    // --- update ---
 
     #[tokio::test]
     async fn update_content() {
@@ -443,13 +431,11 @@ mod tests {
         assert!(!store.update(id, None, None, None, None).await.unwrap());
     }
 
-    // --- search ---
-
     #[tokio::test]
     async fn search_orders_by_cosine_distance() {
         let (store, _tmp) = fresh().await;
         // V1=[1,0] and V2=[0,1] are orthogonal unit vectors; cosine distance
-        // between V1 and V1 is 0, between V1 and V2 is 1.
+        // between V1 and V1 is 0, between V1 and V2 is 1
         let id1 = store.insert("first", None, &[], "", &V1).await.unwrap();
         let id2 = store.insert("second", None, &[], "", &V2).await.unwrap();
 

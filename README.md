@@ -37,7 +37,7 @@ All options are available as CLI flags **and** env vars (Clap resolves both; fla
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
-| `--project-path` | `MEMLITE_PROJECT_PATH` | `""` | Project identifier; agents sharing the same path share a DB |
+| `--project-path` | `MEMLITE_PROJECT_PATH` | current working directory | Project identifier; agents sharing the same path share a DB |
 | `--agent` | `MEMLITE_AGENT` | `""` | Filters memories to this agent (empty = see all) |
 | `--db-dir` | `MEMLITE_DB_DIR` | `~/.local/share/memlite-mcp` | Directory for per-project DB files |
 | `--in-memory` | `MEMLITE_IN_MEMORY` | `false` | `true`/`1`/`yes` for ephemeral in-memory DB |

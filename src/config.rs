@@ -11,11 +11,11 @@ use clap::{Parser, ValueEnum};
 #[command(name = "memlite-mcp", version)]
 pub struct Config {
     /// Project identifier shared across agents. All agents with the same path
-    /// read and write the same DB file.
+    /// read and write the same DB file. Defaults to the current working directory.
     #[arg(
         long = "project-path",
         env = "MEMLITE_PROJECT_PATH",
-        default_value = ""
+        default_value_t = cwd_string()
     )]
     pub project_path: String,
 
@@ -44,13 +44,13 @@ pub struct Config {
 /// Supported local embedding models.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum EmbeddingModel {
-    /// BAAI/bge-small-en-v1.5 — 384 dims, ~67 MB (default)
+    /// BAAI/bge-small-en-v1.5 (384 dims, ~67 MB; default)
     #[value(name = "bge-small-en-v1.5")]
     Small,
-    /// BAAI/bge-base-en-v1.5 — 768 dims, ~210 MB
+    /// BAAI/bge-base-en-v1.5 (768 dims, ~210 MB)
     #[value(name = "bge-base-en-v1.5")]
     Base,
-    /// BAAI/bge-large-en-v1.5 — 1024 dims, ~620 MB
+    /// BAAI/bge-large-en-v1.5 (1024 dims, ~620 MB)
     #[value(name = "bge-large-en-v1.5")]
     Large,
 }
@@ -115,6 +115,14 @@ impl Config {
         self.project_path.hash(&mut h);
         h.finish()
     }
+}
+
+/// Returns the current working directory as a string.
+fn cwd_string() -> String {
+    std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Parses a boolean value from a string, returning an error if the string is not a valid boolean.

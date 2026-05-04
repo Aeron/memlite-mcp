@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use fastembed::{TextEmbedding, TextInitOptions};
 use tracing::info;
 
-use crate::error::{Error, Result};
+use anyhow::{Result, anyhow};
 
 /// Async-safe wrapper around a fastembed TextEmbedding model.
 ///
@@ -22,7 +22,7 @@ impl EmbeddingService {
     pub fn new(model: fastembed::EmbeddingModel) -> Result<Self> {
         info!("loading embedding model {:?}", model);
         let model = TextEmbedding::try_new(TextInitOptions::new(model))
-            .map_err(|e| Error::Embedding(e.to_string()))?;
+            .map_err(|e| anyhow!("embedding: {e}"))?;
         Ok(EmbeddingService {
             model: Arc::new(Mutex::new(model)),
         })
@@ -37,10 +37,10 @@ impl EmbeddingService {
             let mut guard = model.lock().expect("embedding mutex poisoned");
             let mut batches = guard
                 .embed(vec![text], None)
-                .map_err(|e| Error::Embedding(e.to_string()))?;
+                .map_err(|e| anyhow!("embedding: {e}"))?;
             Ok(batches.pop().unwrap_or_default())
         })
         .await
-        .map_err(|e| Error::Embedding(e.to_string()))?
+        .map_err(|e| anyhow!("embedding join: {e}"))?
     }
 }

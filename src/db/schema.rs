@@ -1,4 +1,4 @@
-use crate::error::Result;
+use anyhow::Result;
 
 const CREATE_MEMORIES: &str = "
     create table if not exists memories (

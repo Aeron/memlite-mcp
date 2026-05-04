@@ -4,63 +4,15 @@ use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    schemars, serde_json,
+    serde_json,
     service::RequestContext,
     tool, tool_handler, tool_router,
 };
-use serde::Deserialize;
 
+const INSTRUCTIONS: &str = include_str!("instructions.md");
+
+use super::params::{DeleteParams, ListParams, SearchParams, StoreParams, UpdateParams};
 use crate::{config::Config, db::MemoryStore, embedding::EmbeddingService};
-
-// Tool parameter types -------------------------------------------------------
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct StoreParams {
-    /// The full text to embed and store.
-    pub content: String,
-    /// One-sentence description for quick recall without reading the full
-    /// content. Provide when content is long, complex, or not self-describing.
-    pub summary: Option<String>,
-    /// Category labels for grouping (e.g. ["architecture", "auth", "bug"]).
-    /// Provide when the content clearly belongs to a named topic or domain.
-    pub tags: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SearchParams {
-    /// Natural-language query; results are ranked by cosine similarity.
-    pub query: String,
-    /// Maximum number of results to return (default: 10, max: 100).
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ListParams {
-    /// Maximum number of results per page (default: 20, max: 100).
-    pub limit: Option<u32>,
-    /// Zero-based offset for pagination (default: 0).
-    pub offset: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct DeleteParams {
-    /// Numeric identifier of the memory to delete (from memory_store or memory_list).
-    pub id: i64,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct UpdateParams {
-    /// Numeric identifier of the memory to update.
-    pub id: i64,
-    /// Replacement content; triggers re-embedding when provided.
-    pub content: Option<String>,
-    /// Replacement summary; pass empty string to clear the field.
-    pub summary: Option<String>,
-    /// Replacement tags.
-    pub tags: Option<Vec<String>>,
-}
-
-// Server struct --------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct MemServer {
@@ -72,18 +24,8 @@ pub struct MemServer {
     tool_router: ToolRouter<MemServer>,
 }
 
-// Helper for tool-level (non-protocol) error responses
-fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
-    let mut result = CallToolResult::success(vec![Content::text(msg.to_string())]);
-    result.is_error = Some(true);
-    Ok(result)
-}
-
-fn internal_err(e: impl std::fmt::Display) -> McpError {
-    McpError::internal_error(e.to_string(), None)
-}
-
 #[tool_router]
+#[tool_handler]
 impl MemServer {
     pub fn new(config: Config, store: MemoryStore, embedding: EmbeddingService) -> Self {
         MemServer {
@@ -249,22 +191,11 @@ impl MemServer {
     }
 }
 
-// ServerHandler implementation -----------------------------------------------
-
-#[tool_handler]
 impl ServerHandler for MemServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                "memlite-mcp",
-                env!("CARGO_PKG_VERSION"),
-            ))
-            .with_instructions(
-                "Local agent memory store backed by libsql vector search. \
-                 Tools: memory_store, memory_search, memory_list, memory_delete, memory_update. \
-                 All embeddings are generated server-side; pass plain text only."
-                    .to_string(),
-            )
+            .with_server_info(Implementation::new("memlite", env!("CARGO_PKG_VERSION")))
+            .with_instructions(INSTRUCTIONS.to_string())
     }
 
     async fn initialize(
@@ -274,4 +205,14 @@ impl ServerHandler for MemServer {
     ) -> Result<InitializeResult, McpError> {
         Ok(self.get_info())
     }
+}
+
+fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
+    let mut result = CallToolResult::success(vec![Content::text(msg.to_string())]);
+    result.is_error = Some(true);
+    Ok(result)
+}
+
+fn internal_err(e: impl std::fmt::Display) -> McpError {
+    McpError::internal_error(e.to_string(), None)
 }
