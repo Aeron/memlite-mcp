@@ -10,21 +10,19 @@ use rmcp::{
 };
 use serde::Deserialize;
 
-use crate::{
-    config::Config,
-    db::MemoryStore,
-    embedding::EmbeddingService,
-};
+use crate::{config::Config, db::MemoryStore, embedding::EmbeddingService};
 
 // Tool parameter types -------------------------------------------------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StoreParams {
-    /// The text to store and embed.
+    /// The full text to embed and store.
     pub content: String,
-    /// Short human-readable description of the memory (optional).
+    /// One-sentence description for quick recall without reading the full
+    /// content. Provide when content is long, complex, or not self-describing.
     pub summary: Option<String>,
-    /// Metadata tags for categorisation (optional JSON array of strings).
+    /// Category labels for grouping (e.g. ["architecture", "auth", "bug"]).
+    /// Provide when the content clearly belongs to a named topic or domain.
     pub tags: Option<Vec<String>>,
 }
 
@@ -99,12 +97,18 @@ impl MemServer {
     /// Embeds `content` and persists it as a new memory.
     ///
     /// Returns the numeric identifier assigned to the stored memory.
-    #[tool(description = "Store a new memory. Embeds the content locally and persists it. Returns the assigned numeric id.")]
+    #[tool(
+        description = "Store a new memory. Embeds the content locally and persists it. Returns the assigned numeric id. Provide summary when content is long or not self-describing. Provide tags when the topic is clear (e.g. architecture, auth, bug)."
+    )]
     async fn memory_store(
         &self,
         Parameters(p): Parameters<StoreParams>,
     ) -> Result<CallToolResult, McpError> {
-        let embedding = self.embedding.embed(p.content.clone()).await.map_err(internal_err)?;
+        let embedding = self
+            .embedding
+            .embed(p.content.clone())
+            .await
+            .map_err(internal_err)?;
         let tags = p.tags.unwrap_or_default();
         let id = self
             .store
@@ -112,7 +116,7 @@ impl MemServer {
                 &p.content,
                 p.summary.as_deref(),
                 &tags,
-                &self.config.agent_id,
+                &self.config.agent,
                 &embedding,
             )
             .await
@@ -126,7 +130,9 @@ impl MemServer {
     ///
     /// Returns an array of memories ordered nearest-first, each with a
     /// `distance` field (lower is more similar).
-    #[tool(description = "Search memories by semantic similarity. Returns the closest matches for the given query, ordered by cosine distance (lower = more similar).")]
+    #[tool(
+        description = "Search memories by semantic similarity. Returns the closest matches for the given query, ordered by cosine distance (lower = more similar)."
+    )]
     async fn memory_search(
         &self,
         Parameters(p): Parameters<SearchParams>,
@@ -147,18 +153,22 @@ impl MemServer {
                     "content":    m.content,
                     "summary":    m.summary,
                     "tags":       m.tags,
-                    "agent_id":   m.agent_id,
+                    "agent":      m.agent,
                     "created_at": m.created_at,
                     "updated_at": m.updated_at,
                     "distance":   dist,
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&body).unwrap())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&body).unwrap(),
+        )]))
     }
 
     /// Lists memories ordered by creation time (newest first) with pagination.
-    #[tool(description = "List stored memories, newest first. Supports pagination via limit and offset.")]
+    #[tool(
+        description = "List stored memories, newest first. Supports pagination via limit and offset."
+    )]
     async fn memory_list(
         &self,
         Parameters(p): Parameters<ListParams>,
@@ -176,7 +186,9 @@ impl MemServer {
     }
 
     /// Deletes a memory by its numeric identifier.
-    #[tool(description = "Delete a memory by its numeric id. Returns whether a memory was actually removed.")]
+    #[tool(
+        description = "Delete a memory by its numeric id. Returns whether a memory was actually removed."
+    )]
     async fn memory_delete(
         &self,
         Parameters(p): Parameters<DeleteParams>,
@@ -194,7 +206,9 @@ impl MemServer {
     ///
     /// Updating `content` automatically re-embeds the new text.
     /// Pass `summary: ""` to clear the summary field.
-    #[tool(description = "Update an existing memory. Provide id plus any fields to change. Updating content triggers re-embedding. Pass summary as empty string to clear it.")]
+    #[tool(
+        description = "Update an existing memory. Provide id plus any fields to change. Updating content triggers re-embedding. Pass summary as empty string to clear it."
+    )]
     async fn memory_update(
         &self,
         Parameters(p): Parameters<UpdateParams>,
@@ -204,7 +218,12 @@ impl MemServer {
         }
 
         let new_embedding = if let Some(ref c) = p.content {
-            Some(self.embedding.embed(c.clone()).await.map_err(internal_err)?)
+            Some(
+                self.embedding
+                    .embed(c.clone())
+                    .await
+                    .map_err(internal_err)?,
+            )
         } else {
             None
         };
@@ -236,7 +255,10 @@ impl MemServer {
 impl ServerHandler for MemServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("memlite-mcp", env!("CARGO_PKG_VERSION")))
+            .with_server_info(Implementation::new(
+                "memlite-mcp",
+                env!("CARGO_PKG_VERSION"),
+            ))
             .with_instructions(
                 "Local agent memory store backed by libsql vector search. \
                  Tools: memory_store, memory_search, memory_list, memory_delete, memory_update. \

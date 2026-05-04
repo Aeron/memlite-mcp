@@ -31,16 +31,20 @@ cargo build --release
 The first run downloads the default embedding model (~67 MB) and caches it in
 `~/.cache/huggingface`. Subsequent runs are fully offline.
 
-## Environment Variables
+## Configuration
 
-| Variable | Default | Description |
-|---|---|---|
-| `MEMLITE_PROJECT_PATH` | `""` | Project identifier; all agents sharing the same path share a DB |
-| `MEMLITE_AGENT_ID` | `""` | Filters memories to this agent (empty = see all) |
-| `MEMLITE_DB_DIR` | `~/.local/share/memlite-mcp` | Directory for per-project DB files |
-| `MEMLITE_IN_MEMORY` | `false` | Set `1` or `true` for an ephemeral in-memory DB |
-| `MEMLITE_EMBEDDING_MODEL` | `bge-small-en-v1.5` | Embedding model; options: `bge-small-en-v1.5`, `bge-base-en-v1.5`, `bge-large-en-v1.5` |
-| `RUST_LOG` | `info` | Log level (written to stderr) |
+All options are available as CLI flags **and** env vars (Clap resolves both; flags take precedence).
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--project-path` | `MEMLITE_PROJECT_PATH` | `""` | Project identifier; agents sharing the same path share a DB |
+| `--agent` | `MEMLITE_AGENT` | `""` | Filters memories to this agent (empty = see all) |
+| `--db-dir` | `MEMLITE_DB_DIR` | `~/.local/share/memlite-mcp` | Directory for per-project DB files |
+| `--in-memory` | `MEMLITE_IN_MEMORY` | `false` | `true`/`1`/`yes` for ephemeral in-memory DB |
+| `--embedding-model` | `MEMLITE_EMBEDDING_MODEL` | `bge-small-en-v1.5` | Options: `bge-small-en-v1.5`, `bge-base-en-v1.5`, `bge-large-en-v1.5` |
+| — | `RUST_LOG` | `info` | Log level (written to stderr) |
+
+Run `memlite-mcp --help` for the full usage listing.
 
 ## MCP Client Configuration
 
@@ -53,7 +57,7 @@ The first run downloads the default embedding model (~67 MB) and caches it in
       "command": "/path/to/memlite-mcp",
       "env": {
         "MEMLITE_PROJECT_PATH": "/my/project",
-        "MEMLITE_AGENT_ID": "claude"
+        "MEMLITE_AGENT": "claude"
       }
     }
   }
@@ -70,7 +74,7 @@ The first run downloads the default embedding model (~67 MB) and caches it in
         "path": "/path/to/memlite-mcp",
         "env": {
           "MEMLITE_PROJECT_PATH": "/my/project",
-          "MEMLITE_AGENT_ID": "claude"
+          "MEMLITE_AGENT": "claude"
         }
       }
     }
@@ -84,8 +88,8 @@ The first run downloads the default embedding model (~67 MB) and caches it in
 CREATE TABLE memories (
     content    TEXT    NOT NULL,
     summary    TEXT,
-    tags       TEXT    NOT NULL DEFAULT '[]',  -- JSON array
-    agent_id   TEXT    NOT NULL DEFAULT '',
+    tags       TEXT    NOT NULL DEFAULT '[]',
+    agent      TEXT    NOT NULL DEFAULT '',
     embedding  BLOB,                           -- vector32 via libsql
     created_at INTEGER NOT NULL,               -- Unix seconds
     updated_at INTEGER NOT NULL

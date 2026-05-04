@@ -1,3 +1,4 @@
+use clap::Parser;
 use rmcp::ServiceExt;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -26,25 +27,23 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let config = Config::from_env();
+    let config = Config::parse();
     info!(
         project = %config.project_path,
-        agent   = %config.agent_id,
+        agent   = %config.agent,
         in_mem  = config.in_memory,
         "starting memlite-mcp"
     );
 
-    // Open (or create) the per-project database.
     let db_path = config.db_path();
     info!(path = ?db_path, "opening database");
     let store = MemoryStore::open(db_path.as_deref()).await?;
 
     // Load the embedding model (may download on first run).
-    let embedding = EmbeddingService::from_env()?;
+    let embedding = EmbeddingService::new(config.embedding_model.into())?;
 
     let server = MemServer::new(config, store, embedding);
 
-    // Serve over stdio (the standard MCP transport for local servers).
     let service = server.serve(rmcp::transport::stdio()).await?;
     info!("memlite-mcp ready");
     service.waiting().await?;
