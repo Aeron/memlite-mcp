@@ -39,6 +39,10 @@ pub struct Config {
         default_value_t = EmbeddingModel::Small
     )]
     pub embedding_model: EmbeddingModel,
+
+    /// Directory for cached embedding model files. Defaults to `<db-dir>/fastembed_cache`.
+    #[arg(long = "embedding-cache-dir", env = "MEMLITE_EMBEDDING_CACHE_DIR")]
+    embedding_cache_dir: Option<PathBuf>,
 }
 
 /// Supported local embedding models.
@@ -75,6 +79,14 @@ impl From<EmbeddingModel> for fastembed::EmbeddingModel {
 }
 
 impl Config {
+    /// Returns the resolved embedding model cache directory.
+    pub fn embedding_cache_dir(&self) -> PathBuf {
+        match &self.embedding_cache_dir {
+            Some(p) => p.clone(),
+            None => self.db_dir().join("fastembed_cache"),
+        }
+    }
+
     /// Returns the resolved DB directory.
     ///
     /// Borrows when `--db-dir` was provided explicitly, allocating only for
@@ -145,6 +157,7 @@ mod tests {
             db_dir: None,
             in_memory,
             embedding_model: EmbeddingModel::Small,
+            embedding_cache_dir: None,
         }
     }
 

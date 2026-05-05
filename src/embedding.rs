@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use fastembed::{TextEmbedding, TextInitOptions};
@@ -15,14 +16,16 @@ pub struct EmbeddingService {
 }
 
 impl EmbeddingService {
-    /// Loads the model identified by `model_str` (e.g. "bge-small-en-v1.5").
+    /// Loads the specified embedding model, caching files under `cache_dir`.
     ///
-    /// Downloads model files on first run; subsequent runs use the local cache.
-    /// Unknown strings fall back to `DEFAULT_MODEL`.
-    pub fn new(model: fastembed::EmbeddingModel) -> Result<Self> {
-        info!("loading embedding model {:?}", model);
-        let model = TextEmbedding::try_new(TextInitOptions::new(model))
-            .map_err(|e| anyhow!("embedding: {e}"))?;
+    /// Downloads on first run; subsequent runs reuse the local cache.
+    pub fn new(model: fastembed::EmbeddingModel, cache_dir: PathBuf) -> Result<Self> {
+        info!(
+            "loading embedding model {:?} (cache: {:?})",
+            model, cache_dir
+        );
+        let opts = TextInitOptions::new(model).with_cache_dir(cache_dir);
+        let model = TextEmbedding::try_new(opts).map_err(|e| anyhow!("embedding: {e}"))?;
         Ok(EmbeddingService {
             model: Arc::new(Mutex::new(model)),
         })

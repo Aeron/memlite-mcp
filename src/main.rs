@@ -40,7 +40,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Loading the embedding model (may download on first run)
     info!("loading embedding model");
-    let embedding = EmbeddingService::new(config.embedding_model.into())?;
+    let embedding =
+        EmbeddingService::new(config.embedding_model.into(), config.embedding_cache_dir())?;
 
     // Creating the server and starting the service
     let server = MemServer::new(config, store, embedding);
