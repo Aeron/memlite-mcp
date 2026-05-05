@@ -3,8 +3,9 @@ Local agent memory store. Embeddings are generated server-side from plain text.
 ## Tools
 
 - `memory_store`: embed and persist a new memory, returns its numeric id
-- `memory_search`: cosine-similarity search, returns memories ordered nearest-first
-- `memory_list`: chronological list with pagination (newest first)
+- `memory_search`: cosine-similarity search, returns memories ordered nearest-first; accepts optional `tags` to pre-filter candidates
+- `memory_list`: chronological list with pagination (newest first); accepts optional `tags` to filter
+- `memory_tags`: lists all tags in use with occurrence counts, ordered by frequency
 - `memory_update`: update content/summary/tags in-place; re-embeds when content changes
 - `memory_delete`: remove a memory by its identifier
 
@@ -12,8 +13,10 @@ Local agent memory store. Embeddings are generated server-side from plain text.
 
 ### Before storing
 
-Always call `memory_search` first. If a very close match exists (distance < 0.15),
-update that memory instead of creating a duplicate. Store only when no close match found.
+Call `memory_tags` to see what tags already exist and reuse them where they fit; inventing
+synonyms fragments the taxonomy over time. Then call `memory_search`. If a very close match
+exists (distance < 0.15), update that memory instead of creating a duplicate. Store only
+when no close match is found.
 
 ### Searching vs listing
 
@@ -40,10 +43,14 @@ Skip summary for short, self-describing facts.
 
 ## `tags` field
 
-Tags are for grouping and future filtering. Use them when the topic is clear.
+Tags are for grouping and filtering. Use them when the topic is clear.
 Keep tags lowercase, singular where natural: "auth" not "Authentication".
 Example sets: ["architecture", "database"], ["bug", "auth"], ["decision", "api-design"].
 Skip tags for one-off facts that don't belong to a named domain.
+
+The `memory_search` and `memory_list` both accept an optional `tags` array. All supplied tags
+must be present on a memory for it to be included. Combine with a query in `memory_search`
+to narrow semantic search to a specific category (e.g. find the most relevant bug reports).
 
 ## Updating vs deleting
 

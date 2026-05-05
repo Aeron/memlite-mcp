@@ -78,43 +78,30 @@ impl MemoryStore {
 
     /// Returns memories ordered by cosine distance to `query_embedding`.
     ///
-    /// Filters by `agent_id` when non-None.
+    /// Optionally pre-filters by `agent_id` and/or `tags` (all supplied tags must match).
     pub async fn search(
         &self,
         query_embedding: &[f32],
         agent_id: Option<&str>,
+        tags: Option<&[String]>,
         limit: u32,
     ) -> Result<Vec<(Memory, f64)>> {
         let conn = self.conn()?;
         let emb_blob = floats_to_blob(query_embedding);
+        let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
+        let where_sql = build_where(agent_id, tags, &mut params)?;
+        params.push(Value::Integer(limit as i64));
 
-        let mut rows = match agent_id {
-            Some(aid) => {
-                conn.query(
-                    "select rowid, content, summary, tags, agent,
-                            created_at, updated_at,
-                            vector_distance_cos(embedding, ?) as dist
-                     from memories
-                     where agent = ?
-                     order by dist asc
-                     limit ?",
-                    libsql::params![emb_blob, aid, limit as i64],
-                )
-                .await?
-            }
-            None => {
-                conn.query(
-                    "select rowid, content, summary, tags, agent,
-                            created_at, updated_at,
-                            vector_distance_cos(embedding, ?) as dist
-                     from memories
-                     order by dist asc
-                     limit ?",
-                    libsql::params![emb_blob, limit as i64],
-                )
-                .await?
-            }
-        };
+        let sql = format!(
+            "select rowid, content, summary, tags, agent,
+                    created_at, updated_at,
+                    vector_distance_cos(embedding, ?) as dist
+             from memories
+             {where_sql}
+             order by dist asc
+             limit ?"
+        );
+        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
 
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -127,42 +114,67 @@ impl MemoryStore {
 
     /// Returns memories ordered by creation time, newest first.
     ///
-    /// Filters by `agent_id` when non-None.
+    /// Optionally pre-filters by `agent_id` and/or `tags` (all supplied tags must match).
     pub async fn list(
         &self,
         agent_id: Option<&str>,
+        tags: Option<&[String]>,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Memory>> {
         let conn = self.conn()?;
+        let mut params: Vec<Value> = Vec::new();
+        let where_sql = build_where(agent_id, tags, &mut params)?;
+        params.push(Value::Integer(limit as i64));
+        params.push(Value::Integer(offset as i64));
 
+        let sql = format!(
+            "select rowid, content, summary, tags, agent, created_at, updated_at
+             from memories
+             {where_sql}
+             order by created_at desc
+             limit ? offset ?"
+        );
+        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            results.push(parse_memory_row(&row)?);
+        }
+        Ok(results)
+    }
+
+    /// Returns all distinct tags with occurrence counts, ordered by count descending.
+    pub async fn tags(&self, agent_id: Option<&str>) -> Result<Vec<(String, u32)>> {
+        let conn = self.conn()?;
         let mut rows = match agent_id {
             Some(aid) => {
                 conn.query(
-                    "select rowid, content, summary, tags, agent, created_at, updated_at
-                     from memories
-                     where agent = ?
-                     order by created_at desc
-                     limit ? offset ?",
-                    libsql::params![aid, limit as i64, offset as i64],
+                    "select jt.value, count(*) as cnt
+                     from memories, json_each(memories.tags) jt
+                     where memories.agent = ?
+                     group by jt.value
+                     order by cnt desc",
+                    libsql::params![aid],
                 )
                 .await?
             }
             None => {
                 conn.query(
-                    "select rowid, content, summary, tags, agent, created_at, updated_at
-                     from memories
-                     order by created_at desc
-                     limit ? offset ?",
-                    libsql::params![limit as i64, offset as i64],
+                    "select jt.value, count(*) as cnt
+                     from memories, json_each(memories.tags) jt
+                     group by jt.value
+                     order by cnt desc",
+                    (),
                 )
                 .await?
             }
         };
-
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            results.push(parse_memory_row(&row)?);
+            let tag: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            results.push((tag, count as u32));
         }
         Ok(results)
     }
@@ -232,6 +244,34 @@ impl MemoryStore {
         let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
         Ok(affected > 0)
     }
+}
+
+// Builds a SQL WHERE clause from optional agent and tag filters, appending
+// the corresponding bind params in the correct placeholder order.
+fn build_where(
+    agent_id: Option<&str>,
+    tags: Option<&[String]>,
+    params: &mut Vec<Value>,
+) -> Result<String> {
+    let mut clauses: Vec<String> = Vec::new();
+    if let Some(aid) = agent_id {
+        clauses.push("agent = ?".into());
+        params.push(Value::Text(aid.to_owned()));
+    }
+    if let Some(ts) = tags.filter(|t| !t.is_empty()) {
+        clauses.push(
+            "(SELECT COUNT(DISTINCT jt.value) FROM json_each(tags) jt \
+             WHERE jt.value IN (SELECT value FROM json_each(?))) = ?"
+                .into(),
+        );
+        params.push(Value::Text(serde_json::to_string(ts)?));
+        params.push(Value::Integer(ts.len() as i64));
+    }
+    Ok(if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    })
 }
 
 /// Parses a row from the memories table into a [`Memory`] struct.
@@ -324,7 +364,7 @@ mod tests {
     #[tokio::test]
     async fn list_empty_store() {
         let (store, _tmp) = fresh().await;
-        let rows = store.list(None, 10, 0).await.unwrap();
+        let rows = store.list(None, None, 10, 0).await.unwrap();
         assert!(rows.is_empty());
     }
 
@@ -335,7 +375,7 @@ mod tests {
             .insert("content", Some("summ"), &["tag".into()], "bot", &V1)
             .await
             .unwrap();
-        let rows = store.list(None, 10, 0).await.unwrap();
+        let rows = store.list(None, None, 10, 0).await.unwrap();
         assert_eq!(rows.len(), 1);
         let m = &rows[0];
         assert_eq!(m.id, id);
@@ -351,11 +391,11 @@ mod tests {
         store.insert("a", None, &[], "alice", &V1).await.unwrap();
         store.insert("b", None, &[], "bob", &V1).await.unwrap();
 
-        let alice = store.list(Some("alice"), 10, 0).await.unwrap();
+        let alice = store.list(Some("alice"), None, 10, 0).await.unwrap();
         assert_eq!(alice.len(), 1);
         assert_eq!(alice[0].agent, "alice");
 
-        let all = store.list(None, 10, 0).await.unwrap();
+        let all = store.list(None, None, 10, 0).await.unwrap();
         assert_eq!(all.len(), 2);
     }
 
@@ -368,8 +408,8 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let page0 = store.list(None, 3, 0).await.unwrap();
-        let page1 = store.list(None, 3, 3).await.unwrap();
+        let page0 = store.list(None, None, 3, 0).await.unwrap();
+        let page1 = store.list(None, None, 3, 3).await.unwrap();
         assert_eq!(page0.len(), 3);
         assert_eq!(page1.len(), 2);
         let ids0: Vec<i64> = page0.iter().map(|m| m.id).collect();
@@ -382,13 +422,99 @@ mod tests {
         let (store, _tmp) = fresh().await;
         let id = store.insert("x", None, &[], "", &V1).await.unwrap();
         assert!(store.delete(id).await.unwrap());
-        assert!(store.list(None, 10, 0).await.unwrap().is_empty());
+        assert!(store.list(None, None, 10, 0).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn delete_missing_returns_false() {
         let (store, _tmp) = fresh().await;
         assert!(!store.delete(999).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_tags() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert("a", None, &["bug".into(), "config".into()], "", &V1)
+            .await
+            .unwrap();
+        store
+            .insert("b", None, &["bug".into()], "", &V1)
+            .await
+            .unwrap();
+        store.insert("c", None, &[], "", &V1).await.unwrap();
+
+        let bug_only = store
+            .list(None, Some(&["bug".into()]), 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(bug_only.len(), 2);
+
+        let both = store
+            .list(None, Some(&["bug".into(), "config".into()]), 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(both.len(), 1);
+        assert_eq!(both[0].content, "a");
+
+        // empty slice = no filter
+        let all = store.list(None, Some(&[]), 10, 0).await.unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn search_filters_by_tags() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert("tagged", None, &["rust".into()], "", &V1)
+            .await
+            .unwrap();
+        store.insert("untagged", None, &[], "", &V2).await.unwrap();
+
+        let results = store
+            .search(&V1, None, Some(&["rust".into()]), 10)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.content, "tagged");
+    }
+
+    #[tokio::test]
+    async fn tags_returns_counts() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert("x", None, &["a".into(), "b".into()], "", &V1)
+            .await
+            .unwrap();
+        store
+            .insert("y", None, &["a".into()], "", &V1)
+            .await
+            .unwrap();
+        store.insert("z", None, &[], "", &V1).await.unwrap();
+
+        let counts = store.tags(None).await.unwrap();
+        assert_eq!(counts.len(), 2);
+        // ordered by count desc: "a" (2) before "b" (1)
+        assert_eq!(counts[0], ("a".into(), 2));
+        assert_eq!(counts[1], ("b".into(), 1));
+    }
+
+    #[tokio::test]
+    async fn tags_filters_by_agent() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert("x", None, &["shared".into()], "alice", &V1)
+            .await
+            .unwrap();
+        store
+            .insert("y", None, &["shared".into(), "private".into()], "bob", &V1)
+            .await
+            .unwrap();
+
+        let alice_tags = store.tags(Some("alice")).await.unwrap();
+        assert_eq!(alice_tags.len(), 1);
+        assert_eq!(alice_tags[0].0, "shared");
+        assert!(!alice_tags.iter().any(|(t, _)| t == "private"));
     }
 
     #[tokio::test]
@@ -401,7 +527,10 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(store.list(None, 1, 0).await.unwrap()[0].content, "new");
+        assert_eq!(
+            store.list(None, None, 1, 0).await.unwrap()[0].content,
+            "new"
+        );
     }
 
     #[tokio::test]
@@ -409,7 +538,11 @@ mod tests {
         let (store, _tmp) = fresh().await;
         let id = store.insert("x", Some("summ"), &[], "", &V1).await.unwrap();
         store.update(id, None, Some(""), None, None).await.unwrap();
-        assert!(store.list(None, 1, 0).await.unwrap()[0].summary.is_none());
+        assert!(
+            store.list(None, None, 1, 0).await.unwrap()[0]
+                .summary
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -438,7 +571,7 @@ mod tests {
         let id1 = store.insert("first", None, &[], "", &V1).await.unwrap();
         let id2 = store.insert("second", None, &[], "", &V2).await.unwrap();
 
-        let results = store.search(&V1, None, 2).await.unwrap();
+        let results = store.search(&V1, None, None, 2).await.unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(
             results[0].0.id, id1,
@@ -460,7 +593,7 @@ mod tests {
             .unwrap();
         store.insert("bob", None, &[], "bob", &V1).await.unwrap();
 
-        let results = store.search(&V1, Some("alice"), 10).await.unwrap();
+        let results = store.search(&V1, Some("alice"), None, 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0.agent, "alice");
     }

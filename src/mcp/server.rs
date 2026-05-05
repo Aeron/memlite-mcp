@@ -11,7 +11,9 @@ use rmcp::{
 
 const INSTRUCTIONS: &str = include_str!("instructions.md");
 
-use super::params::{DeleteParams, ListParams, SearchParams, StoreParams, UpdateParams};
+use super::params::{
+    DeleteParams, ListParams, SearchParams, StoreParams, TagsParams, UpdateParams,
+};
 use crate::{config::Config, db::MemoryStore, embedding::EmbeddingService};
 
 #[derive(Clone)]
@@ -82,7 +84,12 @@ impl MemServer {
         let embedding = self.embedding.embed(p.query).await.map_err(internal_err)?;
         let results = self
             .store
-            .search(&embedding, self.config.agent_filter(), limit)
+            .search(
+                &embedding,
+                self.config.agent_filter(),
+                p.tags.as_deref(),
+                limit,
+            )
             .await
             .map_err(internal_err)?;
 
@@ -118,12 +125,35 @@ impl MemServer {
         let offset = p.offset.unwrap_or(0);
         let memories = self
             .store
-            .list(self.config.agent_filter(), limit, offset)
+            .list(self.config.agent_filter(), p.tags.as_deref(), limit, offset)
             .await
             .map_err(internal_err)?;
 
         let body = serde_json::to_string(&memories).unwrap();
         Ok(CallToolResult::success(vec![Content::text(body)]))
+    }
+
+    /// Returns all distinct tags with their occurrence counts, ordered by frequency.
+    #[tool(
+        description = "List all tags currently in use, with occurrence counts ordered highest first. Call this before memory_store to reuse existing tags and keep the taxonomy consistent."
+    )]
+    async fn memory_tags(
+        &self,
+        Parameters(_p): Parameters<TagsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let tags = self
+            .store
+            .tags(self.config.agent_filter())
+            .await
+            .map_err(internal_err)?;
+
+        let body: Vec<_> = tags
+            .into_iter()
+            .map(|(tag, count)| serde_json::json!({ "tag": tag, "count": count }))
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&body).unwrap(),
+        )]))
     }
 
     /// Deletes a memory by its numeric identifier.

@@ -19,6 +19,8 @@ pub struct SearchParams {
     pub query: String,
     /// Maximum number of results to return (default: 10, max: 100).
     pub limit: Option<u32>,
+    /// Restricts results to memories that carry all of the given tags.
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -27,7 +29,12 @@ pub struct ListParams {
     pub limit: Option<u32>,
     /// Zero-based offset for pagination (default: 0).
     pub offset: Option<u32>,
+    /// Restricts results to memories that carry all of the given tags.
+    pub tags: Option<Vec<String>>,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TagsParams {}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DeleteParams {
