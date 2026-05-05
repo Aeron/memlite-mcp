@@ -1,8 +1,9 @@
 use std::{
     borrow::Cow,
-    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
 };
+
+use sha2::{Digest, Sha256};
 
 use clap::{Parser, ValueEnum};
 
@@ -109,7 +110,7 @@ impl Config {
         }
         Some(
             self.db_dir()
-                .join(format!("{:016x}.db", self.project_hash())),
+                .join(format!("{}.db", self.project_path_hash())),
         )
     }
 
@@ -122,10 +123,10 @@ impl Config {
         }
     }
 
-    fn project_hash(&self) -> u64 {
-        let mut h = DefaultHasher::new();
-        self.project_path.hash(&mut h);
-        h.finish()
+    /// Returns the project path hash as a hex string.
+    fn project_path_hash(&self) -> String {
+        let hash = Sha256::digest(self.project_path.as_bytes());
+        format!("{hash:x}")
     }
 }
 
@@ -167,12 +168,12 @@ mod tests {
     }
 
     #[test]
-    fn db_path_has_16_hex_chars_and_db_extension() {
+    fn db_path_has_64_hex_chars_and_db_extension() {
         let path = config("/project", false).db_path().unwrap();
         let name = path.file_name().unwrap().to_str().unwrap();
         assert!(name.ends_with(".db"), "expected .db suffix, got '{name}'");
         let stem = &name[..name.len() - 3];
-        assert_eq!(stem.len(), 16, "expected 16 hex chars, got '{stem}'");
+        assert_eq!(stem.len(), 64, "expected 64 hex chars, got '{stem}'");
         assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
