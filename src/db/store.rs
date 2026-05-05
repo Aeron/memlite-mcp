@@ -57,15 +57,15 @@ impl MemoryStore {
         let conn = self.conn()?;
         let tags_json = serde_json::to_string(tags)?;
         let now = unix_secs();
-        let emb_json = floats_to_json(embedding);
+        let emb_blob = floats_to_blob(embedding);
 
         let mut rows = conn
             .query(
                 "insert into memories
                      (content, summary, tags, agent, embedding, created_at, updated_at)
-                 values (?, ?, ?, ?, vector32(?), ?, ?)
+                 values (?, ?, ?, ?, ?, ?, ?)
                  returning rowid",
-                libsql::params![content, summary, tags_json, agent, emb_json, now, now],
+                libsql::params![content, summary, tags_json, agent, emb_blob, now, now],
             )
             .await?;
 
@@ -86,19 +86,19 @@ impl MemoryStore {
         limit: u32,
     ) -> Result<Vec<(Memory, f64)>> {
         let conn = self.conn()?;
-        let emb_json = floats_to_json(query_embedding);
+        let emb_blob = floats_to_blob(query_embedding);
 
         let mut rows = match agent_id {
             Some(aid) => {
                 conn.query(
                     "select rowid, content, summary, tags, agent,
                             created_at, updated_at,
-                            vector_distance_cos(embedding, vector32(?)) as dist
+                            vector_distance_cos(embedding, ?) as dist
                      from memories
                      where agent = ?
                      order by dist asc
                      limit ?",
-                    libsql::params![emb_json, aid, limit as i64],
+                    libsql::params![emb_blob, aid, limit as i64],
                 )
                 .await?
             }
@@ -106,11 +106,11 @@ impl MemoryStore {
                 conn.query(
                     "select rowid, content, summary, tags, agent,
                             created_at, updated_at,
-                            vector_distance_cos(embedding, vector32(?)) as dist
+                            vector_distance_cos(embedding, ?) as dist
                      from memories
                      order by dist asc
                      limit ?",
-                    libsql::params![emb_json, limit as i64],
+                    libsql::params![emb_blob, limit as i64],
                 )
                 .await?
             }
@@ -217,8 +217,8 @@ impl MemoryStore {
             params.push(Value::Text(serde_json::to_string(t)?));
         }
         if let Some(emb) = embedding {
-            set_clauses.push("embedding = vector32(?)");
-            params.push(Value::Text(floats_to_json(emb)));
+            set_clauses.push("embedding = ?");
+            params.push(Value::Blob(floats_to_blob(emb)));
         }
         set_clauses.push("updated_at = ?");
         params.push(Value::Integer(now));
@@ -261,17 +261,12 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     })
 }
 
-/// Serializes a float slice to a JSON array string accepted by vector32().
-fn floats_to_json(data: &[f32]) -> String {
-    let mut out = String::with_capacity(data.len() * 12 + 2);
-    out.push('[');
-    for (i, f) in data.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&f.to_string());
+/// Packs a float slice as little-endian IEEE 754 bytes, matching libsql's float32 vector format.
+fn floats_to_blob(data: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() * 4);
+    for &f in data {
+        out.extend_from_slice(&f.to_le_bytes());
     }
-    out.push(']');
     out
 }
 
@@ -301,17 +296,21 @@ mod tests {
     const V2: [f32; 2] = [0.0, 1.0];
 
     #[test]
-    fn floats_to_json_empty() {
-        assert_eq!(floats_to_json(&[]), "[]");
+    fn floats_to_blob_empty() {
+        assert_eq!(floats_to_blob(&[]), Vec::<u8>::new());
     }
 
     #[test]
-    fn floats_to_json_roundtrips() {
+    fn floats_to_blob_roundtrips() {
         let vals = [1.0f32, 0.5, -0.25];
-        let json = floats_to_json(&vals);
-        let parsed: Vec<f32> = serde_json::from_str(&json).unwrap();
+        let blob = floats_to_blob(&vals);
+        assert_eq!(blob.len(), vals.len() * 4);
+        let parsed: Vec<f32> = blob
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
         for (a, b) in vals.iter().zip(&parsed) {
-            assert!((a - b).abs() < 1e-6, "{a} != {b}");
+            assert_eq!(a.to_bits(), b.to_bits(), "{a} != {b}");
         }
     }
 

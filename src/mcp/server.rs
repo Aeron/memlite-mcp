@@ -25,7 +25,6 @@ pub struct MemServer {
 }
 
 #[tool_router]
-#[tool_handler]
 impl MemServer {
     pub fn new(config: Config, store: MemoryStore, embedding: EmbeddingService) -> Self {
         MemServer {
@@ -191,6 +190,7 @@ impl MemServer {
     }
 }
 
+#[tool_handler]
 impl ServerHandler for MemServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
