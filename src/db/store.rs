@@ -37,7 +37,7 @@ impl MemoryStore {
             None => Builder::new_local(":memory:").build().await?,
         };
         let conn = db.connect()?;
-        super::schema::init(&conn).await?;
+        super::migrations::run(&conn).await?;
         Ok(MemoryStore { db: Arc::new(db) })
     }
 
