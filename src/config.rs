@@ -12,13 +12,10 @@ use clap::{Parser, ValueEnum};
 #[command(name = "memlite-mcp", version)]
 pub struct Config {
     /// Project identifier shared across agents. All agents with the same path
-    /// read and write the same DB file. Defaults to the current working directory.
-    #[arg(
-        long = "project-path",
-        env = "MEMLITE_PROJECT_PATH",
-        default_value_t = cwd_string()
-    )]
-    pub project_path: String,
+    /// read and write the same DB file. Defaults to the first workspace root
+    /// reported by the MCP client, or $HOME if none is available.
+    #[arg(long = "project-path", env = "MEMLITE_PROJECT_PATH")]
+    project_path: Option<String>,
 
     /// Agent name stored on each memory row. Empty means no filtering:
     /// all memories in the project are visible.
@@ -103,15 +100,38 @@ impl Config {
         }
     }
 
-    /// Returns the DB file path for the current project, or None in in-memory mode.
-    pub fn db_path(&self) -> Option<PathBuf> {
+    /// Returns the raw CLI/env project path, if provided explicitly.
+    pub fn explicit_project_path(&self) -> Option<&str> {
+        self.project_path.as_deref()
+    }
+
+    /// Returns the DB file path for the given project path, or None in in-memory mode.
+    pub fn db_path_for(&self, project_path: &str) -> Option<PathBuf> {
         if self.in_memory {
             return None;
         }
         Some(
             self.db_dir()
-                .join(format!("{}.db", self.project_path_hash())),
+                .join(format!("{}.db", Self::project_path_hash(project_path))),
         )
+    }
+
+    /// Resolves the effective project path from the explicit override or MCP roots.
+    ///
+    /// Priority: explicit arg > first valid `file://` root URI > $HOME > "/".
+    pub fn resolve_project_path(explicit: Option<&str>, root_uris: &[String]) -> String {
+        if let Some(p) = explicit {
+            return p.to_owned();
+        }
+        for uri in root_uris {
+            let path = uri.strip_prefix("file://").unwrap_or(uri.as_str());
+            if !path.is_empty() {
+                return path.to_owned();
+            }
+        }
+        dirs::home_dir()
+            .and_then(|p| p.to_str().map(|s| s.to_owned()))
+            .unwrap_or_else(|| "/".to_owned())
     }
 
     /// Returns Some(agent) when non-empty, for use as an optional query filter.
@@ -123,22 +143,14 @@ impl Config {
         }
     }
 
-    /// Returns the project path hash as a hex string.
-    fn project_path_hash(&self) -> String {
-        let hash = Sha256::digest(self.project_path.as_bytes());
+    /// Returns a SHA-256 hex digest of the given project path string.
+    pub fn project_path_hash(project_path: &str) -> String {
+        let hash = Sha256::digest(project_path.as_bytes());
         format!("{hash:x}")
     }
 }
 
-/// Returns the current working directory as a string.
-fn cwd_string() -> String {
-    std::env::current_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Parses a boolean value from a string, returning an error if the string is not a valid boolean.
+/// Parses a bool from a CLI string.
 fn parse_bool(s: &str) -> Result<bool, String> {
     match s {
         "true" | "1" | "yes" => Ok(true),
@@ -153,7 +165,7 @@ mod tests {
 
     fn config(project_path: &str, in_memory: bool) -> Config {
         Config {
-            project_path: project_path.into(),
+            project_path: Some(project_path.into()),
             agent: String::new(),
             db_dir: None,
             in_memory,
@@ -164,12 +176,12 @@ mod tests {
 
     #[test]
     fn db_path_none_when_in_memory() {
-        assert!(config("/project", true).db_path().is_none());
+        assert!(config("/project", true).db_path_for("/project").is_none());
     }
 
     #[test]
     fn db_path_has_64_hex_chars_and_db_extension() {
-        let path = config("/project", false).db_path().unwrap();
+        let path = config("/project", false).db_path_for("/project").unwrap();
         let name = path.file_name().unwrap().to_str().unwrap();
         assert!(name.ends_with(".db"), "expected .db suffix, got '{name}'");
         let stem = &name[..name.len() - 3];
@@ -179,16 +191,49 @@ mod tests {
 
     #[test]
     fn db_path_is_deterministic() {
-        let a = config("/my/project", false).db_path().unwrap();
-        let b = config("/my/project", false).db_path().unwrap();
+        let a = config("/my/project", false)
+            .db_path_for("/my/project")
+            .unwrap();
+        let b = config("/my/project", false)
+            .db_path_for("/my/project")
+            .unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn db_path_differs_per_project() {
-        let a = config("/project/a", false).db_path().unwrap();
-        let b = config("/project/b", false).db_path().unwrap();
+        let a = config("/project/a", false)
+            .db_path_for("/project/a")
+            .unwrap();
+        let b = config("/project/b", false)
+            .db_path_for("/project/b")
+            .unwrap();
         assert_ne!(a.file_name(), b.file_name());
+    }
+
+    #[test]
+    fn resolve_project_path_explicit_wins() {
+        let path =
+            Config::resolve_project_path(Some("/my/project"), &["file:///other".to_string()]);
+        assert_eq!(path, "/my/project");
+    }
+
+    #[test]
+    fn resolve_project_path_uses_first_root_uri() {
+        let uris = vec!["file:///first".to_string(), "file:///second".to_string()];
+        assert_eq!(Config::resolve_project_path(None, &uris), "/first");
+    }
+
+    #[test]
+    fn resolve_project_path_skips_empty_after_strip() {
+        let uris = vec!["file://".to_string(), "file:///valid".to_string()];
+        assert_eq!(Config::resolve_project_path(None, &uris), "/valid");
+    }
+
+    #[test]
+    fn resolve_project_path_falls_back_to_non_empty_string() {
+        let path = Config::resolve_project_path(None, &[]);
+        assert!(!path.is_empty());
     }
 
     #[test]

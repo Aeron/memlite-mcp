@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
     serde_json,
-    service::RequestContext,
+    service::{NotificationContext, RequestContext},
     tool, tool_handler, tool_router,
 };
 
@@ -18,7 +18,7 @@ use crate::{config::Config, db::MemoryStore, embedding::EmbeddingService};
 
 #[derive(Clone)]
 pub struct MemServer {
-    store: MemoryStore,
+    store: Arc<OnceLock<MemoryStore>>,
     embedding: EmbeddingService,
     config: Arc<Config>,
     // Used by the #[tool_handler] macro-generated call_tool / list_tools impls.
@@ -28,13 +28,23 @@ pub struct MemServer {
 
 #[tool_router]
 impl MemServer {
-    pub fn new(config: Config, store: MemoryStore, embedding: EmbeddingService) -> Self {
+    pub fn new(
+        config: Config,
+        store: Arc<OnceLock<MemoryStore>>,
+        embedding: EmbeddingService,
+    ) -> Self {
         MemServer {
             store,
             embedding,
             config: Arc::new(config),
             tool_router: Self::tool_router(),
         }
+    }
+
+    fn get_store(&self) -> Result<&MemoryStore, McpError> {
+        self.store.get().ok_or_else(|| {
+            McpError::internal_error("store not ready; initialization pending", None)
+        })
     }
 
     /// Embeds `content` and persists it as a new memory.
@@ -53,8 +63,8 @@ impl MemServer {
             .await
             .map_err(internal_err)?;
         let tags = p.tags.unwrap_or_default();
-        let id = self
-            .store
+        let store = self.get_store()?;
+        let id = store
             .insert(
                 &p.content,
                 p.summary.as_deref(),
@@ -82,8 +92,8 @@ impl MemServer {
     ) -> Result<CallToolResult, McpError> {
         let limit = p.limit.unwrap_or(10).min(100);
         let embedding = self.embedding.embed(p.query).await.map_err(internal_err)?;
-        let results = self
-            .store
+        let store = self.get_store()?;
+        let results = store
             .search(
                 &embedding,
                 self.config.agent_filter(),
@@ -123,8 +133,8 @@ impl MemServer {
     ) -> Result<CallToolResult, McpError> {
         let limit = p.limit.unwrap_or(20).min(100);
         let offset = p.offset.unwrap_or(0);
-        let memories = self
-            .store
+        let store = self.get_store()?;
+        let memories = store
             .list(self.config.agent_filter(), p.tags.as_deref(), limit, offset)
             .await
             .map_err(internal_err)?;
@@ -141,8 +151,8 @@ impl MemServer {
         &self,
         Parameters(_p): Parameters<TagsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let tags = self
-            .store
+        let store = self.get_store()?;
+        let tags = store
             .tags(self.config.agent_filter())
             .await
             .map_err(internal_err)?;
@@ -164,7 +174,8 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<DeleteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let deleted = self.store.delete(p.id).await.map_err(internal_err)?;
+        let store = self.get_store()?;
+        let deleted = store.delete(p.id).await.map_err(internal_err)?;
         if deleted {
             let body = serde_json::json!({ "deleted": true, "id": p.id }).to_string();
             Ok(CallToolResult::success(vec![Content::text(body)]))
@@ -188,6 +199,7 @@ impl MemServer {
             return tool_err("at least one of content, summary, or tags must be provided");
         }
 
+        let store = self.get_store()?;
         let new_embedding = if let Some(ref c) = p.content {
             Some(
                 self.embedding
@@ -199,8 +211,7 @@ impl MemServer {
             None
         };
 
-        let updated = self
-            .store
+        let updated = store
             .update(
                 p.id,
                 p.content.as_deref(),
@@ -234,6 +245,36 @@ impl ServerHandler for MemServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, McpError> {
         Ok(self.get_info())
+    }
+
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        // Already opened when --project-path was explicit
+        if self.store.get().is_some() {
+            return;
+        }
+
+        let root_uris = match context.peer.list_roots().await {
+            Ok(result) => result.roots.into_iter().map(|r| r.uri).collect::<Vec<_>>(),
+            Err(e) => {
+                tracing::warn!("list_roots failed: {e}, falling back to home directory");
+                vec![]
+            }
+        };
+
+        let project_path =
+            Config::resolve_project_path(self.config.explicit_project_path(), &root_uris);
+        let db_path = self.config.db_path_for(&project_path);
+
+        tracing::info!(path = ?db_path, project = %project_path, "opening database");
+
+        match MemoryStore::open(db_path.as_deref()).await {
+            Ok(store) => {
+                if self.store.set(store).is_err() {
+                    tracing::warn!("store already initialized");
+                }
+            }
+            Err(e) => tracing::error!("failed to open database: {e}"),
+        }
     }
 }
 

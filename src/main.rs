@@ -1,3 +1,5 @@
+use std::sync::{Arc, OnceLock};
+
 use clap::Parser;
 use rmcp::ServiceExt;
 use tracing::info;
@@ -18,33 +20,36 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Setting up structured logging; defaults to INFO unless RUST_LOG is set
     fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
 
-    // Parsing the configuration
     let config = Config::parse();
     info!(
-        project = %config.project_path,
+        project = config.explicit_project_path().unwrap_or("<auto>"),
         agent   = %config.agent,
         in_mem  = config.in_memory,
         "starting memlite-mcp"
     );
 
-    // Resolving the database path and opening the store
-    let db_path = config.db_path();
-    info!(path = ?db_path, "opening database");
-    let store = MemoryStore::open(db_path.as_deref()).await?;
+    let store_lock: Arc<OnceLock<MemoryStore>> = Arc::new(OnceLock::new());
 
-    // Loading the embedding model (may download on first run)
+    // Open DB eagerly only when the project path was given explicitly;
+    // otherwise on_initialized will call list_roots and open it then.
+    if let Some(explicit) = config.explicit_project_path() {
+        let project_path = Config::resolve_project_path(Some(explicit), &[]);
+        let db_path = config.db_path_for(&project_path);
+        info!(path = ?db_path, project = %project_path, "opening database eagerly");
+        let store = MemoryStore::open(db_path.as_deref()).await?;
+        let _ = store_lock.set(store);
+    }
+
     info!("loading embedding model");
     let embedding =
         EmbeddingService::new(config.embedding_model.into(), config.embedding_cache_dir())?;
 
-    // Creating the server and starting the service
-    let server = MemServer::new(config, store, embedding);
+    let server = MemServer::new(config, store_lock, embedding);
     let service = server.serve(rmcp::transport::stdio()).await?;
     info!("memlite-mcp ready");
 
