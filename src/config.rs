@@ -191,7 +191,7 @@ impl Config {
     }
 }
 
-// Parses a bool from a CLI string.
+/// Parses a bool from a CLI/env string, accepting `true/false/1/0/yes/no`.
 fn parse_bool(s: &str) -> Result<bool, String> {
     match s {
         "true" | "1" | "yes" => Ok(true),

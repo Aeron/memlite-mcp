@@ -44,39 +44,30 @@ impl MemServer {
         }
     }
 
-    // Opens (or returns cached) store, creating the DB file if needed.
+    /// Returns the cached store, opening (and creating) the DB file on the first call.
     async fn open_store(&self) -> Result<&MemoryStore, McpError> {
-        let db_path = self.db_path.get().ok_or_else(|| {
-            McpError::internal_error(
-                "store unavailable: project path could not be determined; \
-                 set --project-path or MEMLITE_PROJECT_PATH",
-                None,
-            )
-        })?;
+        let db_path = self.db_path.get().ok_or(ServerError::PathNotResolved)?;
         self.store
             .get_or_try_init(|| {
                 let path = db_path.clone();
                 async move {
                     MemoryStore::open(path.as_deref())
                         .await
-                        .map_err(internal_err)
+                        .map_err(|e| McpError::from(ServerError::StoreOpen(e)))
                 }
             })
             .await
     }
 
-    // Returns Some(store) when the DB file exists, None when it does not (for read-only tools).
+    /// Returns `Some(store)` when the DB file exists, `None` when it has not been created yet.
+    ///
+    /// Skips opening for read-only tools so a project with no stored memories never
+    /// gets a DB file created on its behalf.
     async fn store_if_present(&self) -> Result<Option<&MemoryStore>, McpError> {
         if let Some(store) = self.store.get() {
             return Ok(Some(store));
         }
-        let db_path = self.db_path.get().ok_or_else(|| {
-            McpError::internal_error(
-                "store unavailable: project path could not be determined; \
-                 set --project-path or MEMLITE_PROJECT_PATH",
-                None,
-            )
-        })?;
+        let db_path = self.db_path.get().ok_or(ServerError::PathNotResolved)?;
         if let Some(path) = db_path
             && !path.exists()
         {
@@ -85,6 +76,7 @@ impl MemServer {
         Ok(Some(self.open_store().await?))
     }
 
+    /// Embeds `content` and inserts a new memory row, returning its row identifier.
     #[tool(
         description = "Store a new memory. Embeds the content locally and persists it. Returns the assigned numeric id. Provide summary when content is long or not self-describing. Provide tags when the topic is clear (e.g. architecture, auth, bug)."
     )]
@@ -96,7 +88,7 @@ impl MemServer {
             .embedding
             .embed(p.content.clone())
             .await
-            .map_err(internal_err)?;
+            .map_err(ServerError::Embed)?;
         let tags = p.tags.unwrap_or_default();
         let store = self.open_store().await?;
         let id = store
@@ -108,12 +100,15 @@ impl MemServer {
                 &embedding,
             )
             .await
-            .map_err(internal_err)?;
+            .map_err(ServerError::StoreOp)?;
 
         let body = serde_json::json!({ "id": id }).to_string();
         Ok(CallToolResult::success(vec![Content::text(body)]))
     }
 
+    /// Embeds `query` and returns the closest stored memories ordered by cosine distance.
+    ///
+    /// Skips embedding entirely when no DB file exists yet.
     #[tool(
         description = "Search memories by semantic similarity. Returns the closest matches for the given query, ordered by cosine distance (lower = more similar)."
     )]
@@ -125,7 +120,11 @@ impl MemServer {
         let Some(store) = self.store_if_present().await? else {
             return Ok(CallToolResult::success(vec![Content::text("[]")]));
         };
-        let embedding = self.embedding.embed(p.query).await.map_err(internal_err)?;
+        let embedding = self
+            .embedding
+            .embed(p.query)
+            .await
+            .map_err(ServerError::Embed)?;
         let results = store
             .search(
                 &embedding,
@@ -134,7 +133,7 @@ impl MemServer {
                 limit,
             )
             .await
-            .map_err(internal_err)?;
+            .map_err(ServerError::StoreOp)?;
 
         let body: Vec<_> = results
             .into_iter()
@@ -156,6 +155,7 @@ impl MemServer {
         )]))
     }
 
+    /// Returns memories ordered newest-first with optional tag filtering and pagination.
     #[tool(
         description = "List stored memories, newest first. Supports pagination via limit and offset."
     )]
@@ -171,12 +171,13 @@ impl MemServer {
         let memories = store
             .list(self.config.agent_filter(), p.tags.as_deref(), limit, offset)
             .await
-            .map_err(internal_err)?;
+            .map_err(ServerError::StoreOp)?;
 
         let body = serde_json::to_string(&memories).unwrap();
         Ok(CallToolResult::success(vec![Content::text(body)]))
     }
 
+    /// Returns each distinct tag with its occurrence count, ordered by frequency.
     #[tool(
         description = "List all tags currently in use, with occurrence counts ordered highest first. Call this before memory_store to reuse existing tags and keep the taxonomy consistent."
     )]
@@ -190,7 +191,7 @@ impl MemServer {
         let tags = store
             .tags(self.config.agent_filter())
             .await
-            .map_err(internal_err)?;
+            .map_err(ServerError::StoreOp)?;
 
         let body: Vec<_> = tags
             .into_iter()
@@ -201,6 +202,7 @@ impl MemServer {
         )]))
     }
 
+    /// Removes the memory with the given row identifier; returns whether a row was deleted.
     #[tool(
         description = "Delete a memory by its numeric id. Returns whether a memory was actually removed."
     )]
@@ -211,7 +213,7 @@ impl MemServer {
         let Some(store) = self.store_if_present().await? else {
             return tool_err(format!("no memory found with id {}", p.id));
         };
-        let deleted = store.delete(p.id).await.map_err(internal_err)?;
+        let deleted = store.delete(p.id).await.map_err(ServerError::StoreOp)?;
         if deleted {
             let body = serde_json::json!({ "deleted": true, "id": p.id }).to_string();
             Ok(CallToolResult::success(vec![Content::text(body)]))
@@ -220,6 +222,9 @@ impl MemServer {
         }
     }
 
+    /// Updates one or more fields of an existing memory, re-embedding when `content` changes.
+    ///
+    /// Passing `summary: ""` clears the summary field (sets it to NULL).
     #[tool(
         description = "Update an existing memory. Provide id plus any fields to change. Updating content triggers re-embedding. Pass summary as empty string to clear it."
     )]
@@ -239,7 +244,7 @@ impl MemServer {
                 self.embedding
                     .embed(c.clone())
                     .await
-                    .map_err(internal_err)?,
+                    .map_err(ServerError::Embed)?,
             )
         } else {
             None
@@ -254,7 +259,7 @@ impl MemServer {
                 new_embedding.as_deref(),
             )
             .await
-            .map_err(internal_err)?;
+            .map_err(ServerError::StoreOp)?;
 
         if updated {
             let body = serde_json::json!({ "updated": true, "id": p.id }).to_string();
@@ -320,12 +325,37 @@ impl ServerHandler for MemServer {
     }
 }
 
+/// Wraps a message as a tool-level error result (distinct from an MCP protocol error).
 fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
     let mut result = CallToolResult::success(vec![Content::text(msg.to_string())]);
     result.is_error = Some(true);
     Ok(result)
 }
 
-fn internal_err(e: impl std::fmt::Display) -> McpError {
-    McpError::internal_error(e.to_string(), None)
+/// Typed errors produced at the MCP boundary, converted to [`McpError`] via [`From`].
+enum ServerError {
+    /// Project path was not resolved during initialisation; store cannot be located.
+    PathNotResolved,
+    /// [`MemoryStore::open`] failed (permissions, corruption, disk full, etc.).
+    StoreOpen(anyhow::Error),
+    /// A database query or write operation failed after the store was open.
+    StoreOp(anyhow::Error),
+    /// The embedding model failed to produce a vector for the given text.
+    Embed(anyhow::Error),
+}
+
+impl From<ServerError> for McpError {
+    fn from(e: ServerError) -> McpError {
+        McpError::internal_error(
+            match e {
+                ServerError::PathNotResolved => "store unavailable: project path could not be \
+                    determined; set --project-path or MEMLITE_PROJECT_PATH"
+                    .to_owned(),
+                ServerError::StoreOpen(e) => format!("failed to open database: {e}"),
+                ServerError::StoreOp(e) => format!("database operation failed: {e}"),
+                ServerError::Embed(e) => format!("embedding failed: {e}"),
+            },
+            None,
+        )
+    }
 }

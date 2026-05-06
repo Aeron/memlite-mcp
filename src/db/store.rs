@@ -261,7 +261,7 @@ fn build_where(
     })
 }
 
-// Parses a row from the memories table into a Memory struct.
+/// Deserialises a database row into a [`Memory`] value.
 fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
@@ -288,7 +288,7 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     })
 }
 
-// Packs a float slice as little-endian IEEE 754 bytes, matching libsql's float32 vector format.
+/// Packs a float slice as little-endian IEEE 754 bytes, matching libsql's `float32` vector format.
 fn floats_to_blob(data: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() * 4);
     for &f in data {
@@ -297,7 +297,7 @@ fn floats_to_blob(data: &[f32]) -> Vec<u8> {
     out
 }
 
-// Returns the current Unix timestamp in seconds.
+/// Returns the current Unix timestamp in whole seconds.
 fn unix_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
