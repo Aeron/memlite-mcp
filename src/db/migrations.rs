@@ -5,16 +5,16 @@ use anyhow::{Result, anyhow};
 const MIGRATIONS: &[&[&str]] = &[
     // v0 -> v1: initial schema
     &[
-        "CREATE TABLE IF NOT EXISTS memories (
-            content    TEXT    NOT NULL,
-            summary    TEXT,
-            tags       TEXT    NOT NULL DEFAULT '[]',
-            agent      TEXT    NOT NULL DEFAULT '',
-            embedding  BLOB,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+        "create table if not exists memories (
+            content    text    not null,
+            summary    text,
+            tags       text    not null default '[]',
+            agent      text    not null default '',
+            embedding  blob,
+            created_at integer not null,
+            updated_at integer not null
         )",
-        "CREATE INDEX IF NOT EXISTS memories_agent ON memories (agent)",
+        "create index if not exists memories_agent on memories (agent)",
     ],
 ];
 

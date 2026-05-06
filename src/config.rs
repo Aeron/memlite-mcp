@@ -1,11 +1,15 @@
 use std::{
     borrow::Cow,
+    fs::OpenOptions,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
-use sha2::{Digest, Sha256};
+use anyhow::Result;
+use tracing_subscriber::{EnvFilter, fmt};
 
 use clap::{Parser, ValueEnum};
+use sha2::{Digest, Sha256};
 
 /// Local-only MCP server for persistent agent memory.
 #[derive(Parser)]
@@ -38,7 +42,7 @@ pub struct Config {
     )]
     pub embedding_model: EmbeddingModel,
 
-    /// Directory for cached embedding model files. Defaults to `<db-dir>/fastembed_cache`.
+    /// Directory for cached embedding model files. Defaults to `<cache-dir>/memlite-mcp`.
     #[arg(long = "embedding-cache-dir", env = "MEMLITE_EMBEDDING_CACHE_DIR")]
     embedding_cache_dir: Option<PathBuf>,
 
@@ -86,7 +90,9 @@ impl Config {
     pub fn embedding_cache_dir(&self) -> PathBuf {
         match &self.embedding_cache_dir {
             Some(p) => p.clone(),
-            None => self.db_dir().join("fastembed_cache"),
+            None => dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("memlite-mcp"),
         }
     }
 
@@ -140,6 +146,35 @@ impl Config {
             .and_then(|p| p.to_str().map(str::to_owned))
     }
 
+    /// Initialises the global tracing subscriber based on `log_file`.
+    ///
+    /// Writes to the file when set, falling back to stderr. Must be called once
+    /// at startup before any `tracing` macros are used.
+    pub fn init_logging(&self) -> Result<()> {
+        if let Some(log_path) = &self.log_file {
+            if let Some(parent) = log_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)?;
+            fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")),
+                )
+                .with_writer(Mutex::new(file))
+                .with_ansi(false)
+                .init();
+        } else {
+            fmt()
+                .with_env_filter(EnvFilter::from_default_env())
+                .with_writer(std::io::stderr)
+                .init();
+        }
+        Ok(())
+    }
+
     /// Returns Some(agent) when non-empty, for use as an optional query filter.
     pub fn agent_filter(&self) -> Option<&str> {
         if self.agent.is_empty() {
@@ -156,7 +191,7 @@ impl Config {
     }
 }
 
-/// Parses a bool from a CLI string.
+// Parses a bool from a CLI string.
 fn parse_bool(s: &str) -> Result<bool, String> {
     match s {
         "true" | "1" | "yes" => Ok(true),

@@ -147,29 +147,16 @@ impl MemoryStore {
     /// Returns all distinct tags with occurrence counts, ordered by count descending.
     pub async fn tags(&self, agent_id: Option<&str>) -> Result<Vec<(String, u32)>> {
         let conn = self.conn()?;
-        let mut rows = match agent_id {
-            Some(aid) => {
-                conn.query(
-                    "select jt.value, count(*) as cnt
-                     from memories, json_each(memories.tags) jt
-                     where memories.agent = ?
-                     group by jt.value
-                     order by cnt desc",
-                    libsql::params![aid],
-                )
-                .await?
-            }
-            None => {
-                conn.query(
-                    "select jt.value, count(*) as cnt
-                     from memories, json_each(memories.tags) jt
-                     group by jt.value
-                     order by cnt desc",
-                    (),
-                )
-                .await?
-            }
-        };
+        let mut params: Vec<Value> = Vec::new();
+        let where_sql = build_where(agent_id, None, &mut params)?;
+        let sql = format!(
+            "select jt.value, count(*) as cnt
+             from memories, json_each(memories.tags) jt
+             {where_sql}
+             group by jt.value
+             order by cnt desc"
+        );
+        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let tag: String = row.get(0)?;
@@ -274,7 +261,7 @@ fn build_where(
     })
 }
 
-/// Parses a row from the memories table into a [`Memory`] struct.
+// Parses a row from the memories table into a Memory struct.
 fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
@@ -301,7 +288,7 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     })
 }
 
-/// Packs a float slice as little-endian IEEE 754 bytes, matching libsql's float32 vector format.
+// Packs a float slice as little-endian IEEE 754 bytes, matching libsql's float32 vector format.
 fn floats_to_blob(data: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() * 4);
     for &f in data {
@@ -310,7 +297,7 @@ fn floats_to_blob(data: &[f32]) -> Vec<u8> {
     out
 }
 
-/// Returns the current Unix timestamp in seconds.
+// Returns the current Unix timestamp in seconds.
 fn unix_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
