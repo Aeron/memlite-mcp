@@ -3,10 +3,6 @@ name = "memlite-mcp"
 version = "0.1.0"
 edition = "2024"
 
-[[bin]]
-name = "memlite-mcp"
-path = "src/main.rs"
-
 [dependencies]
 # MCP server: official Rust SDK with stdio transport and tool macros
 rmcp = { version = "1.6.0", features = ["server", "transport-io", "macros", "schemars"] }
@@ -40,6 +36,7 @@ mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+criterion = "0.5"
 
 [profile.release]
 opt-level = 3
@@ -47,3 +44,18 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+[[bin]]
+name = "memlite-mcp"
+path = "src/main.rs"
+
+[profile.bench]
+inherits = "release"
+# Keeping debug info and symbols for profiling the bench runner;
+# does not affect the spawned binary's runtime performance.
+strip = false
+debug = 1
+
+[[bench]]
+name = "mcp_tools"
+harness = false
