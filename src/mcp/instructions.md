@@ -11,6 +11,13 @@ Local agent memory store. Embeddings are generated server-side from plain text.
 
 ## Workflow
 
+### Before investigating
+
+Call `memory_search` before starting any investigation, debugging session, or implementation
+task. Use the symptom, error message, component name, or concept as the query. A stored
+memory may resolve the issue immediately or surface prior decisions that constrain the
+solution. Skipping this step risks re-discovering known information at full cost.
+
 ### Before storing
 
 Call `memory_tags` to see what tags already exist and reuse them where they fit; inventing
