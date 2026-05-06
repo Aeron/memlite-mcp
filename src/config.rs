@@ -41,6 +41,11 @@ pub struct Config {
     /// Directory for cached embedding model files. Defaults to `<db-dir>/fastembed_cache`.
     #[arg(long = "embedding-cache-dir", env = "MEMLITE_EMBEDDING_CACHE_DIR")]
     embedding_cache_dir: Option<PathBuf>,
+
+    /// Write logs to this file instead of stderr. Useful when the MCP host does not
+    /// surface the server's stderr (e.g. Zed has no MCP log panel).
+    #[arg(long = "log-file", env = "MEMLITE_LOG_FILE")]
+    pub log_file: Option<PathBuf>,
 }
 
 /// Supported local embedding models.
@@ -118,20 +123,21 @@ impl Config {
 
     /// Resolves the effective project path from the explicit override or MCP roots.
     ///
-    /// Priority: explicit arg > first valid `file://` root URI > $HOME > "/".
-    pub fn resolve_project_path(explicit: Option<&str>, root_uris: &[String]) -> String {
+    /// Priority: explicit arg > first valid `file://` root URI > CWD.
+    /// Returns None when none of the sources yield a usable path.
+    pub fn resolve_project_path(explicit: Option<&str>, root_uris: &[String]) -> Option<String> {
         if let Some(p) = explicit {
-            return p.to_owned();
+            return Some(p.to_owned());
         }
         for uri in root_uris {
             let path = uri.strip_prefix("file://").unwrap_or(uri.as_str());
             if !path.is_empty() {
-                return path.to_owned();
+                return Some(path.to_owned());
             }
         }
-        dirs::home_dir()
-            .and_then(|p| p.to_str().map(|s| s.to_owned()))
-            .unwrap_or_else(|| "/".to_owned())
+        std::env::current_dir()
+            .ok()
+            .and_then(|p| p.to_str().map(str::to_owned))
     }
 
     /// Returns Some(agent) when non-empty, for use as an optional query filter.
@@ -171,6 +177,7 @@ mod tests {
             in_memory,
             embedding_model: EmbeddingModel::Small,
             embedding_cache_dir: None,
+            log_file: None,
         }
     }
 
@@ -215,25 +222,32 @@ mod tests {
     fn resolve_project_path_explicit_wins() {
         let path =
             Config::resolve_project_path(Some("/my/project"), &["file:///other".to_string()]);
-        assert_eq!(path, "/my/project");
+        assert_eq!(path, Some("/my/project".to_owned()));
     }
 
     #[test]
     fn resolve_project_path_uses_first_root_uri() {
         let uris = vec!["file:///first".to_string(), "file:///second".to_string()];
-        assert_eq!(Config::resolve_project_path(None, &uris), "/first");
+        assert_eq!(
+            Config::resolve_project_path(None, &uris),
+            Some("/first".to_owned())
+        );
     }
 
     #[test]
     fn resolve_project_path_skips_empty_after_strip() {
         let uris = vec!["file://".to_string(), "file:///valid".to_string()];
-        assert_eq!(Config::resolve_project_path(None, &uris), "/valid");
+        assert_eq!(
+            Config::resolve_project_path(None, &uris),
+            Some("/valid".to_owned())
+        );
     }
 
     #[test]
-    fn resolve_project_path_falls_back_to_non_empty_string() {
+    fn resolve_project_path_uses_cwd_when_no_roots() {
+        // CWD is always available in a test process.
         let path = Config::resolve_project_path(None, &[]);
-        assert!(!path.is_empty());
+        assert!(path.is_some());
     }
 
     #[test]

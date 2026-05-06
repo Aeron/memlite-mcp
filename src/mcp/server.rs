@@ -5,7 +5,7 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
     serde_json,
-    service::{NotificationContext, RequestContext},
+    service::NotificationContext,
     tool, tool_handler, tool_router,
 };
 
@@ -43,7 +43,11 @@ impl MemServer {
 
     fn get_store(&self) -> Result<&MemoryStore, McpError> {
         self.store.get().ok_or_else(|| {
-            McpError::internal_error("store not ready; initialization pending", None)
+            McpError::internal_error(
+                "store unavailable: project path could not be determined; \
+                 set --project-path or MEMLITE_PROJECT_PATH",
+                None,
+            )
         })
     }
 
@@ -239,30 +243,44 @@ impl ServerHandler for MemServer {
             .with_instructions(INSTRUCTIONS.to_string())
     }
 
-    async fn initialize(
-        &self,
-        _request: InitializeRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<InitializeResult, McpError> {
-        Ok(self.get_info())
-    }
-
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
         // Already opened when --project-path was explicit
         if self.store.get().is_some() {
             return;
         }
 
-        let root_uris = match context.peer.list_roots().await {
-            Ok(result) => result.roots.into_iter().map(|r| r.uri).collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::warn!("list_roots failed: {e}, falling back to home directory");
-                vec![]
+        // Skip if the client didn't advertise roots support; calling list_roots
+        // on such a client would hang waiting for a response that never comes.
+        let peer = context.peer.peer_info();
+        tracing::debug!(
+            has_peer_info = peer.is_some(),
+            roots_capability = ?peer.and_then(|i| i.capabilities.roots.as_ref()),
+            "on_initialized: peer capabilities"
+        );
+        let supports_roots = peer.is_some_and(|info| info.capabilities.roots.is_some());
+
+        let root_uris = if supports_roots {
+            match context.peer.list_roots().await {
+                Ok(result) => result.roots.into_iter().map(|r| r.uri).collect::<Vec<_>>(),
+                Err(e) => {
+                    tracing::warn!("list_roots failed: {e}, falling back to home directory");
+                    vec![]
+                }
             }
+        } else {
+            tracing::debug!("skipping list_roots: client does not advertise roots capability");
+            vec![]
         };
 
-        let project_path =
-            Config::resolve_project_path(self.config.explicit_project_path(), &root_uris);
+        tracing::debug!(root_uris = ?root_uris, "resolved root URIs");
+        let Some(project_path) =
+            Config::resolve_project_path(self.config.explicit_project_path(), &root_uris)
+        else {
+            tracing::error!(
+                "cannot determine project path: set --project-path or MEMLITE_PROJECT_PATH"
+            );
+            return;
+        };
         let db_path = self.config.db_path_for(&project_path);
 
         tracing::info!(path = ?db_path, project = %project_path, "opening database");
