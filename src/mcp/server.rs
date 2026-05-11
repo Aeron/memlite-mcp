@@ -26,8 +26,10 @@ pub struct MemServer {
     store: Arc<OnceCell<MemoryStore>>,
     embedding: EmbeddingService,
     config: Arc<Config>,
+    // Stores a human-readable error set during on_initialized when path resolution fails;
+    // surfaced to the client on the first tool call.
+    init_error: Arc<OnceLock<String>>,
 
-    // Used by the #[tool_handler] macro-generated call_tool / list_tools impls
     #[allow(dead_code)]
     tool_router: ToolRouter<MemServer>,
 }
@@ -40,13 +42,14 @@ impl MemServer {
             store: Arc::new(OnceCell::new()),
             embedding,
             config: Arc::new(config),
+            init_error: Arc::new(OnceLock::new()),
             tool_router: Self::tool_router(),
         }
     }
 
     /// Returns the cached store, opening (and creating) the DB file on the first call.
     async fn open_store(&self) -> Result<&MemoryStore, McpError> {
-        let db_path = self.db_path.get().ok_or(ServerError::PathNotResolved)?;
+        let db_path = self.db_path.get().ok_or_else(|| self.path_not_resolved())?;
         self.store
             .get_or_try_init(|| {
                 let path = db_path.clone();
@@ -67,13 +70,25 @@ impl MemServer {
         if let Some(store) = self.store.get() {
             return Ok(Some(store));
         }
-        let db_path = self.db_path.get().ok_or(ServerError::PathNotResolved)?;
+        let db_path = self.db_path.get().ok_or_else(|| self.path_not_resolved())?;
         if let Some(path) = db_path
             && !path.exists()
         {
             return Ok(None);
         }
         Ok(Some(self.open_store().await?))
+    }
+
+    /// Builds an MCP error for when the project path was never resolved at startup.
+    ///
+    /// Uses the stored init error message when available, falling back to a generic one.
+    fn path_not_resolved(&self) -> McpError {
+        McpError::from(ServerError::PathNotResolved(
+            self.init_error
+                .get()
+                .cloned()
+                .unwrap_or_else(|| "store unavailable: project path not yet resolved".to_owned()),
+        ))
     }
 
     /// Embeds `content` and inserts a new memory row, returning its row identifier.
@@ -308,13 +323,13 @@ impl ServerHandler for MemServer {
         };
 
         tracing::debug!(root_uris = ?root_uris, "resolved root URIs");
-        let Some(project_path) =
-            Config::resolve_project_path(self.config.explicit_project_path(), &root_uris)
-        else {
-            tracing::error!(
-                "cannot determine project path: set --project-path or MEMLITE_PROJECT_PATH"
-            );
-            return;
+        let project_path = match self.config.resolve_project_path(&root_uris) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!("{e}");
+                self.init_error.set(e.to_string()).ok();
+                return;
+            }
         };
 
         let db_path = self.config.db_path_for(&project_path);
@@ -335,7 +350,7 @@ fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
 /// Typed errors produced at the MCP boundary, converted to [`McpError`] via [`From`].
 enum ServerError {
     /// Project path was not resolved during initialisation; store cannot be located.
-    PathNotResolved,
+    PathNotResolved(String),
     /// [`MemoryStore::open`] failed (permissions, corruption, disk full, etc.).
     StoreOpen(anyhow::Error),
     /// A database query or write operation failed after the store was open.
@@ -348,9 +363,7 @@ impl From<ServerError> for McpError {
     fn from(e: ServerError) -> McpError {
         McpError::internal_error(
             match e {
-                ServerError::PathNotResolved => "store unavailable: project path could not be \
-                    determined; set --project-path or MEMLITE_PROJECT_PATH"
-                    .to_owned(),
+                ServerError::PathNotResolved(msg) => msg,
                 ServerError::StoreOpen(e) => format!("failed to open database: {e}"),
                 ServerError::StoreOp(e) => format!("database operation failed: {e}"),
                 ServerError::Embed(e) => format!("embedding failed: {e}"),

@@ -8,6 +8,41 @@ use std::{
 use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt};
 
+/// Error returned by [`Config::resolve_project_path`] when a valid path cannot be produced.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    /// No source (explicit arg, root URIs, or CWD) yielded a usable path.
+    NotFound,
+    /// The resolved path is the filesystem root; use `--allow-root` to opt in.
+    RootPath,
+    /// The resolved path is the home directory; use `--allow-home` to opt in.
+    HomePath,
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(
+                f,
+                "cannot determine project path: \
+                 set --project-path or MEMLITE_PROJECT_PATH"
+            ),
+            Self::RootPath => write!(
+                f,
+                "project path '/' is the filesystem root; \
+                 use --allow-root to opt in, or set a real project directory \
+                 via --project-path or MEMLITE_PROJECT_PATH"
+            ),
+            Self::HomePath => write!(
+                f,
+                "project path is the home directory; \
+                 use --allow-home to opt in, or set a specific project directory \
+                 via --project-path or MEMLITE_PROJECT_PATH"
+            ),
+        }
+    }
+}
+
 use clap::{Parser, ValueEnum};
 use sha2::{Digest, Sha256};
 
@@ -33,6 +68,16 @@ pub struct Config {
     /// Use an ephemeral in-memory DB (no persistence across restarts).
     #[arg(long = "in-memory", env = "MEMLITE_IN_MEMORY", default_value_t = false, value_parser = parse_bool)]
     pub in_memory: bool,
+
+    /// Allows the filesystem root ("/") as the project path.
+    /// Off by default; using the whole filesystem as a project is almost certainly wrong.
+    #[arg(long = "allow-root", env = "MEMLITE_ALLOW_ROOT", default_value_t = false, value_parser = parse_bool)]
+    allow_root: bool,
+
+    /// Allows the home directory as the project path.
+    /// Off by default; the home directory spans many unrelated projects.
+    #[arg(long = "allow-home", env = "MEMLITE_ALLOW_HOME", default_value_t = false, value_parser = parse_bool)]
+    allow_home: bool,
 
     /// Embedding model to use for new memories.
     #[arg(
@@ -129,21 +174,35 @@ impl Config {
 
     /// Resolves the effective project path from the explicit override or MCP roots.
     ///
-    /// Priority: explicit arg > first valid `file://` root URI > CWD.
-    /// Returns None when none of the sources yield a usable path.
-    pub fn resolve_project_path(explicit: Option<&str>, root_uris: &[String]) -> Option<String> {
-        if let Some(p) = explicit {
-            return Some(p.to_owned());
+    /// Priority: explicit arg > first non-empty `file://` root URI > CWD.
+    /// Validates the candidate once: rejects the filesystem root unless `--allow-root` is set,
+    /// and rejects the home directory unless `--allow-home` is set.
+    pub fn resolve_project_path(&self, root_uris: &[String]) -> Result<String, ResolveError> {
+        let path = if let Some(p) = self.project_path.as_deref() {
+            p.to_owned()
+        } else {
+            root_uris
+                .iter()
+                .filter_map(|uri| {
+                    let p = uri.strip_prefix("file://").unwrap_or(uri.as_str());
+                    (!p.is_empty()).then_some(p.to_owned())
+                })
+                .next()
+                .or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(str::to_owned))
+                })
+                .ok_or(ResolveError::NotFound)?
+        };
+
+        if !self.allow_root && is_root_path(&path) {
+            return Err(ResolveError::RootPath);
         }
-        for uri in root_uris {
-            let path = uri.strip_prefix("file://").unwrap_or(uri.as_str());
-            if !path.is_empty() {
-                return Some(path.to_owned());
-            }
+        if !self.allow_home && is_home_path(&path) {
+            return Err(ResolveError::HomePath);
         }
-        std::env::current_dir()
-            .ok()
-            .and_then(|p| p.to_str().map(str::to_owned))
+        Ok(path)
     }
 
     /// Initialises the global tracing subscriber based on `log_file`.
@@ -191,6 +250,22 @@ impl Config {
     }
 }
 
+/// Returns true when `path` is the filesystem root.
+///
+/// Treats "/" as too broad to be a useful project directory; gated by `--allow-root`.
+fn is_root_path(path: &str) -> bool {
+    path == "/"
+}
+
+/// Returns true when `path` is the current user's home directory.
+///
+/// Treats the home directory as too broad for a project; gated by `--allow-home`.
+fn is_home_path(path: &str) -> bool {
+    dirs::home_dir()
+        .and_then(|h| h.to_str().map(|s| s == path))
+        .unwrap_or(false)
+}
+
 /// Parses a bool from a CLI/env string, accepting `true/false/1/0/yes/no`.
 fn parse_bool(s: &str) -> Result<bool, String> {
     match s {
@@ -210,6 +285,22 @@ mod tests {
             agent: String::new(),
             db_dir: None,
             in_memory,
+            allow_root: false,
+            allow_home: false,
+            embedding_model: EmbeddingModel::Small,
+            embedding_cache_dir: None,
+            log_file: None,
+        }
+    }
+
+    fn config_no_path() -> Config {
+        Config {
+            project_path: None,
+            agent: String::new(),
+            db_dir: None,
+            in_memory: false,
+            allow_root: false,
+            allow_home: false,
             embedding_model: EmbeddingModel::Small,
             embedding_cache_dir: None,
             log_file: None,
@@ -255,34 +346,75 @@ mod tests {
 
     #[test]
     fn resolve_project_path_explicit_wins() {
-        let path =
-            Config::resolve_project_path(Some("/my/project"), &["file:///other".to_string()]);
-        assert_eq!(path, Some("/my/project".to_owned()));
+        let c = config("/my/project", false);
+        assert_eq!(
+            c.resolve_project_path(&["file:///other".to_string()]),
+            Ok("/my/project".to_owned())
+        );
     }
 
     #[test]
     fn resolve_project_path_uses_first_root_uri() {
+        let c = config_no_path();
         let uris = vec!["file:///first".to_string(), "file:///second".to_string()];
+        assert_eq!(c.resolve_project_path(&uris), Ok("/first".to_owned()));
+    }
+
+    #[test]
+    fn resolve_project_path_skips_empty_uri() {
+        let c = config_no_path();
+        let uris = vec!["file://".to_string(), "file:///valid".to_string()];
+        assert_eq!(c.resolve_project_path(&uris), Ok("/valid".to_owned()));
+    }
+
+    #[test]
+    fn resolve_project_path_rejects_root_path() {
         assert_eq!(
-            Config::resolve_project_path(None, &uris),
-            Some("/first".to_owned())
+            config("/", false).resolve_project_path(&[]),
+            Err(ResolveError::RootPath)
         );
     }
 
     #[test]
-    fn resolve_project_path_skips_empty_after_strip() {
-        let uris = vec!["file://".to_string(), "file:///valid".to_string()];
-        assert_eq!(
-            Config::resolve_project_path(None, &uris),
-            Some("/valid".to_owned())
-        );
+    fn resolve_project_path_allow_root_opts_in() {
+        let mut c = config("/", false);
+        c.allow_root = true;
+        assert_eq!(c.resolve_project_path(&[]), Ok("/".to_owned()));
+    }
+
+    #[test]
+    fn resolve_project_path_rejects_root_uri() {
+        // First non-empty URI resolves to "/" and is rejected; no fallthrough to later entries.
+        let c = config_no_path();
+        let uris = vec!["file:///".to_string(), "file:///real/project".to_string()];
+        assert_eq!(c.resolve_project_path(&uris), Err(ResolveError::RootPath));
     }
 
     #[test]
     fn resolve_project_path_uses_cwd_when_no_roots() {
-        // CWD is always available in a test process.
-        let path = Config::resolve_project_path(None, &[]);
-        assert!(path.is_some());
+        // CWD is always available in a test process (and is never "/").
+        assert!(config_no_path().resolve_project_path(&[]).is_ok());
+    }
+
+    #[test]
+    fn resolve_project_path_rejects_home_dir() {
+        let Some(home) = dirs::home_dir().and_then(|h| h.to_str().map(str::to_owned)) else {
+            return; // skip when home dir is unavailable
+        };
+        assert_eq!(
+            config(&home, false).resolve_project_path(&[]),
+            Err(ResolveError::HomePath)
+        );
+    }
+
+    #[test]
+    fn resolve_project_path_allow_home_opts_in() {
+        let Some(home) = dirs::home_dir().and_then(|h| h.to_str().map(str::to_owned)) else {
+            return;
+        };
+        let mut c = config(&home, false);
+        c.allow_home = true;
+        assert_eq!(c.resolve_project_path(&[]), Ok(home));
     }
 
     #[test]
