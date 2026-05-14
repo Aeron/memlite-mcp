@@ -1,7 +1,10 @@
+use anyhow::anyhow;
+use rmcp::{ServiceExt, service::QuitReason};
 use std::{
     path::PathBuf,
     sync::{Arc, OnceLock},
 };
+use tokio::sync::Notify;
 
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
@@ -26,9 +29,7 @@ pub struct MemServer {
     store: Arc<OnceCell<MemoryStore>>,
     embedding: EmbeddingService,
     config: Arc<Config>,
-    // Stores a human-readable error set during on_initialized when path resolution fails;
-    // surfaced to the client on the first tool call.
-    init_error: Arc<OnceLock<String>>,
+    shutdown: Arc<Notify>,
 
     #[allow(dead_code)]
     tool_router: ToolRouter<MemServer>,
@@ -42,8 +43,42 @@ impl MemServer {
             store: Arc::new(OnceCell::new()),
             embedding,
             config: Arc::new(config),
-            init_error: Arc::new(OnceLock::new()),
+            shutdown: Arc::new(Notify::new()),
             tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Serves over stdio and drives the server to completion.
+    ///
+    /// Returns an error if the transport fails or if a fatal initialization
+    /// error occurs (e.g., project path cannot be resolved).
+    pub async fn run(self) -> anyhow::Result<()> {
+        let shutdown = Arc::clone(&self.shutdown);
+        let service = self.serve(rmcp::transport::stdio()).await?;
+        tracing::info!("memlite-mcp ready");
+
+        tokio::select! {
+            result = service.waiting() => {
+                match &result {
+                    Ok(QuitReason::Closed | QuitReason::Cancelled) => {
+                        tracing::debug!(reason = ?result, "server stopped");
+                    }
+                    Ok(QuitReason::JoinError(e)) => {
+                        tracing::warn!(error = %e, "server send task failed");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "server loop panicked");
+                    }
+                }
+                result.map(|_| ()).map_err(anyhow::Error::from)
+            }
+            _ = shutdown.notified() => {
+                // Yielding once so rmcp's internal send loop can flush the log
+                // notification dispatched from on_initialized before we tear down
+                tokio::task::yield_now().await;
+                Err(anyhow!("exiting: initialization failed (see logs)"))
+            }
         }
     }
 
@@ -80,14 +115,9 @@ impl MemServer {
     }
 
     /// Builds an MCP error for when the project path was never resolved at startup.
-    ///
-    /// Uses the stored init error message when available, falling back to a generic one.
     fn path_not_resolved(&self) -> McpError {
         McpError::from(ServerError::PathNotResolved(
-            self.init_error
-                .get()
-                .cloned()
-                .unwrap_or_else(|| "store unavailable: project path not yet resolved".to_owned()),
+            "store unavailable: project path not yet resolved".to_owned(),
         ))
     }
 
@@ -326,8 +356,17 @@ impl ServerHandler for MemServer {
         let project_path = match self.config.resolve_project_path(&root_uris) {
             Ok(p) => p,
             Err(e) => {
-                tracing::error!("{e}");
-                self.init_error.set(e.to_string()).ok();
+                tracing::error!("fatal: {e}");
+                // Sending a best-effort log notification so the client sees why the
+                // server is about to disconnect; ignored if the client hasn't subscribed
+                let _ = context
+                    .peer
+                    .notify_logging_message(LoggingMessageNotificationParam::new(
+                        LoggingLevel::Error,
+                        serde_json::json!(e.to_string()),
+                    ))
+                    .await;
+                self.shutdown.notify_one();
                 return;
             }
         };

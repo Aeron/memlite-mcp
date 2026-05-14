@@ -1,5 +1,4 @@
 use clap::Parser;
-use rmcp::ServiceExt;
 use tracing::info;
 
 mod config;
@@ -8,7 +7,6 @@ mod embedding;
 mod mcp;
 
 use config::Config;
-
 use embedding::EmbeddingService;
 use mcp::MemServer;
 
@@ -31,11 +29,5 @@ async fn main() -> anyhow::Result<()> {
     let embedding =
         EmbeddingService::new(config.embedding_model.into(), config.embedding_cache_dir())?;
 
-    let server = MemServer::new(config, embedding);
-    let service = server.serve(rmcp::transport::stdio()).await?;
-    info!("memlite-mcp ready");
-
-    service.waiting().await?;
-
-    Ok(())
+    MemServer::new(config, embedding).run().await
 }

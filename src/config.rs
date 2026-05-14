@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn resolve_project_path_rejects_root_uri() {
-        // First non-empty URI resolves to "/" and is rejected; no fallthrough to later entries.
+        // First non-empty URI resolves to "/" and is rejected; no fallthrough to later entries
         let c = config_no_path();
         let uris = vec!["file:///".to_string(), "file:///real/project".to_string()];
         assert_eq!(c.resolve_project_path(&uris), Err(ResolveError::RootPath));
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn resolve_project_path_uses_cwd_when_no_roots() {
-        // CWD is always available in a test process (and is never "/").
+        // CWD is always available in a test process (and is never "/")
         assert!(config_no_path().resolve_project_path(&[]).is_ok());
     }
 
