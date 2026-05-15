@@ -16,6 +16,8 @@ const MIGRATIONS: &[&[&str]] = &[
         )",
         "create index if not exists memories_agent on memories (agent)",
     ],
+    // v1 -> v2: adds optional context column for storing background rationale
+    &["alter table memories add column context text"],
 ];
 
 /// Applies all pending migrations, bumping `PRAGMA user_version` after each one.

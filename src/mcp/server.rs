@@ -1,20 +1,18 @@
-use anyhow::anyhow;
-use rmcp::{ServiceExt, service::QuitReason};
 use std::{
     path::PathBuf,
     sync::{Arc, OnceLock},
 };
-use tokio::sync::Notify;
 
+use anyhow::anyhow;
 use rmcp::{
-    ErrorData as McpError, RoleServer, ServerHandler,
+    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
     serde_json,
-    service::NotificationContext,
+    service::{NotificationContext, QuitReason},
     tool, tool_handler, tool_router,
 };
-use tokio::sync::OnceCell;
+use tokio::sync::{Notify, OnceCell};
 
 const INSTRUCTIONS: &str = include_str!("instructions.md");
 
@@ -143,6 +141,7 @@ impl MemServer {
                 &tags,
                 &self.config.agent,
                 &embedding,
+                p.context.as_deref(),
             )
             .await
             .map_err(ServerError::StoreOp)?;
@@ -191,6 +190,7 @@ impl MemServer {
                     "agent":      m.agent,
                     "created_at": m.created_at,
                     "updated_at": m.updated_at,
+                    "context":    m.context,
                     "distance":   dist,
                 })
             })
@@ -277,8 +277,8 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<UpdateParams>,
     ) -> Result<CallToolResult, McpError> {
-        if p.content.is_none() && p.summary.is_none() && p.tags.is_none() {
-            return tool_err("at least one of content, summary, or tags must be provided");
+        if p.content.is_none() && p.summary.is_none() && p.tags.is_none() && p.context.is_none() {
+            return tool_err("at least one of content, summary, tags, or context must be provided");
         }
 
         let Some(store) = self.store_if_present().await? else {
@@ -302,6 +302,7 @@ impl MemServer {
                 p.summary.as_deref(),
                 p.tags.as_deref(),
                 new_embedding.as_deref(),
+                p.context.as_deref(),
             )
             .await
             .map_err(ServerError::StoreOp)?;

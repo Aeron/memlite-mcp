@@ -6,7 +6,7 @@ Local agent memory store. Embeddings are generated server-side from plain text.
 - `memory_search`: cosine-similarity search, returns memories ordered nearest-first; accepts optional `tags` to pre-filter candidates
 - `memory_list`: chronological list with pagination (newest first); accepts optional `tags` to filter
 - `memory_tags`: lists all tags in use with occurrence counts, ordered by frequency
-- `memory_update`: update content/summary/tags in-place; re-embeds when content changes
+- `memory_update`: update content/summary/tags/context in-place; re-embeds when content changes
 - `memory_delete`: remove a memory by its identifier
 
 ## Workflow
@@ -48,6 +48,21 @@ Provide summary when content is:
 Summary is shown in list views and used to decide whether to read full content.
 Skip summary for short, self-describing facts.
 
+## `context` field
+
+Provide context when you want to record the *why* behind a memory: the reasoning that led
+to a decision, the constraints that shaped it, the trade-offs considered, or the broader
+situation that makes the content significant. Context is not a repetition of the content
+and not a compressed summary; it answers questions like:
+
+- "Why was this approach chosen over the alternatives?"
+- "What constraint or incident prompted this?"
+- "Who or what does this affect, and how?"
+
+Skip context for plain facts that are self-contained (e.g., "the API key is stored in
+`~/.config/myapp`"). Use it for decisions, architectural choices, and anything where the
+rationale will matter later.
+
 ## `tags` field
 
 Tags are for grouping and filtering. Use them when the topic is clear.
@@ -65,3 +80,4 @@ Prefer update when the core identity of the memory is the same but details chang
 Delete only when the memory is fully obsolete or factually wrong with no salvageable parts.
 Updating content triggers re-embedding automatically.
 Pass summary as empty string ("") to clear it.
+Pass context as empty string ("") to clear it.

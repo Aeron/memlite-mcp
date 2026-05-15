@@ -8,13 +8,22 @@ use anyhow::{Result, anyhow};
 /// A single stored memory row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
+    /// Row identifier assigned by the database.
     pub id: i64,
+    /// Full text of the memory; the field that is embedded for semantic search.
     pub content: String,
+    /// One-sentence description for quick recall without reading the full content.
     pub summary: Option<String>,
+    /// Category labels attached to this memory for grouping and filtering.
     pub tags: Vec<String>,
+    /// Identifier of the agent that created this memory.
     pub agent: String,
+    /// Unix timestamp (seconds) when the row was first inserted.
     pub created_at: i64,
+    /// Unix timestamp (seconds) when the row was last modified.
     pub updated_at: i64,
+    /// Background rationale: why this memory matters, how decisions were reached, etc.
+    pub context: Option<String>,
 }
 
 /// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
@@ -53,6 +62,7 @@ impl MemoryStore {
         tags: &[String],
         agent: &str,
         embedding: &[f32],
+        context: Option<&str>,
     ) -> Result<i64> {
         let conn = self.conn()?;
         let tags_json = serde_json::to_string(tags)?;
@@ -62,17 +72,19 @@ impl MemoryStore {
         let mut rows = conn
             .query(
                 "insert into memories
-                     (content, summary, tags, agent, embedding, created_at, updated_at)
-                 values (?, ?, ?, ?, ?, ?, ?)
-                 returning rowid",
-                libsql::params![content, summary, tags_json, agent, emb_blob, now, now],
+                    (content, summary, tags, agent, embedding, created_at, updated_at, context)
+                values (?, ?, ?, ?, ?, ?, ?, ?)
+                returning rowid",
+                libsql::params![
+                    content, summary, tags_json, agent, emb_blob, now, now, context
+                ],
             )
             .await?;
 
         let row = rows
             .next()
             .await?
-            .ok_or_else(|| anyhow!("INSERT RETURNING yielded no row"))?;
+            .ok_or_else(|| anyhow!("insert returning yielded no row"))?;
         Ok(row.get(0)?)
     }
 
@@ -93,20 +105,21 @@ impl MemoryStore {
         params.push(Value::Integer(limit as i64));
 
         let sql = format!(
-            "select rowid, content, summary, tags, agent,
-                    created_at, updated_at,
-                    vector_distance_cos(embedding, ?) as dist
-             from memories
-             {where_sql}
-             order by dist asc
-             limit ?"
+            "select
+                rowid, content, summary, tags, agent,
+                created_at, updated_at, context,
+                vector_distance_cos(embedding, ?) as dist
+            from memories
+            {where_sql}
+            order by dist asc
+            limit ?"
         );
         let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
 
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let memory = parse_memory_row(&row)?;
-            let dist: f64 = row.get(7)?;
+            let dist: f64 = row.get(8)?;
             results.push((memory, dist));
         }
         Ok(results)
@@ -129,11 +142,12 @@ impl MemoryStore {
         params.push(Value::Integer(offset as i64));
 
         let sql = format!(
-            "select rowid, content, summary, tags, agent, created_at, updated_at
-             from memories
-             {where_sql}
-             order by created_at desc
-             limit ? offset ?"
+            "select
+                rowid, content, summary, tags, agent, created_at, updated_at, context
+            from memories
+            {where_sql}
+            order by created_at desc
+            limit ? offset ?"
         );
         let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
 
@@ -151,10 +165,10 @@ impl MemoryStore {
         let where_sql = build_where(agent_id, None, &mut params)?;
         let sql = format!(
             "select jt.value, count(*) as cnt
-             from memories, json_each(memories.tags) jt
-             {where_sql}
-             group by jt.value
-             order by cnt desc"
+            from memories, json_each(memories.tags) jt
+            {where_sql}
+            group by jt.value
+            order by cnt desc"
         );
         let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
         let mut results = Vec::new();
@@ -178,6 +192,7 @@ impl MemoryStore {
     /// Updates the specified fields of a memory row.
     ///
     /// - `summary = Some("")` clears the summary (sets to NULL).
+    /// - `context = Some("")` clears the context (sets to NULL).
     /// - Supplying a new `embedding` alongside updated content keeps the index
     ///   consistent; pass None to leave the stored vector unchanged.
     /// - Returns true when at least one row was modified.
@@ -188,8 +203,14 @@ impl MemoryStore {
         summary: Option<&str>,
         tags: Option<&[String]>,
         embedding: Option<&[f32]>,
+        context: Option<&str>,
     ) -> Result<bool> {
-        if content.is_none() && summary.is_none() && tags.is_none() && embedding.is_none() {
+        if content.is_none()
+            && summary.is_none()
+            && tags.is_none()
+            && embedding.is_none()
+            && context.is_none()
+        {
             return Ok(false);
         }
 
@@ -219,6 +240,14 @@ impl MemoryStore {
             set_clauses.push("embedding = ?");
             params.push(Value::Blob(floats_to_blob(emb)));
         }
+        if let Some(ctx) = context {
+            set_clauses.push("context = ?");
+            params.push(if ctx.is_empty() {
+                Value::Null
+            } else {
+                Value::Text(ctx.to_owned())
+            });
+        }
         set_clauses.push("updated_at = ?");
         params.push(Value::Integer(now));
         params.push(Value::Integer(id));
@@ -247,8 +276,8 @@ fn build_where(
     }
     if let Some(ts) = tags.filter(|t| !t.is_empty()) {
         clauses.push(
-            "(SELECT COUNT(DISTINCT jt.value) FROM json_each(tags) jt \
-             WHERE jt.value IN (SELECT value FROM json_each(?))) = ?"
+            "(select count(distinct jt.value) from json_each(tags) jt \
+            where jt.value in (select value from json_each(?))) = ?"
                 .into(),
         );
         params.push(Value::Text(serde_json::to_string(ts)?));
@@ -257,7 +286,7 @@ fn build_where(
     Ok(if clauses.is_empty() {
         String::new()
     } else {
-        format!("WHERE {}", clauses.join(" AND "))
+        format!("where {}", clauses.join(" and "))
     })
 }
 
@@ -274,6 +303,11 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let agent: String = row.get(4)?;
     let created_at: i64 = row.get(5)?;
     let updated_at: i64 = row.get(6)?;
+    let context = match row.get_value(7)? {
+        Value::Null => None,
+        Value::Text(s) => Some(s),
+        other => return Err(anyhow!("unexpected type for context: {other:?}")),
+    };
 
     let tags: Vec<String> = serde_json::from_str(&tags_json)?;
 
@@ -285,6 +319,7 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         agent,
         created_at,
         updated_at,
+        context,
     })
 }
 
@@ -344,7 +379,10 @@ mod tests {
     #[tokio::test]
     async fn insert_returns_positive_id() {
         let (store, _tmp) = fresh().await;
-        let id = store.insert("hello", None, &[], "", &V1).await.unwrap();
+        let id = store
+            .insert("hello", None, &[], "", &V1, None)
+            .await
+            .unwrap();
         assert!(id > 0);
     }
 
@@ -359,7 +397,14 @@ mod tests {
     async fn insert_and_list_roundtrip() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("content", Some("summ"), &["tag".into()], "bot", &V1)
+            .insert(
+                "content",
+                Some("summ"),
+                &["tag".into()],
+                "bot",
+                &V1,
+                Some("why it matters"),
+            )
             .await
             .unwrap();
         let rows = store.list(None, None, 10, 0).await.unwrap();
@@ -370,13 +415,20 @@ mod tests {
         assert_eq!(m.summary.as_deref(), Some("summ"));
         assert_eq!(m.tags, ["tag"]);
         assert_eq!(m.agent, "bot");
+        assert_eq!(m.context.as_deref(), Some("why it matters"));
     }
 
     #[tokio::test]
     async fn list_filters_by_agent() {
         let (store, _tmp) = fresh().await;
-        store.insert("a", None, &[], "alice", &V1).await.unwrap();
-        store.insert("b", None, &[], "bob", &V1).await.unwrap();
+        store
+            .insert("a", None, &[], "alice", &V1, None)
+            .await
+            .unwrap();
+        store
+            .insert("b", None, &[], "bob", &V1, None)
+            .await
+            .unwrap();
 
         let alice = store.list(Some("alice"), None, 10, 0).await.unwrap();
         assert_eq!(alice.len(), 1);
@@ -391,7 +443,7 @@ mod tests {
         let (store, _tmp) = fresh().await;
         for i in 0..5 {
             store
-                .insert(&format!("item {i}"), None, &[], "", &V1)
+                .insert(&format!("item {i}"), None, &[], "", &V1, None)
                 .await
                 .unwrap();
         }
@@ -407,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn delete_existing_returns_true() {
         let (store, _tmp) = fresh().await;
-        let id = store.insert("x", None, &[], "", &V1).await.unwrap();
+        let id = store.insert("x", None, &[], "", &V1, None).await.unwrap();
         assert!(store.delete(id).await.unwrap());
         assert!(store.list(None, None, 10, 0).await.unwrap().is_empty());
     }
@@ -422,14 +474,14 @@ mod tests {
     async fn list_filters_by_tags() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("a", None, &["bug".into(), "config".into()], "", &V1)
+            .insert("a", None, &["bug".into(), "config".into()], "", &V1, None)
             .await
             .unwrap();
         store
-            .insert("b", None, &["bug".into()], "", &V1)
+            .insert("b", None, &["bug".into()], "", &V1, None)
             .await
             .unwrap();
-        store.insert("c", None, &[], "", &V1).await.unwrap();
+        store.insert("c", None, &[], "", &V1, None).await.unwrap();
 
         let bug_only = store
             .list(None, Some(&["bug".into()]), 10, 0)
@@ -453,10 +505,13 @@ mod tests {
     async fn search_filters_by_tags() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("tagged", None, &["rust".into()], "", &V1)
+            .insert("tagged", None, &["rust".into()], "", &V1, None)
             .await
             .unwrap();
-        store.insert("untagged", None, &[], "", &V2).await.unwrap();
+        store
+            .insert("untagged", None, &[], "", &V2, None)
+            .await
+            .unwrap();
 
         let results = store
             .search(&V1, None, Some(&["rust".into()]), 10)
@@ -470,14 +525,14 @@ mod tests {
     async fn tags_returns_counts() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("x", None, &["a".into(), "b".into()], "", &V1)
+            .insert("x", None, &["a".into(), "b".into()], "", &V1, None)
             .await
             .unwrap();
         store
-            .insert("y", None, &["a".into()], "", &V1)
+            .insert("y", None, &["a".into()], "", &V1, None)
             .await
             .unwrap();
-        store.insert("z", None, &[], "", &V1).await.unwrap();
+        store.insert("z", None, &[], "", &V1, None).await.unwrap();
 
         let counts = store.tags(None).await.unwrap();
         assert_eq!(counts.len(), 2);
@@ -490,11 +545,18 @@ mod tests {
     async fn tags_filters_by_agent() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("x", None, &["shared".into()], "alice", &V1)
+            .insert("x", None, &["shared".into()], "alice", &V1, None)
             .await
             .unwrap();
         store
-            .insert("y", None, &["shared".into(), "private".into()], "bob", &V1)
+            .insert(
+                "y",
+                None,
+                &["shared".into(), "private".into()],
+                "bob",
+                &V1,
+                None,
+            )
             .await
             .unwrap();
 
@@ -507,10 +569,10 @@ mod tests {
     #[tokio::test]
     async fn update_content() {
         let (store, _tmp) = fresh().await;
-        let id = store.insert("old", None, &[], "", &V1).await.unwrap();
+        let id = store.insert("old", None, &[], "", &V1, None).await.unwrap();
         assert!(
             store
-                .update(id, Some("new"), None, None, None)
+                .update(id, Some("new"), None, None, None, None)
                 .await
                 .unwrap()
         );
@@ -523,11 +585,35 @@ mod tests {
     #[tokio::test]
     async fn update_clears_summary_on_empty_string() {
         let (store, _tmp) = fresh().await;
-        let id = store.insert("x", Some("summ"), &[], "", &V1).await.unwrap();
-        store.update(id, None, Some(""), None, None).await.unwrap();
+        let id = store
+            .insert("x", Some("summ"), &[], "", &V1, None)
+            .await
+            .unwrap();
+        store
+            .update(id, None, Some(""), None, None, None)
+            .await
+            .unwrap();
         assert!(
             store.list(None, None, 1, 0).await.unwrap()[0]
                 .summary
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn update_clears_context_on_empty_string() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert("x", None, &[], "", &V1, Some("initial context"))
+            .await
+            .unwrap();
+        store
+            .update(id, None, None, None, None, Some(""))
+            .await
+            .unwrap();
+        assert!(
+            store.list(None, None, 1, 0).await.unwrap()[0]
+                .context
                 .is_none()
         );
     }
@@ -537,7 +623,7 @@ mod tests {
         let (store, _tmp) = fresh().await;
         assert!(
             !store
-                .update(999, Some("x"), None, None, None)
+                .update(999, Some("x"), None, None, None, None)
                 .await
                 .unwrap()
         );
@@ -546,8 +632,13 @@ mod tests {
     #[tokio::test]
     async fn update_no_fields_returns_false() {
         let (store, _tmp) = fresh().await;
-        let id = store.insert("x", None, &[], "", &V1).await.unwrap();
-        assert!(!store.update(id, None, None, None, None).await.unwrap());
+        let id = store.insert("x", None, &[], "", &V1, None).await.unwrap();
+        assert!(
+            !store
+                .update(id, None, None, None, None, None)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -555,8 +646,14 @@ mod tests {
         let (store, _tmp) = fresh().await;
         // V1=[1,0] and V2=[0,1] are orthogonal unit vectors; cosine distance
         // between V1 and V1 is 0, between V1 and V2 is 1
-        let id1 = store.insert("first", None, &[], "", &V1).await.unwrap();
-        let id2 = store.insert("second", None, &[], "", &V2).await.unwrap();
+        let id1 = store
+            .insert("first", None, &[], "", &V1, None)
+            .await
+            .unwrap();
+        let id2 = store
+            .insert("second", None, &[], "", &V2, None)
+            .await
+            .unwrap();
 
         let results = store.search(&V1, None, None, 2).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -575,10 +672,13 @@ mod tests {
     async fn search_filters_by_agent() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("alice", None, &[], "alice", &V1)
+            .insert("alice", None, &[], "alice", &V1, None)
             .await
             .unwrap();
-        store.insert("bob", None, &[], "bob", &V1).await.unwrap();
+        store
+            .insert("bob", None, &[], "bob", &V1, None)
+            .await
+            .unwrap();
 
         let results = store.search(&V1, Some("alice"), None, 10).await.unwrap();
         assert_eq!(results.len(), 1);

@@ -11,6 +11,10 @@ pub struct StoreParams {
     /// Category labels for grouping (e.g. ["architecture", "auth", "bug"]).
     /// Provide when the content clearly belongs to a named topic or domain.
     pub tags: Option<Vec<String>>,
+    /// Background rationale for this memory: why the decision was made, why it
+    /// matters, how it fits the bigger picture, or anything that gives meaning
+    /// beyond what the content itself conveys.
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -52,4 +56,6 @@ pub struct UpdateParams {
     pub summary: Option<String>,
     /// Replacement tags.
     pub tags: Option<Vec<String>>,
+    /// Replacement context; pass empty string to clear the field.
+    pub context: Option<String>,
 }
