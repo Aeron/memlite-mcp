@@ -18,6 +18,24 @@ task. Use the symptom, error message, component name, or concept as the query. A
 memory may resolve the issue immediately or surface prior decisions that constrain the
 solution. Skipping this step risks re-discovering known information at full cost.
 
+### After completing work
+
+Before finishing any task, review what was produced or discovered and store anything that
+would save meaningful effort in a future session. Do not wait to be asked. Good candidates:
+
+- A decision was made or confirmed — record what was chosen, what was rejected, and why
+- A non-obvious fact was discovered — a quirk, undocumented behavior, workaround, or
+  environment-specific detail that took effort to find
+- A bug was diagnosed — root cause and fix, not just the symptom
+- A constraint was identified — something that will rule out or shape future approaches
+- A user preference or project convention was stated — naming style, tooling choice,
+  process rule, anything the user would expect to be remembered
+- Something took significant research to figure out — if it cost time once, store it so
+  it costs nothing next time
+
+Plain mechanical steps do not need storing (e.g. "ran the tests"). The test is: would a
+future session benefit from knowing this without having to rediscover it?
+
 ### Before storing
 
 Call `memory_tags` to see what tags already exist and reuse them where they fit; inventing
@@ -77,6 +95,10 @@ to narrow semantic search to a specific category (e.g. find the most relevant bu
 ## Updating vs deleting
 
 Prefer update when the core identity of the memory is the same but details changed.
+Common triggers: a decision was revised, a fix turned out incomplete, a constraint relaxed
+or tightened, or new information extends what was already stored. Update proactively
+whenever work in the current session makes a stored memory stale or incomplete.
+
 Delete only when the memory is fully obsolete or factually wrong with no salvageable parts.
 Updating content triggers re-embedding automatically.
 Pass summary as empty string ("") to clear it.

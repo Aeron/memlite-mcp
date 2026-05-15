@@ -14,12 +14,12 @@ use rmcp::{
 };
 use tokio::sync::{Notify, OnceCell};
 
-const INSTRUCTIONS: &str = include_str!("instructions.md");
-
 use super::params::{
     DeleteParams, ListParams, SearchParams, StoreParams, TagsParams, UpdateParams,
 };
 use crate::{config::Config, db::MemoryStore, embedding::EmbeddingService};
+
+const INSTRUCTIONS: &str = include_str!("instructions.md");
 
 #[derive(Clone)]
 pub struct MemServer {
