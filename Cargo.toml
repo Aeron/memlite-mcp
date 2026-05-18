@@ -2,6 +2,14 @@
 name = "memlite-mcp"
 version = "0.1.0"
 edition = "2024"
+authors = ["Eugene \"Aeron\" Glybin"]
+description = "Persistent memory MCP server for AI agents using local SQLite storage and ONNX embeddings."
+categories = ["command-line-utilities", "development-tools"]
+keywords = ["mcp", "memory", "agent", "embeddings", "sqlite"]
+license = "Zlib"
+readme = "README.md"
+repository = "https://github.com/Aeron/memlite-mcp"
+include = ["/src/**/*", "/docs/**/*.md", "/LICENSE", "/README.md"]
 
 [dependencies]
 # MCP server: official Rust SDK with stdio transport and tool macros
@@ -52,7 +60,7 @@ path = "src/main.rs"
 [profile.bench]
 inherits = "release"
 # Keeping debug info and symbols for profiling the bench runner;
-# does not affect the spawned binary's runtime performance.
+# does not affect the spawned binary's runtime performance
 strip = false
 debug = 1
 

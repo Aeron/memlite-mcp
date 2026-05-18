@@ -40,7 +40,6 @@ const SEED_CONTENT: &[&str] = &[
 /// Communicates using newline-delimited JSON (one complete object per line),
 /// which is the MCP stdio transport format.
 struct McpClient {
-    // Holding the child alive; kills it on drop.
     _child: Child,
     stdin: BufWriter<ChildStdin>,
     stdout: BufReader<ChildStdout>,
@@ -223,7 +222,7 @@ fn bench_write(c: &mut Criterion) {
     let tmp = TempDir::new().unwrap();
     let mut client = McpClient::new(tmp.path());
     // Priming the ONNX runtime before the timed section; first call includes
-    // JIT compilation of the ONNX graph which is a one-time cost.
+    // JIT compilation of the ONNX graph which is a one-time cost
     client.store("warmup", &[]);
 
     let mut group = c.benchmark_group("write");
@@ -238,7 +237,7 @@ fn bench_write(c: &mut Criterion) {
 fn bench_search(c: &mut Criterion) {
     let tmp = TempDir::new().unwrap();
     let mut client = McpClient::new(tmp.path());
-    // Seeding 100 memories; primes the ONNX runtime as a side effect.
+    // Seeding 100 memories; primes the ONNX runtime as a side effect
     seed(&mut client, 100);
 
     let mut group = c.benchmark_group("search");
