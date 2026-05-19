@@ -15,6 +15,12 @@ pub struct StoreParams {
     /// matters, how it fits the bigger picture, or anything that gives meaning
     /// beyond what the content itself conveys.
     pub context: Option<String>,
+    /// Initial confidence score in [0, 1] (default 1.0); lower values indicate
+    /// uncertain or potentially outdated information.
+    pub confidence: Option<f64>,
+    /// Per-day confidence decay rate in [0, 1] (default 0.0); 0.01 reduces
+    /// confidence by 1% per day since the last validation.
+    pub decay_rate: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -58,4 +64,8 @@ pub struct UpdateParams {
     pub tags: Option<Vec<String>>,
     /// Replacement context; pass empty string to clear the field.
     pub context: Option<String>,
+    /// Replacement confidence score; clamped to [0, 1].
+    pub confidence: Option<f64>,
+    /// Replacement per-day confidence decay rate; clamped to [0, 1].
+    pub decay_rate: Option<f64>,
 }

@@ -18,11 +18,25 @@ const MIGRATIONS: &[&[&str]] = &[
     ],
     // v1 -> v2: adds optional context column for storing background rationale
     &["alter table memories add column context text"],
+    // v2 -> v3: adds confidence decay fields
+    &[
+        "alter table memories add column confidence real not null default 1.0",
+        "alter table memories add column decay_rate real not null default 0.0",
+        "alter table memories add column last_seen_at integer not null default 0",
+    ],
 ];
 
 /// Applies all pending migrations, bumping `PRAGMA user_version` after each one.
 pub async fn run(conn: &libsql::Connection) -> Result<()> {
     let version = user_version(conn).await?;
+    let total = MIGRATIONS.len();
+    if version > total {
+        tracing::warn!(
+            db_version = version,
+            code_version = total,
+            "database schema is newer than this binary; some fields may be unrecognised"
+        );
+    }
     for (i, stmts) in MIGRATIONS.iter().enumerate().skip(version) {
         for stmt in *stmts {
             conn.execute(stmt, ()).await?;

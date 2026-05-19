@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::{Result, anyhow};
 
-/// A single stored memory row.
+/// Represents a single stored memory row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
     /// Row identifier assigned by the database.
@@ -24,6 +24,40 @@ pub struct Memory {
     pub updated_at: i64,
     /// Background rationale: why this memory matters, how decisions were reached, etc.
     pub context: Option<String>,
+    /// Base confidence score in [0, 1]; 1.0 means fully trusted.
+    pub confidence: f64,
+    /// Per-day confidence decay rate; 0.0 means no decay.
+    pub decay_rate: f64,
+    /// Unix timestamp (seconds) when it was last seen (or confidence validated).
+    /// 0 means the created_at timestamp is used as the baseline.
+    pub last_seen_at: i64,
+}
+
+impl Memory {
+    /// Computes the current effective confidence after applying time-based decay.
+    ///
+    /// Returns `confidence` unchanged when `decay_rate` is zero or non-positive.
+    /// Falls back to `created_at` as the validation baseline when `last_seen_at` is 0.
+    /// Result is clamped to [0.0, 1.0].
+    pub fn effective_confidence(&self) -> f64 {
+        if self.decay_rate <= 0.0 {
+            return self.confidence.clamp(0.0, 1.0);
+        }
+        let seen_at = if self.last_seen_at > 0 {
+            self.last_seen_at
+        } else {
+            self.created_at
+        };
+        let now = unix_secs();
+        let days = ((now - seen_at).max(0) as f64) / 86400.0;
+        (self.confidence - self.decay_rate * days).clamp(0.0, 1.0)
+    }
+
+    /// Returns the number of whole days since this memory was last modified.
+    pub fn age_days(&self) -> u64 {
+        let now = unix_secs();
+        ((now - self.updated_at).max(0) as u64) / 86400
+    }
 }
 
 /// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
@@ -55,6 +89,9 @@ impl MemoryStore {
     }
 
     /// Inserts a new memory and returns its rowid.
+    ///
+    /// `confidence` defaults to 1.0 and `decay_rate` defaults to 0.0 when None.
+    /// Both are clamped to [0.0, 1.0].
     pub async fn insert(
         &self,
         content: &str,
@@ -63,20 +100,26 @@ impl MemoryStore {
         agent: &str,
         embedding: &[f32],
         context: Option<&str>,
+        confidence: Option<f64>,
+        decay_rate: Option<f64>,
     ) -> Result<i64> {
         let conn = self.conn()?;
         let tags_json = serde_json::to_string(tags)?;
         let now = unix_secs();
         let emb_blob = floats_to_blob(embedding);
+        let confidence = confidence.unwrap_or(1.0).clamp(0.0, 1.0);
+        let decay_rate = decay_rate.unwrap_or(0.0).clamp(0.0, 1.0);
 
         let mut rows = conn
             .query(
                 "insert into memories
-                    (content, summary, tags, agent, embedding, created_at, updated_at, context)
-                values (?, ?, ?, ?, ?, ?, ?, ?)
+                    (content, summary, tags, agent, embedding, created_at, updated_at, context,
+                     confidence, decay_rate, last_seen_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 returning rowid",
                 libsql::params![
-                    content, summary, tags_json, agent, emb_blob, now, now, context
+                    content, summary, tags_json, agent, emb_blob, now, now, context, confidence,
+                    decay_rate, now
                 ],
             )
             .await?;
@@ -90,9 +133,14 @@ impl MemoryStore {
 
     /// Returns memories ordered by cosine distance to `query_embedding`.
     ///
+    /// Fetches up to `limit * 4` candidates from the database (capped at 400),
+    /// then re-ranks by word-overlap between `query_text` and each memory's content.
+    /// Tie-breaks on cosine distance (ascending). Returns the top `limit` results.
+    ///
     /// Optionally pre-filters by `agent_id` and/or `tags` (all supplied tags must match).
     pub async fn search(
         &self,
+        query_text: &str,
         query_embedding: &[f32],
         agent_id: Option<&str>,
         tags: Option<&[String]>,
@@ -100,14 +148,17 @@ impl MemoryStore {
     ) -> Result<Vec<(Memory, f64)>> {
         let conn = self.conn()?;
         let emb_blob = floats_to_blob(query_embedding);
+        let candidate_limit = (limit as i64).saturating_mul(4).min(400);
         let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
         let where_sql = build_where(agent_id, tags, &mut params)?;
-        params.push(Value::Integer(limit as i64));
+        params.push(Value::Integer(candidate_limit));
 
+        // dist is placed last so parse_memory_row can use a fixed column range (0-10)
         let sql = format!(
             "select
                 rowid, content, summary, tags, agent,
                 created_at, updated_at, context,
+                confidence, decay_rate, last_seen_at,
                 vector_distance_cos(embedding, ?) as dist
             from memories
             {where_sql}
@@ -119,10 +170,10 @@ impl MemoryStore {
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let memory = parse_memory_row(&row)?;
-            let dist: f64 = row.get(8)?;
+            let dist: f64 = row.get(11)?;
             results.push((memory, dist));
         }
-        Ok(results)
+        Ok(rerank_by_overlap(query_text, results, limit as usize))
     }
 
     /// Returns memories ordered by creation time, newest first.
@@ -143,7 +194,8 @@ impl MemoryStore {
 
         let sql = format!(
             "select
-                rowid, content, summary, tags, agent, created_at, updated_at, context
+                rowid, content, summary, tags, agent, created_at, updated_at, context,
+                confidence, decay_rate, last_seen_at
             from memories
             {where_sql}
             order by created_at desc
@@ -195,6 +247,9 @@ impl MemoryStore {
     /// - `context = Some("")` clears the context (sets to NULL).
     /// - Supplying a new `embedding` alongside updated content keeps the index
     ///   consistent; pass None to leave the stored vector unchanged.
+    /// - `confidence` and `decay_rate` are clamped to [0.0, 1.0] when provided.
+    /// - `last_seen_at` is always bumped to now when any field is updated,
+    ///   resetting the confidence decay clock.
     /// - Returns true when at least one row was modified.
     pub async fn update(
         &self,
@@ -204,12 +259,16 @@ impl MemoryStore {
         tags: Option<&[String]>,
         embedding: Option<&[f32]>,
         context: Option<&str>,
+        confidence: Option<f64>,
+        decay_rate: Option<f64>,
     ) -> Result<bool> {
         if content.is_none()
             && summary.is_none()
             && tags.is_none()
             && embedding.is_none()
             && context.is_none()
+            && confidence.is_none()
+            && decay_rate.is_none()
         {
             return Ok(false);
         }
@@ -248,7 +307,19 @@ impl MemoryStore {
                 Value::Text(ctx.to_owned())
             });
         }
+        if let Some(c) = confidence {
+            set_clauses.push("confidence = ?");
+            params.push(Value::Real(c.clamp(0.0, 1.0)));
+        }
+        if let Some(dr) = decay_rate {
+            set_clauses.push("decay_rate = ?");
+            params.push(Value::Real(dr.clamp(0.0, 1.0)));
+        }
+        // Always bump both timestamps: updated_at records the data change,
+        // last_seen_at resets the confidence decay clock
         set_clauses.push("updated_at = ?");
+        params.push(Value::Integer(now));
+        set_clauses.push("last_seen_at = ?");
         params.push(Value::Integer(now));
         params.push(Value::Integer(id));
 
@@ -291,6 +362,11 @@ fn build_where(
 }
 
 /// Deserialises a database row into a [`Memory`] value.
+///
+/// Expects columns in the order selected by `list` and `search`:
+/// 0=rowid, 1=content, 2=summary, 3=tags, 4=agent,
+/// 5=created_at, 6=updated_at, 7=context,
+/// 8=confidence, 9=decay_rate, 10=last_seen_at.
 fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
@@ -308,6 +384,9 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         Value::Text(s) => Some(s),
         other => return Err(anyhow!("unexpected type for context: {other:?}")),
     };
+    let confidence: f64 = row.get(8)?;
+    let decay_rate: f64 = row.get(9)?;
+    let last_seen_at: i64 = row.get(10)?;
 
     let tags: Vec<String> = serde_json::from_str(&tags_json)?;
 
@@ -320,7 +399,57 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         created_at,
         updated_at,
         context,
+        confidence,
+        decay_rate,
+        last_seen_at,
     })
+}
+
+/// Re-ranks candidates by word-overlap between the query and each memory's content.
+///
+/// Computes the fraction of query words (length >= 2) that appear in each
+/// candidate's content. Sorts by overlap descending, breaking ties by cosine
+/// distance ascending. Truncates to `limit`.
+///
+/// When the query has no usable words, the original cosine-distance order is preserved.
+fn rerank_by_overlap(
+    query: &str,
+    mut candidates: Vec<(Memory, f64)>,
+    limit: usize,
+) -> Vec<(Memory, f64)> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let words: Vec<String> = query
+        .split_whitespace()
+        .filter_map(|w| {
+            let w = w
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase();
+            if w.len() < 2 { None } else { Some(w) }
+        })
+        .collect();
+    if words.is_empty() {
+        candidates.truncate(limit);
+        return candidates;
+    }
+    let mut scored: Vec<(Memory, f64, f64)> = candidates
+        .into_iter()
+        .map(|(m, dist)| {
+            let lower = m.content.to_lowercase();
+            let hits = words.iter().filter(|w| lower.contains(w.as_str())).count();
+            let overlap = hits as f64 / words.len() as f64;
+            (m, dist, overlap)
+        })
+        .collect();
+    // Higher overlap first; lower cosine distance as tiebreaker
+    scored.sort_by(|a, b| {
+        b.2.partial_cmp(&a.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    scored.truncate(limit);
+    scored.into_iter().map(|(m, dist, _)| (m, dist)).collect()
 }
 
 /// Packs a float slice as little-endian IEEE 754 bytes, matching libsql's `float32` vector format.
@@ -380,7 +509,7 @@ mod tests {
     async fn insert_returns_positive_id() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("hello", None, &[], "", &V1, None)
+            .insert("hello", None, &[], "", &V1, None, None, None)
             .await
             .unwrap();
         assert!(id > 0);
@@ -404,6 +533,8 @@ mod tests {
                 "bot",
                 &V1,
                 Some("why it matters"),
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -416,17 +547,33 @@ mod tests {
         assert_eq!(m.tags, ["tag"]);
         assert_eq!(m.agent, "bot");
         assert_eq!(m.context.as_deref(), Some("why it matters"));
+        // Defaults
+        assert_eq!(m.confidence, 1.0);
+        assert_eq!(m.decay_rate, 0.0);
+        assert!(m.last_seen_at > 0);
+    }
+
+    #[tokio::test]
+    async fn insert_stores_confidence_and_decay_rate() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert("x", None, &[], "", &V1, None, Some(0.7), Some(0.01))
+            .await
+            .unwrap();
+        let rows = store.list(None, None, 1, 0).await.unwrap();
+        assert_eq!(rows[0].confidence, 0.7);
+        assert_eq!(rows[0].decay_rate, 0.01);
     }
 
     #[tokio::test]
     async fn list_filters_by_agent() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("a", None, &[], "alice", &V1, None)
+            .insert("a", None, &[], "alice", &V1, None, None, None)
             .await
             .unwrap();
         store
-            .insert("b", None, &[], "bob", &V1, None)
+            .insert("b", None, &[], "bob", &V1, None, None, None)
             .await
             .unwrap();
 
@@ -443,7 +590,7 @@ mod tests {
         let (store, _tmp) = fresh().await;
         for i in 0..5 {
             store
-                .insert(&format!("item {i}"), None, &[], "", &V1, None)
+                .insert(&format!("item {i}"), None, &[], "", &V1, None, None, None)
                 .await
                 .unwrap();
         }
@@ -459,7 +606,10 @@ mod tests {
     #[tokio::test]
     async fn delete_existing_returns_true() {
         let (store, _tmp) = fresh().await;
-        let id = store.insert("x", None, &[], "", &V1, None).await.unwrap();
+        let id = store
+            .insert("x", None, &[], "", &V1, None, None, None)
+            .await
+            .unwrap();
         assert!(store.delete(id).await.unwrap());
         assert!(store.list(None, None, 10, 0).await.unwrap().is_empty());
     }
@@ -474,14 +624,26 @@ mod tests {
     async fn list_filters_by_tags() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("a", None, &["bug".into(), "config".into()], "", &V1, None)
+            .insert(
+                "a",
+                None,
+                &["bug".into(), "config".into()],
+                "",
+                &V1,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         store
-            .insert("b", None, &["bug".into()], "", &V1, None)
+            .insert("b", None, &["bug".into()], "", &V1, None, None, None)
             .await
             .unwrap();
-        store.insert("c", None, &[], "", &V1, None).await.unwrap();
+        store
+            .insert("c", None, &[], "", &V1, None, None, None)
+            .await
+            .unwrap();
 
         let bug_only = store
             .list(None, Some(&["bug".into()]), 10, 0)
@@ -505,16 +667,16 @@ mod tests {
     async fn search_filters_by_tags() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("tagged", None, &["rust".into()], "", &V1, None)
+            .insert("tagged", None, &["rust".into()], "", &V1, None, None, None)
             .await
             .unwrap();
         store
-            .insert("untagged", None, &[], "", &V2, None)
+            .insert("untagged", None, &[], "", &V2, None, None, None)
             .await
             .unwrap();
 
         let results = store
-            .search(&V1, None, Some(&["rust".into()]), 10)
+            .search("", &V1, None, Some(&["rust".into()]), 10)
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -525,14 +687,26 @@ mod tests {
     async fn tags_returns_counts() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("x", None, &["a".into(), "b".into()], "", &V1, None)
+            .insert(
+                "x",
+                None,
+                &["a".into(), "b".into()],
+                "",
+                &V1,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         store
-            .insert("y", None, &["a".into()], "", &V1, None)
+            .insert("y", None, &["a".into()], "", &V1, None, None, None)
             .await
             .unwrap();
-        store.insert("z", None, &[], "", &V1, None).await.unwrap();
+        store
+            .insert("z", None, &[], "", &V1, None, None, None)
+            .await
+            .unwrap();
 
         let counts = store.tags(None).await.unwrap();
         assert_eq!(counts.len(), 2);
@@ -545,7 +719,16 @@ mod tests {
     async fn tags_filters_by_agent() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("x", None, &["shared".into()], "alice", &V1, None)
+            .insert(
+                "x",
+                None,
+                &["shared".into()],
+                "alice",
+                &V1,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         store
@@ -555,6 +738,8 @@ mod tests {
                 &["shared".into(), "private".into()],
                 "bob",
                 &V1,
+                None,
+                None,
                 None,
             )
             .await
@@ -569,10 +754,13 @@ mod tests {
     #[tokio::test]
     async fn update_content() {
         let (store, _tmp) = fresh().await;
-        let id = store.insert("old", None, &[], "", &V1, None).await.unwrap();
+        let id = store
+            .insert("old", None, &[], "", &V1, None, None, None)
+            .await
+            .unwrap();
         assert!(
             store
-                .update(id, Some("new"), None, None, None, None)
+                .update(id, Some("new"), None, None, None, None, None, None)
                 .await
                 .unwrap()
         );
@@ -586,11 +774,11 @@ mod tests {
     async fn update_clears_summary_on_empty_string() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("x", Some("summ"), &[], "", &V1, None)
+            .insert("x", Some("summ"), &[], "", &V1, None, None, None)
             .await
             .unwrap();
         store
-            .update(id, None, Some(""), None, None, None)
+            .update(id, None, Some(""), None, None, None, None, None)
             .await
             .unwrap();
         assert!(
@@ -604,11 +792,11 @@ mod tests {
     async fn update_clears_context_on_empty_string() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("x", None, &[], "", &V1, Some("initial context"))
+            .insert("x", None, &[], "", &V1, Some("initial context"), None, None)
             .await
             .unwrap();
         store
-            .update(id, None, None, None, None, Some(""))
+            .update(id, None, None, None, None, Some(""), None, None)
             .await
             .unwrap();
         assert!(
@@ -623,7 +811,7 @@ mod tests {
         let (store, _tmp) = fresh().await;
         assert!(
             !store
-                .update(999, Some("x"), None, None, None, None)
+                .update(999, Some("x"), None, None, None, None, None, None)
                 .await
                 .unwrap()
         );
@@ -632,13 +820,97 @@ mod tests {
     #[tokio::test]
     async fn update_no_fields_returns_false() {
         let (store, _tmp) = fresh().await;
-        let id = store.insert("x", None, &[], "", &V1, None).await.unwrap();
+        let id = store
+            .insert("x", None, &[], "", &V1, None, None, None)
+            .await
+            .unwrap();
         assert!(
             !store
-                .update(id, None, None, None, None, None)
+                .update(id, None, None, None, None, None, None, None)
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn update_confidence_and_decay_rate() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert("x", None, &[], "", &V1, None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .update(id, None, None, None, None, None, Some(0.6), Some(0.02))
+                .await
+                .unwrap()
+        );
+        let m = &store.list(None, None, 1, 0).await.unwrap()[0];
+        assert_eq!(m.confidence, 0.6);
+        assert_eq!(m.decay_rate, 0.02);
+    }
+
+    #[tokio::test]
+    async fn update_bumps_last_seen_at() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert("x", None, &[], "", &V1, None, None, None)
+            .await
+            .unwrap();
+        let before = store.list(None, None, 1, 0).await.unwrap()[0].last_seen_at;
+        // Small sleep so the new timestamp is strictly greater
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        store
+            .update(id, Some("updated"), None, None, None, None, None, None)
+            .await
+            .unwrap();
+        let after = store.list(None, None, 1, 0).await.unwrap()[0].last_seen_at;
+        assert!(after > before, "last_seen_at should increase after update");
+    }
+
+    #[tokio::test]
+    async fn effective_confidence_no_decay() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert("x", None, &[], "", &V1, None, Some(0.8), Some(0.0))
+            .await
+            .unwrap();
+        let m = &store.list(None, None, 1, 0).await.unwrap()[0];
+        assert_eq!(m.effective_confidence(), 0.8);
+    }
+
+    #[tokio::test]
+    async fn effective_confidence_decays_over_time() {
+        // Confidence starts at 1.0 with a very high decay rate so even a
+        // sub-second-old memory drops visibly when we fake an old seen_at
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert("x", None, &[], "", &V1, None, Some(1.0), Some(0.5))
+            .await
+            .unwrap();
+        // Forcing last_seen_at to 30 days ago via a direct update
+        let thirty_days_ago = unix_secs() - 30 * 86400;
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "update memories set last_seen_at = ? where rowid = ?",
+            libsql::params![thirty_days_ago, id],
+        )
+        .await
+        .unwrap();
+        let m = &store.list(None, None, 1, 0).await.unwrap()[0];
+        // 30 days * 0.5/day = 15 decay: 1.0 - 15 = -14, clamped to 0.0
+        assert_eq!(m.effective_confidence(), 0.0);
+    }
+
+    #[tokio::test]
+    async fn age_days_freshly_inserted() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert("x", None, &[], "", &V1, None, None, None)
+            .await
+            .unwrap();
+        let m = &store.list(None, None, 1, 0).await.unwrap()[0];
+        assert_eq!(m.age_days(), 0);
     }
 
     #[tokio::test]
@@ -647,15 +919,16 @@ mod tests {
         // V1=[1,0] and V2=[0,1] are orthogonal unit vectors; cosine distance
         // between V1 and V1 is 0, between V1 and V2 is 1
         let id1 = store
-            .insert("first", None, &[], "", &V1, None)
+            .insert("first", None, &[], "", &V1, None, None, None)
             .await
             .unwrap();
         let id2 = store
-            .insert("second", None, &[], "", &V2, None)
+            .insert("second", None, &[], "", &V2, None, None, None)
             .await
             .unwrap();
 
-        let results = store.search(&V1, None, None, 2).await.unwrap();
+        // Empty query: no word-overlap re-ranking, pure cosine order preserved
+        let results = store.search("", &V1, None, None, 2).await.unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(
             results[0].0.id, id1,
@@ -669,19 +942,113 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_filters_by_agent() {
+    async fn search_reranks_by_word_overlap() {
         let (store, _tmp) = fresh().await;
+        // V1 is closer to the query vector but the content doesn't match the query words.
+        // V2 has matching content and should rank first after re-ranking
         store
-            .insert("alice", None, &[], "alice", &V1, None)
+            .insert("unrelated content", None, &[], "", &V1, None, None, None)
             .await
             .unwrap();
-        store
-            .insert("bob", None, &[], "bob", &V1, None)
+        let id2 = store
+            .insert(
+                "rust programming language",
+                None,
+                &[],
+                "",
+                &V2,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
 
-        let results = store.search(&V1, Some("alice"), None, 10).await.unwrap();
+        // Query vector identical to V1 (so cosine order would put the first item first),
+        // but query text matches the second item
+        let results = store
+            .search("rust programming", &V1, None, None, 2)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0].0.id, id2,
+            "word-overlap re-rank should put the matching item first"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_filters_by_agent() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert("alice", None, &[], "alice", &V1, None, None, None)
+            .await
+            .unwrap();
+        store
+            .insert("bob", None, &[], "bob", &V1, None, None, None)
+            .await
+            .unwrap();
+
+        let results = store
+            .search("", &V1, Some("alice"), None, 10)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0.agent, "alice");
+    }
+
+    #[test]
+    fn rerank_empty_query_preserves_cosine_order() {
+        let make = |content: &str, dist: f64| -> (Memory, f64) {
+            (
+                Memory {
+                    id: 1,
+                    content: content.to_owned(),
+                    summary: None,
+                    tags: vec![],
+                    agent: String::new(),
+                    created_at: 0,
+                    updated_at: 0,
+                    context: None,
+                    confidence: 1.0,
+                    decay_rate: 0.0,
+                    last_seen_at: 0,
+                },
+                dist,
+            )
+        };
+        let candidates = vec![make("a", 0.1), make("b", 0.5), make("c", 0.9)];
+        let ranked = rerank_by_overlap("", candidates, 3);
+        assert_eq!(ranked[0].0.content, "a");
+        assert_eq!(ranked[1].0.content, "b");
+        assert_eq!(ranked[2].0.content, "c");
+    }
+
+    #[test]
+    fn rerank_overlap_beats_distance() {
+        let make = |content: &str, dist: f64| -> (Memory, f64) {
+            (
+                Memory {
+                    id: 1,
+                    content: content.to_owned(),
+                    summary: None,
+                    tags: vec![],
+                    agent: String::new(),
+                    created_at: 0,
+                    updated_at: 0,
+                    context: None,
+                    confidence: 1.0,
+                    decay_rate: 0.0,
+                    last_seen_at: 0,
+                },
+                dist,
+            )
+        };
+        // "rust tips" is farther (dist 0.9) but has two-word overlap.
+        // "python docs" is closer (dist 0.1) but has no overlap
+        let candidates = vec![make("python docs", 0.1), make("rust tips guide", 0.9)];
+        let ranked = rerank_by_overlap("rust tips", candidates, 2);
+        assert_eq!(ranked[0].0.content, "rust tips guide");
+        assert_eq!(ranked[1].0.content, "python docs");
     }
 }

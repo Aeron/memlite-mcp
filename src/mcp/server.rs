@@ -142,6 +142,8 @@ impl MemServer {
                 &self.config.agent,
                 &embedding,
                 p.context.as_deref(),
+                p.confidence,
+                p.decay_rate,
             )
             .await
             .map_err(ServerError::StoreOp)?;
@@ -166,11 +168,12 @@ impl MemServer {
         };
         let embedding = self
             .embedding
-            .embed(p.query)
+            .embed(p.query.clone())
             .await
             .map_err(ServerError::Embed)?;
         let results = store
             .search(
+                &p.query,
                 &embedding,
                 self.config.agent_filter(),
                 p.tags.as_deref(),
@@ -183,15 +186,17 @@ impl MemServer {
             .into_iter()
             .map(|(m, dist)| {
                 serde_json::json!({
-                    "id":         m.id,
-                    "content":    m.content,
-                    "summary":    m.summary,
-                    "tags":       m.tags,
-                    "agent":      m.agent,
-                    "created_at": m.created_at,
-                    "updated_at": m.updated_at,
-                    "context":    m.context,
-                    "distance":   dist,
+                    "id":                   m.id,
+                    "content":              m.content,
+                    "summary":              m.summary,
+                    "tags":                 m.tags,
+                    "agent":                m.agent,
+                    "created_at":           m.created_at,
+                    "updated_at":           m.updated_at,
+                    "context":              m.context,
+                    "distance":             dist,
+                    "effective_confidence": m.effective_confidence(),
+                    "age_days":             m.age_days(),
                 })
             })
             .collect();
@@ -218,8 +223,29 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        let body = serde_json::to_string(&memories).unwrap();
-        Ok(CallToolResult::success(vec![Content::text(body)]))
+        let body: Vec<_> = memories
+            .into_iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id":                   m.id,
+                    "content":              m.content,
+                    "summary":              m.summary,
+                    "tags":                 m.tags,
+                    "agent":                m.agent,
+                    "created_at":           m.created_at,
+                    "updated_at":           m.updated_at,
+                    "context":              m.context,
+                    "confidence":           m.confidence,
+                    "decay_rate":           m.decay_rate,
+                    "last_seen_at":    m.last_seen_at,
+                    "effective_confidence": m.effective_confidence(),
+                    "age_days":             m.age_days(),
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&body).unwrap(),
+        )]))
     }
 
     /// Returns each distinct tag with its occurrence count, ordered by frequency.
@@ -277,8 +303,16 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<UpdateParams>,
     ) -> Result<CallToolResult, McpError> {
-        if p.content.is_none() && p.summary.is_none() && p.tags.is_none() && p.context.is_none() {
-            return tool_err("at least one of content, summary, tags, or context must be provided");
+        if p.content.is_none()
+            && p.summary.is_none()
+            && p.tags.is_none()
+            && p.context.is_none()
+            && p.confidence.is_none()
+            && p.decay_rate.is_none()
+        {
+            return tool_err(
+                "at least one of content, summary, tags, context, confidence, or decay_rate must be provided",
+            );
         }
 
         let Some(store) = self.store_if_present().await? else {
@@ -303,6 +337,8 @@ impl MemServer {
                 p.tags.as_deref(),
                 new_embedding.as_deref(),
                 p.context.as_deref(),
+                p.confidence,
+                p.decay_rate,
             )
             .await
             .map_err(ServerError::StoreOp)?;
