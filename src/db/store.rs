@@ -60,6 +60,42 @@ impl Memory {
     }
 }
 
+/// Holds the optional metadata fields for inserting a new memory row.
+#[derive(Default)]
+pub struct InsertOptions<'a> {
+    /// Short label for list views.
+    pub summary: Option<&'a str>,
+    /// Category labels stored as a JSON array.
+    pub tags: &'a [String],
+    /// Agent identifier; empty string means no specific agent.
+    pub agent: &'a str,
+    /// Background rationale for the memory.
+    pub context: Option<&'a str>,
+    /// Base trust score in [0.0, 1.0]; defaults to 1.0.
+    pub confidence: Option<f64>,
+    /// Per-day confidence decay in [0.0, 1.0]; defaults to 0.0.
+    pub decay_rate: Option<f64>,
+}
+
+/// Holds the fields that can be updated on an existing memory row.
+#[derive(Default)]
+pub struct UpdateOptions<'a> {
+    /// Replacement content; triggers re-embedding when provided.
+    pub content: Option<&'a str>,
+    /// Replacement summary; pass Some("") to clear.
+    pub summary: Option<&'a str>,
+    /// Replacement tags.
+    pub tags: Option<&'a [String]>,
+    /// Replacement embedding vector.
+    pub embedding: Option<&'a [f32]>,
+    /// Replacement context; pass Some("") to clear.
+    pub context: Option<&'a str>,
+    /// Replacement confidence score.
+    pub confidence: Option<f64>,
+    /// Replacement per-day decay rate.
+    pub decay_rate: Option<f64>,
+}
+
 /// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
 /// type is cheaply [`Clone`] without any mutex contention.
 #[derive(Clone)]
@@ -95,14 +131,17 @@ impl MemoryStore {
     pub async fn insert(
         &self,
         content: &str,
-        summary: Option<&str>,
-        tags: &[String],
-        agent: &str,
         embedding: &[f32],
-        context: Option<&str>,
-        confidence: Option<f64>,
-        decay_rate: Option<f64>,
+        opts: InsertOptions<'_>,
     ) -> Result<i64> {
+        let InsertOptions {
+            summary,
+            tags,
+            agent,
+            context,
+            confidence,
+            decay_rate,
+        } = opts;
         let conn = self.conn()?;
         let tags_json = serde_json::to_string(tags)?;
         let now = unix_secs();
@@ -251,17 +290,16 @@ impl MemoryStore {
     /// - `last_seen_at` is always bumped to now when any field is updated,
     ///   resetting the confidence decay clock.
     /// - Returns true when at least one row was modified.
-    pub async fn update(
-        &self,
-        id: i64,
-        content: Option<&str>,
-        summary: Option<&str>,
-        tags: Option<&[String]>,
-        embedding: Option<&[f32]>,
-        context: Option<&str>,
-        confidence: Option<f64>,
-        decay_rate: Option<f64>,
-    ) -> Result<bool> {
+    pub async fn update(&self, id: i64, opts: UpdateOptions<'_>) -> Result<bool> {
+        let UpdateOptions {
+            content,
+            summary,
+            tags,
+            embedding,
+            context,
+            confidence,
+            decay_rate,
+        } = opts;
         if content.is_none()
             && summary.is_none()
             && tags.is_none()
@@ -509,7 +547,7 @@ mod tests {
     async fn insert_returns_positive_id() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("hello", None, &[], "", &V1, None, None, None)
+            .insert("hello", &V1, InsertOptions::default())
             .await
             .unwrap();
         assert!(id > 0);
@@ -528,13 +566,14 @@ mod tests {
         let id = store
             .insert(
                 "content",
-                Some("summ"),
-                &["tag".into()],
-                "bot",
                 &V1,
-                Some("why it matters"),
-                None,
-                None,
+                InsertOptions {
+                    summary: Some("summ"),
+                    tags: &["tag".into()],
+                    agent: "bot",
+                    context: Some("why it matters"),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -557,7 +596,15 @@ mod tests {
     async fn insert_stores_confidence_and_decay_rate() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("x", None, &[], "", &V1, None, Some(0.7), Some(0.01))
+            .insert(
+                "x",
+                &V1,
+                InsertOptions {
+                    confidence: Some(0.7),
+                    decay_rate: Some(0.01),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         let rows = store.list(None, None, 1, 0).await.unwrap();
@@ -569,11 +616,25 @@ mod tests {
     async fn list_filters_by_agent() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("a", None, &[], "alice", &V1, None, None, None)
+            .insert(
+                "a",
+                &V1,
+                InsertOptions {
+                    agent: "alice",
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         store
-            .insert("b", None, &[], "bob", &V1, None, None, None)
+            .insert(
+                "b",
+                &V1,
+                InsertOptions {
+                    agent: "bob",
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
 
@@ -590,7 +651,7 @@ mod tests {
         let (store, _tmp) = fresh().await;
         for i in 0..5 {
             store
-                .insert(&format!("item {i}"), None, &[], "", &V1, None, None, None)
+                .insert(&format!("item {i}"), &V1, InsertOptions::default())
                 .await
                 .unwrap();
         }
@@ -607,7 +668,7 @@ mod tests {
     async fn delete_existing_returns_true() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("x", None, &[], "", &V1, None, None, None)
+            .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
         assert!(store.delete(id).await.unwrap());
@@ -626,22 +687,27 @@ mod tests {
         store
             .insert(
                 "a",
-                None,
-                &["bug".into(), "config".into()],
-                "",
                 &V1,
-                None,
-                None,
-                None,
+                InsertOptions {
+                    tags: &["bug".into(), "config".into()],
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
         store
-            .insert("b", None, &["bug".into()], "", &V1, None, None, None)
+            .insert(
+                "b",
+                &V1,
+                InsertOptions {
+                    tags: &["bug".into()],
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         store
-            .insert("c", None, &[], "", &V1, None, None, None)
+            .insert("c", &V1, InsertOptions::default())
             .await
             .unwrap();
 
@@ -667,11 +733,18 @@ mod tests {
     async fn search_filters_by_tags() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("tagged", None, &["rust".into()], "", &V1, None, None, None)
+            .insert(
+                "tagged",
+                &V1,
+                InsertOptions {
+                    tags: &["rust".into()],
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         store
-            .insert("untagged", None, &[], "", &V2, None, None, None)
+            .insert("untagged", &V2, InsertOptions::default())
             .await
             .unwrap();
 
@@ -689,22 +762,27 @@ mod tests {
         store
             .insert(
                 "x",
-                None,
-                &["a".into(), "b".into()],
-                "",
                 &V1,
-                None,
-                None,
-                None,
+                InsertOptions {
+                    tags: &["a".into(), "b".into()],
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
         store
-            .insert("y", None, &["a".into()], "", &V1, None, None, None)
+            .insert(
+                "y",
+                &V1,
+                InsertOptions {
+                    tags: &["a".into()],
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         store
-            .insert("z", None, &[], "", &V1, None, None, None)
+            .insert("z", &V1, InsertOptions::default())
             .await
             .unwrap();
 
@@ -721,26 +799,24 @@ mod tests {
         store
             .insert(
                 "x",
-                None,
-                &["shared".into()],
-                "alice",
                 &V1,
-                None,
-                None,
-                None,
+                InsertOptions {
+                    tags: &["shared".into()],
+                    agent: "alice",
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
         store
             .insert(
                 "y",
-                None,
-                &["shared".into(), "private".into()],
-                "bob",
                 &V1,
-                None,
-                None,
-                None,
+                InsertOptions {
+                    tags: &["shared".into(), "private".into()],
+                    agent: "bob",
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -755,12 +831,18 @@ mod tests {
     async fn update_content() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("old", None, &[], "", &V1, None, None, None)
+            .insert("old", &V1, InsertOptions::default())
             .await
             .unwrap();
         assert!(
             store
-                .update(id, Some("new"), None, None, None, None, None, None)
+                .update(
+                    id,
+                    UpdateOptions {
+                        content: Some("new"),
+                        ..Default::default()
+                    }
+                )
                 .await
                 .unwrap()
         );
@@ -774,11 +856,24 @@ mod tests {
     async fn update_clears_summary_on_empty_string() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("x", Some("summ"), &[], "", &V1, None, None, None)
+            .insert(
+                "x",
+                &V1,
+                InsertOptions {
+                    summary: Some("summ"),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         store
-            .update(id, None, Some(""), None, None, None, None, None)
+            .update(
+                id,
+                UpdateOptions {
+                    summary: Some(""),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert!(
@@ -792,11 +887,24 @@ mod tests {
     async fn update_clears_context_on_empty_string() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("x", None, &[], "", &V1, Some("initial context"), None, None)
+            .insert(
+                "x",
+                &V1,
+                InsertOptions {
+                    context: Some("initial context"),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         store
-            .update(id, None, None, None, None, Some(""), None, None)
+            .update(
+                id,
+                UpdateOptions {
+                    context: Some(""),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert!(
@@ -811,7 +919,13 @@ mod tests {
         let (store, _tmp) = fresh().await;
         assert!(
             !store
-                .update(999, Some("x"), None, None, None, None, None, None)
+                .update(
+                    999,
+                    UpdateOptions {
+                        content: Some("x"),
+                        ..Default::default()
+                    }
+                )
                 .await
                 .unwrap()
         );
@@ -821,27 +935,29 @@ mod tests {
     async fn update_no_fields_returns_false() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("x", None, &[], "", &V1, None, None, None)
+            .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        assert!(
-            !store
-                .update(id, None, None, None, None, None, None, None)
-                .await
-                .unwrap()
-        );
+        assert!(!store.update(id, UpdateOptions::default()).await.unwrap());
     }
 
     #[tokio::test]
     async fn update_confidence_and_decay_rate() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("x", None, &[], "", &V1, None, None, None)
+            .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
         assert!(
             store
-                .update(id, None, None, None, None, None, Some(0.6), Some(0.02))
+                .update(
+                    id,
+                    UpdateOptions {
+                        confidence: Some(0.6),
+                        decay_rate: Some(0.02),
+                        ..Default::default()
+                    }
+                )
                 .await
                 .unwrap()
         );
@@ -854,14 +970,20 @@ mod tests {
     async fn update_bumps_last_seen_at() {
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("x", None, &[], "", &V1, None, None, None)
+            .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
         let before = store.list(None, None, 1, 0).await.unwrap()[0].last_seen_at;
         // Small sleep so the new timestamp is strictly greater
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         store
-            .update(id, Some("updated"), None, None, None, None, None, None)
+            .update(
+                id,
+                UpdateOptions {
+                    content: Some("updated"),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         let after = store.list(None, None, 1, 0).await.unwrap()[0].last_seen_at;
@@ -872,7 +994,15 @@ mod tests {
     async fn effective_confidence_no_decay() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("x", None, &[], "", &V1, None, Some(0.8), Some(0.0))
+            .insert(
+                "x",
+                &V1,
+                InsertOptions {
+                    confidence: Some(0.8),
+                    decay_rate: Some(0.0),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         let m = &store.list(None, None, 1, 0).await.unwrap()[0];
@@ -885,7 +1015,15 @@ mod tests {
         // sub-second-old memory drops visibly when we fake an old seen_at
         let (store, _tmp) = fresh().await;
         let id = store
-            .insert("x", None, &[], "", &V1, None, Some(1.0), Some(0.5))
+            .insert(
+                "x",
+                &V1,
+                InsertOptions {
+                    confidence: Some(1.0),
+                    decay_rate: Some(0.5),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         // Forcing last_seen_at to 30 days ago via a direct update
@@ -906,7 +1044,7 @@ mod tests {
     async fn age_days_freshly_inserted() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("x", None, &[], "", &V1, None, None, None)
+            .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
         let m = &store.list(None, None, 1, 0).await.unwrap()[0];
@@ -919,11 +1057,11 @@ mod tests {
         // V1=[1,0] and V2=[0,1] are orthogonal unit vectors; cosine distance
         // between V1 and V1 is 0, between V1 and V2 is 1
         let id1 = store
-            .insert("first", None, &[], "", &V1, None, None, None)
+            .insert("first", &V1, InsertOptions::default())
             .await
             .unwrap();
         let id2 = store
-            .insert("second", None, &[], "", &V2, None, None, None)
+            .insert("second", &V2, InsertOptions::default())
             .await
             .unwrap();
 
@@ -947,20 +1085,11 @@ mod tests {
         // V1 is closer to the query vector but the content doesn't match the query words.
         // V2 has matching content and should rank first after re-ranking
         store
-            .insert("unrelated content", None, &[], "", &V1, None, None, None)
+            .insert("unrelated content", &V1, InsertOptions::default())
             .await
             .unwrap();
         let id2 = store
-            .insert(
-                "rust programming language",
-                None,
-                &[],
-                "",
-                &V2,
-                None,
-                None,
-                None,
-            )
+            .insert("rust programming language", &V2, InsertOptions::default())
             .await
             .unwrap();
 
@@ -981,11 +1110,25 @@ mod tests {
     async fn search_filters_by_agent() {
         let (store, _tmp) = fresh().await;
         store
-            .insert("alice", None, &[], "alice", &V1, None, None, None)
+            .insert(
+                "alice",
+                &V1,
+                InsertOptions {
+                    agent: "alice",
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         store
-            .insert("bob", None, &[], "bob", &V1, None, None, None)
+            .insert(
+                "bob",
+                &V1,
+                InsertOptions {
+                    agent: "bob",
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
 

@@ -17,7 +17,11 @@ use tokio::sync::{Notify, OnceCell};
 use super::params::{
     DeleteParams, ListParams, SearchParams, StoreParams, TagsParams, UpdateParams,
 };
-use crate::{config::Config, db::MemoryStore, embedding::EmbeddingService};
+use crate::{
+    config::Config,
+    db::{InsertOptions, MemoryStore, UpdateOptions},
+    embedding::EmbeddingService,
+};
 
 const INSTRUCTIONS: &str = include_str!("instructions.md");
 
@@ -137,13 +141,15 @@ impl MemServer {
         let id = store
             .insert(
                 &p.content,
-                p.summary.as_deref(),
-                &tags,
-                &self.config.agent,
                 &embedding,
-                p.context.as_deref(),
-                p.confidence,
-                p.decay_rate,
+                InsertOptions {
+                    summary: p.summary.as_deref(),
+                    tags: &tags,
+                    agent: &self.config.agent,
+                    context: p.context.as_deref(),
+                    confidence: p.confidence,
+                    decay_rate: p.decay_rate,
+                },
             )
             .await
             .map_err(ServerError::StoreOp)?;
@@ -332,13 +338,15 @@ impl MemServer {
         let updated = store
             .update(
                 p.id,
-                p.content.as_deref(),
-                p.summary.as_deref(),
-                p.tags.as_deref(),
-                new_embedding.as_deref(),
-                p.context.as_deref(),
-                p.confidence,
-                p.decay_rate,
+                UpdateOptions {
+                    content: p.content.as_deref(),
+                    summary: p.summary.as_deref(),
+                    tags: p.tags.as_deref(),
+                    embedding: new_embedding.as_deref(),
+                    context: p.context.as_deref(),
+                    confidence: p.confidence,
+                    decay_rate: p.decay_rate,
+                },
             )
             .await
             .map_err(ServerError::StoreOp)?;

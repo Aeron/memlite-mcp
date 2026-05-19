@@ -49,14 +49,14 @@ Use `memory_search` when you have a concept or topic in mind since it returns se
 relevant results regardless of age. Use `memory_list` only for chronological review
 (e.g. "what did I store recently?").
 
-### Understanding distance scores
+### Understanding `distance` scores
 
 - distance == 0.0 : identical vector (exact duplicate)
 - distance < 0.15 : very close (likely same concept)
 - distance < 0.40 : related (same domain)
 - distance > 0.70 : unrelated (different topics)
 
-### Understanding effective_confidence and age_days
+### Understanding `effective_confidence` and `age_days`
 
 `memory_search` results include `effective_confidence` (base confidence minus
 accumulated decay since last validation, clamped to [0, 1]) and `age_days`
