@@ -2,11 +2,11 @@ Local agent memory store. Embeddings are generated server-side from plain text.
 
 ## Tools
 
-- `memory_store`: embed and persist a new memory, returns its numeric id; accepts optional `confidence` (trust score in [0, 1], default 1.0) and `decay_rate` (per-day decay, default 0.0)
-- `memory_search`: two-stage search (cosine similarity then keyword re-ranking), returns memories ordered nearest-first with `effective_confidence` and `age_days` per result; accepts optional `tags` to pre-filter candidates
-- `memory_list`: chronological list with pagination (newest first); accepts optional `tags` to filter; returns raw `confidence`, `decay_rate`, `last_seen_at` fields
+- `memory_store`: embed and persist a new memory, returns its numeric id; accepts optional `confidence` (trust score in [0, 1], default 1.0), `decay_rate` (per-day decay, default 0.0), and `memory_type` (one of `user`/`project`/`reference`/`task`)
+- `memory_search`: two-stage search (cosine similarity then keyword re-ranking), returns memories ordered nearest-first with `effective_confidence` and `age_days` per result; accepts optional `tags` and `memory_type` to pre-filter candidates
+- `memory_list`: chronological list with pagination (newest first); accepts optional `tags` and `memory_type` to filter; returns raw `confidence`, `decay_rate`, `last_seen_at` fields
 - `memory_tags`: lists all tags in use with occurrence counts, ordered by frequency
-- `memory_update`: update content/summary/tags/context/confidence/decay_rate in-place; re-embeds when content changes; always resets the decay clock
+- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type in-place; re-embeds when content changes; always resets the decay clock
 - `memory_delete`: remove a memory by its identifier
 
 ## Workflow
@@ -131,6 +131,19 @@ Skip tags for one-off facts that don't belong to a named domain.
 The `memory_search` and `memory_list` both accept an optional `tags` array. All supplied tags
 must be present on a memory for it to be included. Combine with a query in `memory_search`
 to narrow semantic search to a specific category (e.g. find the most relevant bug reports).
+
+## `memory_type` field
+
+Classifies a memory's intended use. Enables targeted filtering without relying on tags alone.
+
+| Value | Use for |
+|---|---|
+| `user` | Preferences, identity, working style of the person you are assisting |
+| `project` | Conventions, tech stack, architecture decisions, project constraints |
+| `reference` | Domain knowledge, documentation snippets, external facts, API details |
+| `task` | Things to track, follow up on, or complete in a future session |
+
+Set `memory_type` whenever the memory clearly fits one category. Skip it for memories that span multiple categories or don't fit any cleanly. `memory_search` and `memory_list` both accept `memory_type` as a filter; combine with `tags` for precise retrieval.
 
 ## Updating vs deleting
 

@@ -21,6 +21,8 @@ pub struct StoreParams {
     /// Per-day confidence decay rate in [0, 1] (default 0.0); 0.01 reduces
     /// confidence by 1% per day since the last validation.
     pub decay_rate: Option<f64>,
+    /// Structured category; required. One of: "user", "project", "reference", "task".
+    pub memory_type: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -31,6 +33,8 @@ pub struct SearchParams {
     pub limit: Option<u32>,
     /// Restricts results to memories that carry all of the given tags.
     pub tags: Option<Vec<String>>,
+    /// Restricts results to memories of the given type.
+    pub memory_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -41,6 +45,8 @@ pub struct ListParams {
     pub offset: Option<u32>,
     /// Restricts results to memories that carry all of the given tags.
     pub tags: Option<Vec<String>>,
+    /// Restricts results to memories of the given type.
+    pub memory_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -68,4 +74,6 @@ pub struct UpdateParams {
     pub confidence: Option<f64>,
     /// Replacement per-day confidence decay rate; clamped to [0, 1].
     pub decay_rate: Option<f64>,
+    /// Structured category: one of "user", "project", "reference", or "task".
+    pub memory_type: Option<String>,
 }

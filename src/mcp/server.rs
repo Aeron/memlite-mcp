@@ -19,7 +19,7 @@ use super::params::{
 };
 use crate::{
     config::Config,
-    db::{InsertOptions, MemoryStore, UpdateOptions},
+    db::{InsertOptions, MemoryStore, MemoryType, UpdateOptions},
     embedding::EmbeddingService,
 };
 
@@ -136,6 +136,12 @@ impl MemServer {
             .embed(p.content.clone())
             .await
             .map_err(ServerError::Embed)?;
+        let Some(memory_type) = MemoryType::from_str(&p.memory_type) else {
+            return tool_err(format!(
+                "unknown memory_type {:?}; expected: user, project, reference, or task",
+                p.memory_type
+            ));
+        };
         let tags = p.tags.unwrap_or_default();
         let store = self.open_store().await?;
         let id = store
@@ -149,6 +155,7 @@ impl MemServer {
                     context: p.context.as_deref(),
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
+                    memory_type: Some(memory_type),
                 },
             )
             .await
@@ -183,6 +190,7 @@ impl MemServer {
                 &embedding,
                 self.config.agent_filter(),
                 p.tags.as_deref(),
+                parse_memory_type(p.memory_type.as_deref()),
                 limit,
             )
             .await
@@ -203,6 +211,8 @@ impl MemServer {
                     "distance":             dist,
                     "effective_confidence": m.effective_confidence(),
                     "age_days":             m.age_days(),
+                    "memory_type":          m.memory_type,
+                    "freshness_warning":    m.freshness_warning(),
                 })
             })
             .collect();
@@ -225,7 +235,13 @@ impl MemServer {
             return Ok(CallToolResult::success(vec![Content::text("[]")]));
         };
         let memories = store
-            .list(self.config.agent_filter(), p.tags.as_deref(), limit, offset)
+            .list(
+                self.config.agent_filter(),
+                p.tags.as_deref(),
+                parse_memory_type(p.memory_type.as_deref()),
+                limit,
+                offset,
+            )
             .await
             .map_err(ServerError::StoreOp)?;
 
@@ -243,9 +259,11 @@ impl MemServer {
                     "context":              m.context,
                     "confidence":           m.confidence,
                     "decay_rate":           m.decay_rate,
-                    "last_seen_at":    m.last_seen_at,
+                    "last_seen_at":         m.last_seen_at,
                     "effective_confidence": m.effective_confidence(),
                     "age_days":             m.age_days(),
+                    "memory_type":          m.memory_type,
+                    "freshness_warning":    m.freshness_warning(),
                 })
             })
             .collect();
@@ -315,6 +333,7 @@ impl MemServer {
             && p.context.is_none()
             && p.confidence.is_none()
             && p.decay_rate.is_none()
+            && p.memory_type.is_none()
         {
             return tool_err(
                 "at least one of content, summary, tags, context, confidence, or decay_rate must be provided",
@@ -346,6 +365,7 @@ impl MemServer {
                     context: p.context.as_deref(),
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
+                    memory_type: parse_memory_type(p.memory_type.as_deref()),
                 },
             )
             .await
@@ -429,6 +449,11 @@ fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
     let mut result = CallToolResult::success(vec![Content::text(msg.to_string())]);
     result.is_error = Some(true);
     Ok(result)
+}
+
+/// Converts an optional type string into a [`MemoryType`], returning `None` for unrecognised values.
+fn parse_memory_type(s: Option<&str>) -> Option<MemoryType> {
+    s.and_then(MemoryType::from_str)
 }
 
 /// Typed errors produced at the MCP boundary, converted to [`McpError`] via [`From`].

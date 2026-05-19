@@ -24,6 +24,8 @@ const MIGRATIONS: &[&[&str]] = &[
         "alter table memories add column decay_rate real not null default 0.0",
         "alter table memories add column last_seen_at integer not null default 0",
     ],
+    // v3 -> v4: adds structured memory type field
+    &["alter table memories add column type text"],
 ];
 
 /// Applies all pending migrations, bumping `PRAGMA user_version` after each one.

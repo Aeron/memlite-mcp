@@ -75,13 +75,24 @@ Set `decay_rate > 0.0` for time-sensitive facts that naturally become stale
 `last_seen_at` to now, restarting the decay clock — use this to revalidate a
 memory confirmed still accurate without changing its content.
 
+## Memory types
+
+The optional `memory_type` field classifies a memory's intended use, enabling targeted filtering in `memory_list` and `memory_search`.
+
+| Type | Stores |
+|---|---|
+| `user` | Facts about the person: preferences, identity, working style |
+| `project` | Codebase knowledge: conventions, stack, decisions, constraints |
+| `reference` | Domain knowledge: docs, external facts, API details, terminology |
+| `task` | Things to track, follow up on, or complete in a future session |
+
 ## Tools
 
 | Tool | Description |
 |---|---|
-| `memory_store` | Embeds and persists a memory; returns its numeric id. Accepts optional `summary`, `tags`, `context`, `confidence` (trust score in [0, 1], default 1.0), and `decay_rate` (per-day confidence decay, default 0.0) |
-| `memory_search` | Two-stage semantic search (cosine similarity then keyword re-ranking), ordered nearest-first; supports tag filtering; returns `effective_confidence` and `age_days` per result |
-| `memory_list` | Paginated list newest-first; supports tag filtering; returns raw `confidence`, `decay_rate`, and `last_seen_at` fields |
+| `memory_store` | Embeds and persists a memory; returns its numeric id. Accepts optional `summary`, `tags`, `context`, `confidence` (trust score in [0, 1], default 1.0), `decay_rate` (per-day confidence decay, default 0.0), and `memory_type` (one of `user`/`project`/`reference`/`task`) |
+| `memory_search` | Two-stage semantic search (cosine similarity then keyword re-ranking), ordered nearest-first; supports tag and `memory_type` filtering; returns `effective_confidence` and `age_days` per result |
+| `memory_list` | Paginated list newest-first; supports tag and `memory_type` filtering; returns raw `confidence`, `decay_rate`, and `last_seen_at` fields |
 | `memory_tags` | Lists all distinct tags with occurrence counts, ordered by frequency |
 | `memory_delete` | Deletes a memory by numeric id |
-| `memory_update` | Updates content (re-embeds), summary, tags, context, `confidence`, or `decay_rate`; pass `""` to clear optional text fields; resets the decay clock on every change |
+| `memory_update` | Updates content (re-embeds), summary, tags, context, `confidence`, `decay_rate`, or `memory_type`; pass `""` to clear optional text fields; resets the decay clock on every change |

@@ -5,6 +5,43 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::{Result, anyhow};
 
+/// Classifies a memory's intended use, enabling targeted filtering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryType {
+    /// Facts about the person: preferences, identity, working style.
+    User,
+    /// Codebase knowledge: conventions, tech stack, architecture decisions, constraints.
+    Project,
+    /// Domain knowledge: docs, external facts, API details, terminology.
+    Reference,
+    /// Things to track, follow up on, or complete in a future session.
+    Task,
+}
+
+impl MemoryType {
+    /// Returns the lowercase string representation of the variant.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemoryType::User => "user",
+            MemoryType::Project => "project",
+            MemoryType::Reference => "reference",
+            MemoryType::Task => "task",
+        }
+    }
+
+    /// Parses a lowercase string into the matching variant, returning None on mismatch.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "user" => Some(MemoryType::User),
+            "project" => Some(MemoryType::Project),
+            "reference" => Some(MemoryType::Reference),
+            "task" => Some(MemoryType::Task),
+            _ => None,
+        }
+    }
+}
+
 /// Represents a single stored memory row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
@@ -31,6 +68,8 @@ pub struct Memory {
     /// Unix timestamp (seconds) when it was last seen (or confidence validated).
     /// 0 means the created_at timestamp is used as the baseline.
     pub last_seen_at: i64,
+    /// Optional classification of the memory's origin or intended use.
+    pub memory_type: Option<MemoryType>,
 }
 
 impl Memory {
@@ -58,6 +97,41 @@ impl Memory {
         let now = unix_secs();
         ((now - self.updated_at).max(0) as u64) / 86400
     }
+
+    /// Returns a plain-English warning when this memory may be unreliable.
+    ///
+    /// Triggers when decay is active and effective confidence has fallen below
+    /// the initial value, or when the memory has not been updated in more than
+    /// 30 days.
+    pub fn freshness_warning(&self) -> Option<String> {
+        let eff = self.effective_confidence();
+
+        if self.decay_rate > 0.0 && eff < self.confidence.clamp(0.0, 1.0) {
+            let seen_at = if self.last_seen_at > 0 {
+                self.last_seen_at
+            } else {
+                self.created_at
+            };
+            let val_days = ((unix_secs() - seen_at).max(0) as u64) / 86400;
+            return Some(format!(
+                "Confidence decayed to {:.0}% (from {:.0}%; {} days since last validation). \
+                 Call memory_update to revalidate and reset the decay clock.",
+                eff * 100.0,
+                self.confidence.clamp(0.0, 1.0) * 100.0,
+                val_days,
+            ));
+        }
+
+        let days = self.age_days();
+        if days > 30 {
+            return Some(format!(
+                "Memory is {} days old; verify it is still current before acting on it.",
+                days,
+            ));
+        }
+
+        None
+    }
 }
 
 /// Holds the optional metadata fields for inserting a new memory row.
@@ -75,6 +149,8 @@ pub struct InsertOptions<'a> {
     pub confidence: Option<f64>,
     /// Per-day confidence decay in [0.0, 1.0]; defaults to 0.0.
     pub decay_rate: Option<f64>,
+    /// Optional classification of the memory's origin or intended use.
+    pub memory_type: Option<MemoryType>,
 }
 
 /// Holds the fields that can be updated on an existing memory row.
@@ -94,6 +170,8 @@ pub struct UpdateOptions<'a> {
     pub confidence: Option<f64>,
     /// Replacement per-day decay rate.
     pub decay_rate: Option<f64>,
+    /// Replacement memory type classification.
+    pub memory_type: Option<MemoryType>,
 }
 
 /// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
@@ -141,6 +219,7 @@ impl MemoryStore {
             context,
             confidence,
             decay_rate,
+            memory_type,
         } = opts;
         let conn = self.conn()?;
         let tags_json = serde_json::to_string(tags)?;
@@ -153,13 +232,29 @@ impl MemoryStore {
             .query(
                 "insert into memories
                     (content, summary, tags, agent, embedding, created_at, updated_at, context,
-                     confidence, decay_rate, last_seen_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     confidence, decay_rate, last_seen_at, type)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 returning rowid",
-                libsql::params![
-                    content, summary, tags_json, agent, emb_blob, now, now, context, confidence,
-                    decay_rate, now
-                ],
+                libsql::params_from_iter([
+                    Value::Text(content.to_owned()),
+                    summary
+                        .map(|s| Value::Text(s.to_owned()))
+                        .unwrap_or(Value::Null),
+                    Value::Text(tags_json),
+                    Value::Text(agent.to_owned()),
+                    Value::Blob(emb_blob),
+                    Value::Integer(now),
+                    Value::Integer(now),
+                    context
+                        .map(|c| Value::Text(c.to_owned()))
+                        .unwrap_or(Value::Null),
+                    Value::Real(confidence),
+                    Value::Real(decay_rate),
+                    Value::Integer(now),
+                    memory_type
+                        .map(|mt| Value::Text(mt.as_str().to_owned()))
+                        .unwrap_or(Value::Null),
+                ]),
             )
             .await?;
 
@@ -183,21 +278,22 @@ impl MemoryStore {
         query_embedding: &[f32],
         agent_id: Option<&str>,
         tags: Option<&[String]>,
+        type_filter: Option<MemoryType>,
         limit: u32,
     ) -> Result<Vec<(Memory, f64)>> {
         let conn = self.conn()?;
         let emb_blob = floats_to_blob(query_embedding);
         let candidate_limit = (limit as i64).saturating_mul(4).min(400);
         let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
-        let where_sql = build_where(agent_id, tags, &mut params)?;
+        let where_sql = build_where(agent_id, tags, type_filter, &mut params)?;
         params.push(Value::Integer(candidate_limit));
 
-        // dist is placed last so parse_memory_row can use a fixed column range (0-10)
+        // dist is placed last so parse_memory_row can use a fixed column range (0-11)
         let sql = format!(
             "select
                 rowid, content, summary, tags, agent,
                 created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at,
+                confidence, decay_rate, last_seen_at, type,
                 vector_distance_cos(embedding, ?) as dist
             from memories
             {where_sql}
@@ -209,7 +305,7 @@ impl MemoryStore {
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let memory = parse_memory_row(&row)?;
-            let dist: f64 = row.get(11)?;
+            let dist: f64 = row.get(12)?;
             results.push((memory, dist));
         }
         Ok(rerank_by_overlap(query_text, results, limit as usize))
@@ -222,19 +318,20 @@ impl MemoryStore {
         &self,
         agent_id: Option<&str>,
         tags: Option<&[String]>,
+        type_filter: Option<MemoryType>,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Memory>> {
         let conn = self.conn()?;
         let mut params: Vec<Value> = Vec::new();
-        let where_sql = build_where(agent_id, tags, &mut params)?;
+        let where_sql = build_where(agent_id, tags, type_filter, &mut params)?;
         params.push(Value::Integer(limit as i64));
         params.push(Value::Integer(offset as i64));
 
         let sql = format!(
             "select
                 rowid, content, summary, tags, agent, created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at
+                confidence, decay_rate, last_seen_at, type
             from memories
             {where_sql}
             order by created_at desc
@@ -253,7 +350,7 @@ impl MemoryStore {
     pub async fn tags(&self, agent_id: Option<&str>) -> Result<Vec<(String, u32)>> {
         let conn = self.conn()?;
         let mut params: Vec<Value> = Vec::new();
-        let where_sql = build_where(agent_id, None, &mut params)?;
+        let where_sql = build_where(agent_id, None, None, &mut params)?;
         let sql = format!(
             "select jt.value, count(*) as cnt
             from memories, json_each(memories.tags) jt
@@ -299,6 +396,7 @@ impl MemoryStore {
             context,
             confidence,
             decay_rate,
+            memory_type,
         } = opts;
         if content.is_none()
             && summary.is_none()
@@ -307,6 +405,7 @@ impl MemoryStore {
             && context.is_none()
             && confidence.is_none()
             && decay_rate.is_none()
+            && memory_type.is_none()
         {
             return Ok(false);
         }
@@ -353,6 +452,10 @@ impl MemoryStore {
             set_clauses.push("decay_rate = ?");
             params.push(Value::Real(dr.clamp(0.0, 1.0)));
         }
+        if let Some(mt) = memory_type {
+            set_clauses.push("type = ?");
+            params.push(Value::Text(mt.as_str().to_owned()));
+        }
         // Always bump both timestamps: updated_at records the data change,
         // last_seen_at resets the confidence decay clock
         set_clauses.push("updated_at = ?");
@@ -371,11 +474,12 @@ impl MemoryStore {
     }
 }
 
-// Builds a SQL WHERE clause from optional agent and tag filters, appending
+// Builds a SQL WHERE clause from optional agent, tag, and type filters, appending
 // the corresponding bind params in the correct placeholder order.
 fn build_where(
     agent_id: Option<&str>,
     tags: Option<&[String]>,
+    type_filter: Option<MemoryType>,
     params: &mut Vec<Value>,
 ) -> Result<String> {
     let mut clauses: Vec<String> = Vec::new();
@@ -392,6 +496,10 @@ fn build_where(
         params.push(Value::Text(serde_json::to_string(ts)?));
         params.push(Value::Integer(ts.len() as i64));
     }
+    if let Some(mt) = type_filter {
+        clauses.push("type = ?".into());
+        params.push(Value::Text(mt.as_str().to_owned()));
+    }
     Ok(if clauses.is_empty() {
         String::new()
     } else {
@@ -404,7 +512,7 @@ fn build_where(
 /// Expects columns in the order selected by `list` and `search`:
 /// 0=rowid, 1=content, 2=summary, 3=tags, 4=agent,
 /// 5=created_at, 6=updated_at, 7=context,
-/// 8=confidence, 9=decay_rate, 10=last_seen_at.
+/// 8=confidence, 9=decay_rate, 10=last_seen_at, 11=type.
 fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
@@ -425,6 +533,11 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let confidence: f64 = row.get(8)?;
     let decay_rate: f64 = row.get(9)?;
     let last_seen_at: i64 = row.get(10)?;
+    let memory_type = match row.get_value(11)? {
+        Value::Null => None,
+        Value::Text(s) => MemoryType::from_str(&s),
+        other => return Err(anyhow!("unexpected value for type column: {other:?}")),
+    };
 
     let tags: Vec<String> = serde_json::from_str(&tags_json)?;
 
@@ -440,6 +553,7 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         confidence,
         decay_rate,
         last_seen_at,
+        memory_type,
     })
 }
 
@@ -556,7 +670,7 @@ mod tests {
     #[tokio::test]
     async fn list_empty_store() {
         let (store, _tmp) = fresh().await;
-        let rows = store.list(None, None, 10, 0).await.unwrap();
+        let rows = store.list(None, None, None, 10, 0).await.unwrap();
         assert!(rows.is_empty());
     }
 
@@ -577,7 +691,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let rows = store.list(None, None, 10, 0).await.unwrap();
+        let rows = store.list(None, None, None, 10, 0).await.unwrap();
         assert_eq!(rows.len(), 1);
         let m = &rows[0];
         assert_eq!(m.id, id);
@@ -607,7 +721,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let rows = store.list(None, None, 1, 0).await.unwrap();
+        let rows = store.list(None, None, None, 1, 0).await.unwrap();
         assert_eq!(rows[0].confidence, 0.7);
         assert_eq!(rows[0].decay_rate, 0.01);
     }
@@ -638,11 +752,11 @@ mod tests {
             .await
             .unwrap();
 
-        let alice = store.list(Some("alice"), None, 10, 0).await.unwrap();
+        let alice = store.list(Some("alice"), None, None, 10, 0).await.unwrap();
         assert_eq!(alice.len(), 1);
         assert_eq!(alice[0].agent, "alice");
 
-        let all = store.list(None, None, 10, 0).await.unwrap();
+        let all = store.list(None, None, None, 10, 0).await.unwrap();
         assert_eq!(all.len(), 2);
     }
 
@@ -655,8 +769,8 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let page0 = store.list(None, None, 3, 0).await.unwrap();
-        let page1 = store.list(None, None, 3, 3).await.unwrap();
+        let page0 = store.list(None, None, None, 3, 0).await.unwrap();
+        let page1 = store.list(None, None, None, 3, 3).await.unwrap();
         assert_eq!(page0.len(), 3);
         assert_eq!(page1.len(), 2);
         let ids0: Vec<i64> = page0.iter().map(|m| m.id).collect();
@@ -672,7 +786,13 @@ mod tests {
             .await
             .unwrap();
         assert!(store.delete(id).await.unwrap());
-        assert!(store.list(None, None, 10, 0).await.unwrap().is_empty());
+        assert!(
+            store
+                .list(None, None, None, 10, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -712,20 +832,20 @@ mod tests {
             .unwrap();
 
         let bug_only = store
-            .list(None, Some(&["bug".into()]), 10, 0)
+            .list(None, Some(&["bug".into()]), None, 10, 0)
             .await
             .unwrap();
         assert_eq!(bug_only.len(), 2);
 
         let both = store
-            .list(None, Some(&["bug".into(), "config".into()]), 10, 0)
+            .list(None, Some(&["bug".into(), "config".into()]), None, 10, 0)
             .await
             .unwrap();
         assert_eq!(both.len(), 1);
         assert_eq!(both[0].content, "a");
 
         // empty slice = no filter
-        let all = store.list(None, Some(&[]), 10, 0).await.unwrap();
+        let all = store.list(None, Some(&[]), None, 10, 0).await.unwrap();
         assert_eq!(all.len(), 3);
     }
 
@@ -749,7 +869,7 @@ mod tests {
             .unwrap();
 
         let results = store
-            .search("", &V1, None, Some(&["rust".into()]), 10)
+            .search("", &V1, None, Some(&["rust".into()]), None, 10)
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -847,7 +967,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            store.list(None, None, 1, 0).await.unwrap()[0].content,
+            store.list(None, None, None, 1, 0).await.unwrap()[0].content,
             "new"
         );
     }
@@ -877,7 +997,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            store.list(None, None, 1, 0).await.unwrap()[0]
+            store.list(None, None, None, 1, 0).await.unwrap()[0]
                 .summary
                 .is_none()
         );
@@ -908,7 +1028,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            store.list(None, None, 1, 0).await.unwrap()[0]
+            store.list(None, None, None, 1, 0).await.unwrap()[0]
                 .context
                 .is_none()
         );
@@ -961,7 +1081,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let m = &store.list(None, None, 1, 0).await.unwrap()[0];
+        let m = &store.list(None, None, None, 1, 0).await.unwrap()[0];
         assert_eq!(m.confidence, 0.6);
         assert_eq!(m.decay_rate, 0.02);
     }
@@ -973,7 +1093,7 @@ mod tests {
             .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        let before = store.list(None, None, 1, 0).await.unwrap()[0].last_seen_at;
+        let before = store.list(None, None, None, 1, 0).await.unwrap()[0].last_seen_at;
         // Small sleep so the new timestamp is strictly greater
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         store
@@ -986,7 +1106,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let after = store.list(None, None, 1, 0).await.unwrap()[0].last_seen_at;
+        let after = store.list(None, None, None, 1, 0).await.unwrap()[0].last_seen_at;
         assert!(after > before, "last_seen_at should increase after update");
     }
 
@@ -1005,7 +1125,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let m = &store.list(None, None, 1, 0).await.unwrap()[0];
+        let m = &store.list(None, None, None, 1, 0).await.unwrap()[0];
         assert_eq!(m.effective_confidence(), 0.8);
     }
 
@@ -1035,7 +1155,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let m = &store.list(None, None, 1, 0).await.unwrap()[0];
+        let m = &store.list(None, None, None, 1, 0).await.unwrap()[0];
         // 30 days * 0.5/day = 15 decay: 1.0 - 15 = -14, clamped to 0.0
         assert_eq!(m.effective_confidence(), 0.0);
     }
@@ -1047,7 +1167,7 @@ mod tests {
             .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        let m = &store.list(None, None, 1, 0).await.unwrap()[0];
+        let m = &store.list(None, None, None, 1, 0).await.unwrap()[0];
         assert_eq!(m.age_days(), 0);
     }
 
@@ -1066,7 +1186,7 @@ mod tests {
             .unwrap();
 
         // Empty query: no word-overlap re-ranking, pure cosine order preserved
-        let results = store.search("", &V1, None, None, 2).await.unwrap();
+        let results = store.search("", &V1, None, None, None, 2).await.unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(
             results[0].0.id, id1,
@@ -1096,7 +1216,7 @@ mod tests {
         // Query vector identical to V1 (so cosine order would put the first item first),
         // but query text matches the second item
         let results = store
-            .search("rust programming", &V1, None, None, 2)
+            .search("rust programming", &V1, None, None, None, 2)
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -1133,7 +1253,7 @@ mod tests {
             .unwrap();
 
         let results = store
-            .search("", &V1, Some("alice"), None, 10)
+            .search("", &V1, Some("alice"), None, None, 10)
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -1156,6 +1276,7 @@ mod tests {
                     confidence: 1.0,
                     decay_rate: 0.0,
                     last_seen_at: 0,
+                    memory_type: None,
                 },
                 dist,
             )
@@ -1183,6 +1304,7 @@ mod tests {
                     confidence: 1.0,
                     decay_rate: 0.0,
                     last_seen_at: 0,
+                    memory_type: None,
                 },
                 dist,
             )
