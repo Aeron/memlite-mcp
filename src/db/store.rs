@@ -217,6 +217,30 @@ pub struct UpdateOptions<'a> {
     pub status: Option<MemoryStatus>,
 }
 
+/// Holds owned data for a single row in a batch insert operation.
+pub struct BatchInsertItem {
+    /// Full text to embed and associate with this memory.
+    pub content: String,
+    /// Pre-computed embedding vector for `content`.
+    pub embedding: Vec<f32>,
+    /// Short label for list views.
+    pub summary: Option<String>,
+    /// Category labels.
+    pub tags: Vec<String>,
+    /// Agent identifier.
+    pub agent: String,
+    /// Background rationale.
+    pub context: Option<String>,
+    /// Base trust score in [0.0, 1.0]; caller is responsible for clamping.
+    pub confidence: f64,
+    /// Per-day confidence decay in [0.0, 1.0]; caller is responsible for clamping.
+    pub decay_rate: f64,
+    /// Optional memory type classification.
+    pub memory_type: Option<MemoryType>,
+    /// Optional lifecycle status.
+    pub status: Option<MemoryStatus>,
+}
+
 /// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
 /// type is cheaply [`Clone`] without any mutex contention.
 #[derive(Clone)]
@@ -310,6 +334,62 @@ impl MemoryStore {
             .await?
             .ok_or_else(|| anyhow!("insert returning yielded no row"))?;
         Ok(row.get(0)?)
+    }
+
+    /// Inserts multiple memories in a single transaction, returning their rowids in input order.
+    ///
+    /// All rows are inserted atomically: if any insert fails the transaction is rolled back
+    /// and no rows are written. `confidence` and `decay_rate` on each item must already be
+    /// clamped to [0.0, 1.0] by the caller.
+    pub async fn insert_batch(&self, items: Vec<BatchInsertItem>) -> Result<Vec<i64>> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let tx = conn.transaction().await?;
+        let now = unix_secs();
+        let sql = "insert into memories
+                (content, summary, tags, agent, embedding, created_at, updated_at, context,
+                 confidence, decay_rate, last_seen_at, type, status)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+        let mut ids = Vec::with_capacity(items.len());
+        for item in &items {
+            let tags_json = serde_json::to_string(&item.tags)?;
+            let emb_blob = floats_to_blob(&item.embedding);
+            tx.execute(
+                sql,
+                libsql::params_from_iter([
+                    Value::Text(item.content.clone()),
+                    item.summary
+                        .as_deref()
+                        .map(|s| Value::Text(s.to_owned()))
+                        .unwrap_or(Value::Null),
+                    Value::Text(tags_json),
+                    Value::Text(item.agent.clone()),
+                    Value::Blob(emb_blob),
+                    Value::Integer(now),
+                    Value::Integer(now),
+                    item.context
+                        .as_deref()
+                        .map(|c| Value::Text(c.to_owned()))
+                        .unwrap_or(Value::Null),
+                    Value::Real(item.confidence),
+                    Value::Real(item.decay_rate),
+                    Value::Integer(now),
+                    item.memory_type
+                        .map(|mt| Value::Text(mt.as_str().to_owned()))
+                        .unwrap_or(Value::Null),
+                    item.status
+                        .map(|s| Value::Text(s.as_str().to_owned()))
+                        .unwrap_or(Value::Null),
+                ]),
+            )
+            .await?;
+            ids.push(tx.last_insert_rowid());
+        }
+        tx.commit().await?;
+        Ok(ids)
     }
 
     /// Returns memories ordered by cosine distance to `query_embedding`.
@@ -1498,5 +1578,60 @@ mod tests {
 
         let rows = store.list(None, None, None, None, 1, 0).await.unwrap();
         assert_eq!(rows[0].status, Some(MemoryStatus::Resolved));
+    }
+
+    #[tokio::test]
+    async fn insert_batch_empty_returns_empty() {
+        let (store, _tmp) = fresh().await;
+        let ids = store.insert_batch(vec![]).await.unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn insert_batch_returns_ids_in_order() {
+        let (store, _tmp) = fresh().await;
+        let items = vec![
+            BatchInsertItem {
+                content: "first".into(),
+                embedding: V1.to_vec(),
+                summary: Some("s1".into()),
+                tags: vec!["a".into()],
+                agent: "bot".into(),
+                context: None,
+                confidence: 1.0,
+                decay_rate: 0.0,
+                memory_type: Some(MemoryType::Project),
+                status: Some(MemoryStatus::Open),
+            },
+            BatchInsertItem {
+                content: "second".into(),
+                embedding: V2.to_vec(),
+                summary: None,
+                tags: vec![],
+                agent: "bot".into(),
+                context: None,
+                confidence: 0.8,
+                decay_rate: 0.01,
+                memory_type: None,
+                status: Some(MemoryStatus::Resolved),
+            },
+        ];
+        let ids = store.insert_batch(items).await.unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids[0] > 0);
+        assert!(ids[1] > ids[0]);
+
+        let rows = store.list(None, None, None, None, 10, 0).await.unwrap();
+        // list returns newest-first, so second item is at index 0
+        assert_eq!(rows.len(), 2);
+        let first = rows.iter().find(|m| m.content == "first").unwrap();
+        let second = rows.iter().find(|m| m.content == "second").unwrap();
+        assert_eq!(first.id, ids[0]);
+        assert_eq!(second.id, ids[1]);
+        assert_eq!(first.summary.as_deref(), Some("s1"));
+        assert_eq!(first.tags, ["a"]);
+        assert_eq!(first.memory_type, Some(MemoryType::Project));
+        assert_eq!(first.status, Some(MemoryStatus::Open));
+        assert_eq!(second.status, Some(MemoryStatus::Resolved));
     }
 }

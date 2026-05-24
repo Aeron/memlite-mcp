@@ -31,6 +31,21 @@ impl EmbeddingService {
         })
     }
 
+    /// Embeds a slice of strings in one ONNX inference pass, returning one vector per input.
+    ///
+    /// Offloads blocking ONNX inference to a Tokio blocking thread.
+    pub async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        let model = Arc::clone(&self.model);
+        tokio::task::spawn_blocking(move || {
+            let mut guard = model.lock().expect("embedding mutex poisoned");
+            guard
+                .embed(texts, None)
+                .map_err(|e| anyhow!("embedding: {e}"))
+        })
+        .await
+        .map_err(|e| anyhow!("embedding join: {e}"))?
+    }
+
     /// Embeds a single string and returns the raw float vector.
     ///
     /// Offloads blocking ONNX inference to a Tokio blocking thread.

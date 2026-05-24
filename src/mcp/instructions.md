@@ -3,6 +3,7 @@ Local agent memory store. Embeddings generated server-side from plain text.
 ## Tools
 
 - `memory_store`: embed + persist new memory; returns numeric id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`), `status` (`open`/`resolved`/`wontfix`/`deferred`)
+- `memory_store_batch`: store multiple memories in one call; accepts `items: [...]` (max 100); embeds all in one pass, inserts atomically; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` when storing 3 or more memories at once
 - `memory_search`: cosine similarity + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Optional: `tags`, `memory_type`, `status` pre-filter
 - `memory_list`: newest-first with pagination. Optional: `tags`, `memory_type`, `status` filter; returns raw `confidence`, `decay_rate`, `last_seen_at`
 - `memory_tags`: all tags with occurrence counts, frequency-ordered

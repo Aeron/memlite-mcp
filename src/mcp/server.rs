@@ -15,11 +15,11 @@ use rmcp::{
 use tokio::sync::{Notify, OnceCell};
 
 use super::params::{
-    DeleteParams, ListParams, SearchParams, StoreParams, TagsParams, UpdateParams,
+    BatchStoreParams, DeleteParams, ListParams, SearchParams, StoreParams, TagsParams, UpdateParams,
 };
 use crate::{
     config::Config,
-    db::{InsertOptions, MemoryStatus, MemoryStore, MemoryType, UpdateOptions},
+    db::{BatchInsertItem, InsertOptions, MemoryStatus, MemoryStore, MemoryType, UpdateOptions},
     embedding::EmbeddingService,
 };
 
@@ -176,6 +176,100 @@ impl MemServer {
 
         let body = serde_json::json!({ "id": id }).to_string();
         Ok(CallToolResult::success(vec![Content::text(body)]))
+    }
+
+    /// Embeds each item and inserts all rows in a single transaction.
+    ///
+    /// All items are embedded in one ONNX inference pass. Returns an array of `{"id"}` objects
+    /// in the same order as the input. Fails atomically: if any item is invalid or any insert
+    /// fails, nothing is written.
+    #[tool(
+        description = "Store multiple memories in one call. Embeds all items in a single ONNX pass and inserts them atomically. Returns [{\"id\": ...}] in input order. All succeed or all fail. Maximum 100 items."
+    )]
+    async fn memory_store_batch(
+        &self,
+        Parameters(p): Parameters<BatchStoreParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if p.items.is_empty() {
+            return tool_err("items must not be empty");
+        }
+        if p.items.len() > 100 {
+            return tool_err(format!("too many items: {} (maximum 100)", p.items.len()));
+        }
+
+        // Validate memory_type and status for all items before embedding anything
+        let mut parsed_types: Vec<Option<MemoryType>> = Vec::with_capacity(p.items.len());
+        let mut parsed_statuses: Vec<Option<MemoryStatus>> = Vec::with_capacity(p.items.len());
+        for (i, item) in p.items.iter().enumerate() {
+            let mt = match item.memory_type.as_deref() {
+                None => None,
+                Some(s) => match MemoryType::from_str(s) {
+                    Some(t) => Some(t),
+                    None => {
+                        return tool_err(format!(
+                            "item {i}: unknown memory_type {s:?}; expected: user, project, reference, or task"
+                        ));
+                    }
+                },
+            };
+            let st = match item.status.as_deref() {
+                None => None,
+                Some(s) => match MemoryStatus::from_str(s) {
+                    Some(t) => Some(t),
+                    None => {
+                        return tool_err(format!(
+                            "item {i}: unknown status {s:?}; expected: open, resolved, wontfix, or deferred"
+                        ));
+                    }
+                },
+            };
+            parsed_types.push(mt);
+            parsed_statuses.push(st);
+        }
+
+        let contents: Vec<String> = p.items.iter().map(|item| item.content.clone()).collect();
+        let embeddings = self
+            .embedding
+            .embed_batch(contents)
+            .await
+            .map_err(ServerError::Embed)?;
+
+        let agent = self.config.agent.clone();
+        let batch_items: Vec<BatchInsertItem> = p
+            .items
+            .into_iter()
+            .zip(embeddings)
+            .zip(parsed_types)
+            .zip(parsed_statuses)
+            .map(
+                |(((item, embedding), memory_type), status)| BatchInsertItem {
+                    content: item.content,
+                    embedding,
+                    summary: item.summary,
+                    tags: item.tags.unwrap_or_default(),
+                    agent: agent.clone(),
+                    context: item.context,
+                    confidence: item.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
+                    decay_rate: item.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
+                    memory_type,
+                    status,
+                },
+            )
+            .collect();
+
+        let store = self.open_store().await?;
+        let ids = store
+            .insert_batch(batch_items)
+            .await
+            .map_err(ServerError::StoreOp)?;
+
+        let body: Vec<_> = ids
+            .iter()
+            .map(|id| serde_json::json!({ "id": id }))
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&body).unwrap(),
+        )]))
     }
 
     /// Embeds `query` and returns the closest stored memories ordered by cosine distance.

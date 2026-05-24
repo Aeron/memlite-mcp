@@ -57,6 +57,33 @@ pub struct ListParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BatchStoreItem {
+    /// Full text to embed and store.
+    pub content: String,
+    /// One-sentence description for quick recall without reading the full
+    /// content. Provide when content is long, complex, or not self-describing.
+    pub summary: Option<String>,
+    /// Category labels for grouping (e.g. ["architecture", "auth", "bug"]).
+    pub tags: Option<Vec<String>>,
+    /// Background rationale for this memory.
+    pub context: Option<String>,
+    /// Structured category: one of "user", "project", "reference", or "task".
+    pub memory_type: Option<String>,
+    /// Initial confidence score in [0, 1] (default 1.0).
+    pub confidence: Option<f64>,
+    /// Per-day confidence decay rate in [0, 1] (default 0.0).
+    pub decay_rate: Option<f64>,
+    /// Lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BatchStoreParams {
+    /// Items to store; maximum 100 per call.
+    pub items: Vec<BatchStoreItem>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TagsParams {}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
