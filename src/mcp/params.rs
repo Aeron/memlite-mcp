@@ -27,6 +27,9 @@ pub struct StoreParams {
     /// Lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
     /// Set for task and issue memories. Omit for general knowledge.
     pub status: Option<String>,
+    /// Urgency or impact level; one of: "critical", "high", "medium", "low".
+    /// Most meaningful for finding, issue, and task memories.
+    pub severity: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -41,6 +44,8 @@ pub struct SearchParams {
     pub memory_type: Option<String>,
     /// Restricts results to memories with the given status.
     pub status: Option<String>,
+    /// Restricts results to memories with the given severity.
+    pub severity: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -55,6 +60,8 @@ pub struct ListParams {
     pub memory_type: Option<String>,
     /// Restricts results to memories with the given status.
     pub status: Option<String>,
+    /// Restricts results to memories with the given severity.
+    pub severity: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -77,6 +84,8 @@ pub struct BatchStoreItem {
     pub decay_rate: Option<f64>,
     /// Lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
     pub status: Option<String>,
+    /// Urgency or impact level; one of: "critical", "high", "medium", "low".
+    pub severity: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -116,4 +125,6 @@ pub struct UpdateParams {
     /// Replacement lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
     /// Pass to transition a task or issue through its lifecycle.
     pub status: Option<String>,
+    /// Replacement severity level; one of: "critical", "high", "medium", "low".
+    pub severity: Option<String>,
 }

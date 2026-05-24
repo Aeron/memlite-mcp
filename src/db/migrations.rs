@@ -28,6 +28,8 @@ const MIGRATIONS: &[&[&str]] = &[
     &["alter table memories add column type text"],
     // v4 -> v5: adds lifecycle status field
     &["alter table memories add column status text"],
+    // v5 -> v6: adds severity field
+    &["alter table memories add column severity text"],
 ];
 
 /// Applies all pending migrations, bumping `PRAGMA user_version` after each one.

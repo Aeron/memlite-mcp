@@ -19,7 +19,10 @@ use super::params::{
 };
 use crate::{
     config::Config,
-    db::{BatchInsertItem, InsertOptions, MemoryStatus, MemoryStore, MemoryType, UpdateOptions},
+    db::{
+        BatchInsertItem, InsertOptions, MemorySeverity, MemoryStatus, MemoryStore, MemoryType,
+        UpdateOptions,
+    },
     embedding::EmbeddingService,
 };
 
@@ -154,6 +157,18 @@ impl MemServer {
                 }
             },
         };
+        let severity = match p.severity.as_deref() {
+            None => None,
+            Some(s) => match MemorySeverity::from_str(s) {
+                Some(sev) => Some(sev),
+                None => {
+                    return tool_err(format!(
+                        "unknown severity {:?}; expected: critical, high, medium, or low",
+                        s
+                    ));
+                }
+            },
+        };
         let tags = p.tags.unwrap_or_default();
         let store = self.open_store().await?;
         let id = store
@@ -169,6 +184,7 @@ impl MemServer {
                     decay_rate: p.decay_rate,
                     memory_type: Some(memory_type),
                     status,
+                    severity,
                 },
             )
             .await
@@ -197,9 +213,10 @@ impl MemServer {
             return tool_err(format!("too many items: {} (maximum 100)", p.items.len()));
         }
 
-        // Validate memory_type and status for all items before embedding anything
+        // Validating memory_type, status, and severity for all items before embedding anything
         let mut parsed_types: Vec<Option<MemoryType>> = Vec::with_capacity(p.items.len());
         let mut parsed_statuses: Vec<Option<MemoryStatus>> = Vec::with_capacity(p.items.len());
+        let mut parsed_severities: Vec<Option<MemorySeverity>> = Vec::with_capacity(p.items.len());
         for (i, item) in p.items.iter().enumerate() {
             let mt = match item.memory_type.as_deref() {
                 None => None,
@@ -223,8 +240,20 @@ impl MemServer {
                     }
                 },
             };
+            let sev = match item.severity.as_deref() {
+                None => None,
+                Some(s) => match MemorySeverity::from_str(s) {
+                    Some(sv) => Some(sv),
+                    None => {
+                        return tool_err(format!(
+                            "item {i}: unknown severity {s:?}; expected: critical, high, medium, or low"
+                        ));
+                    }
+                },
+            };
             parsed_types.push(mt);
             parsed_statuses.push(st);
+            parsed_severities.push(sev);
         }
 
         let contents: Vec<String> = p.items.iter().map(|item| item.content.clone()).collect();
@@ -241,8 +270,9 @@ impl MemServer {
             .zip(embeddings)
             .zip(parsed_types)
             .zip(parsed_statuses)
+            .zip(parsed_severities)
             .map(
-                |(((item, embedding), memory_type), status)| BatchInsertItem {
+                |((((item, embedding), memory_type), status), severity)| BatchInsertItem {
                     content: item.content,
                     embedding,
                     summary: item.summary,
@@ -253,6 +283,7 @@ impl MemServer {
                     decay_rate: item.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
                     memory_type,
                     status,
+                    severity,
                 },
             )
             .collect();
@@ -299,6 +330,7 @@ impl MemServer {
                 p.tags.as_deref(),
                 parse_memory_type(p.memory_type.as_deref()),
                 parse_memory_status(p.status.as_deref()),
+                parse_memory_severity(p.severity.as_deref()),
                 limit,
             )
             .await
@@ -321,6 +353,7 @@ impl MemServer {
                     "age_days":             m.age_days(),
                     "memory_type":          m.memory_type,
                     "status":               m.status,
+                    "severity":             m.severity,
                     "freshness_warning":    m.freshness_warning(),
                 })
             })
@@ -349,6 +382,7 @@ impl MemServer {
                 p.tags.as_deref(),
                 parse_memory_type(p.memory_type.as_deref()),
                 parse_memory_status(p.status.as_deref()),
+                parse_memory_severity(p.severity.as_deref()),
                 limit,
                 offset,
             )
@@ -374,6 +408,7 @@ impl MemServer {
                     "age_days":             m.age_days(),
                     "memory_type":          m.memory_type,
                     "status":               m.status,
+                    "severity":             m.severity,
                     "freshness_warning":    m.freshness_warning(),
                 })
             })
@@ -446,9 +481,10 @@ impl MemServer {
             && p.decay_rate.is_none()
             && p.memory_type.is_none()
             && p.status.is_none()
+            && p.severity.is_none()
         {
             return tool_err(
-                "at least one of content, summary, tags, context, confidence, decay_rate, memory_type, or status must be provided",
+                "at least one of content, summary, tags, context, confidence, decay_rate, memory_type, status, or severity must be provided",
             );
         }
 
@@ -459,6 +495,18 @@ impl MemServer {
                 None => {
                     return tool_err(format!(
                         "unknown status {:?}; expected: open, resolved, wontfix, or deferred",
+                        s
+                    ));
+                }
+            },
+        };
+        let update_severity = match p.severity.as_deref() {
+            None => None,
+            Some(s) => match MemorySeverity::from_str(s) {
+                Some(sev) => Some(sev),
+                None => {
+                    return tool_err(format!(
+                        "unknown severity {:?}; expected: critical, high, medium, or low",
                         s
                     ));
                 }
@@ -491,6 +539,7 @@ impl MemServer {
                     decay_rate: p.decay_rate,
                     memory_type: parse_memory_type(p.memory_type.as_deref()),
                     status: update_status,
+                    severity: update_severity,
                 },
             )
             .await
@@ -584,6 +633,11 @@ fn parse_memory_type(s: Option<&str>) -> Option<MemoryType> {
 /// Converts an optional status string into a [`MemoryStatus`], returning `None` for unrecognised values.
 fn parse_memory_status(s: Option<&str>) -> Option<MemoryStatus> {
     s.and_then(MemoryStatus::from_str)
+}
+
+/// Converts an optional severity string into a [`MemorySeverity`], returning `None` for unrecognised values.
+fn parse_memory_severity(s: Option<&str>) -> Option<MemorySeverity> {
+    s.and_then(MemorySeverity::from_str)
 }
 
 /// Typed errors produced at the MCP boundary, converted to [`McpError`] via [`From`].

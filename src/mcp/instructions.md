@@ -2,7 +2,7 @@ Local agent memory store. Embeddings generated server-side from plain text.
 
 ## Tools
 
-- `memory_store`: embed + persist new memory; returns numeric id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`), `status` (`open`/`resolved`/`wontfix`/`deferred`)
+- `memory_store`: embed + persist new memory; returns numeric id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`), `status` (`open`/`resolved`/`wontfix`/`deferred`), `severity` (`critical`/`high`/`medium`/`low`)
 - `memory_store_batch`: store multiple memories in one call; accepts `items: [...]` (max 100); embeds all in one pass, inserts atomically; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` when storing 3 or more memories at once
 - `memory_search`: cosine similarity + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Optional: `tags`, `memory_type`, `status` pre-filter
 - `memory_list`: newest-first with pagination. Optional: `tags`, `memory_type`, `status` filter; returns raw `confidence`, `decay_rate`, `last_seen_at`
@@ -118,6 +118,19 @@ Lifecycle state for task and issue memories. Omit for general knowledge, project
 Set when storing a bug, task, or finding. Update to `resolved` when done; do not delete resolved memories -- they are useful history. Both `memory_search` and `memory_list` accept `status` as a filter; combine with `memory_type` to query e.g. all open tasks.
 
 Note: decay_rate is the wrong model for "is this still open?" -- a bug is either fixed or not. Use `status` for lifecycle, `decay_rate` for time-based staleness of facts.
+
+### `severity`
+
+Urgency or impact level for a finding, issue, or task. Omit for general knowledge, project conventions, or anything without a meaningful priority.
+
+| Value | Meaning |
+|---|---|
+| `critical` | Requires immediate attention; may block work or cause data loss |
+| `high` | Significant impact; should be addressed soon |
+| `medium` | Noticeable impact; can be scheduled |
+| `low` | Minor impact; address when convenient |
+
+Set when storing a finding, issue, or task where priority matters. Both `memory_search` and `memory_list` accept `severity` as a filter; combine with `status` to query e.g. all open critical issues.
 
 ## Updating vs deleting
 
