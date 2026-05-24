@@ -170,6 +170,10 @@ impl MemServer {
             },
         };
         let tags = p.tags.unwrap_or_default();
+        let relations = match parse_relations(p.relations) {
+            Ok(r) => r,
+            Err(msg) => return tool_err(msg),
+        };
         let store = self.open_store().await?;
         let id = store
             .insert(
@@ -185,6 +189,7 @@ impl MemServer {
                     memory_type: Some(memory_type),
                     status,
                     severity,
+                    relations: &relations,
                 },
             )
             .await
@@ -217,6 +222,7 @@ impl MemServer {
         let mut parsed_types: Vec<Option<MemoryType>> = Vec::with_capacity(p.items.len());
         let mut parsed_statuses: Vec<Option<MemoryStatus>> = Vec::with_capacity(p.items.len());
         let mut parsed_severities: Vec<Option<MemorySeverity>> = Vec::with_capacity(p.items.len());
+        let mut parsed_relations: Vec<Vec<(i64, String)>> = Vec::with_capacity(p.items.len());
         for (i, item) in p.items.iter().enumerate() {
             let mt = match item.memory_type.as_deref() {
                 None => None,
@@ -251,9 +257,14 @@ impl MemServer {
                     }
                 },
             };
+            let rels = match parse_relations(item.relations.clone()) {
+                Ok(r) => r,
+                Err(msg) => return tool_err(format!("item {i}: {msg}")),
+            };
             parsed_types.push(mt);
             parsed_statuses.push(st);
             parsed_severities.push(sev);
+            parsed_relations.push(rels);
         }
 
         let contents: Vec<String> = p.items.iter().map(|item| item.content.clone()).collect();
@@ -271,19 +282,23 @@ impl MemServer {
             .zip(parsed_types)
             .zip(parsed_statuses)
             .zip(parsed_severities)
+            .zip(parsed_relations)
             .map(
-                |((((item, embedding), memory_type), status), severity)| BatchInsertItem {
-                    content: item.content,
-                    embedding,
-                    summary: item.summary,
-                    tags: item.tags.unwrap_or_default(),
-                    agent: agent.clone(),
-                    context: item.context,
-                    confidence: item.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
-                    decay_rate: item.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
-                    memory_type,
-                    status,
-                    severity,
+                |(((((item, embedding), memory_type), status), severity), relations)| {
+                    BatchInsertItem {
+                        content: item.content,
+                        embedding,
+                        summary: item.summary,
+                        tags: item.tags.unwrap_or_default(),
+                        agent: agent.clone(),
+                        context: item.context,
+                        confidence: item.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
+                        decay_rate: item.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
+                        memory_type,
+                        status,
+                        severity,
+                        relations,
+                    }
                 },
             )
             .collect();
@@ -354,6 +369,7 @@ impl MemServer {
                     "memory_type":          m.memory_type,
                     "status":               m.status,
                     "severity":             m.severity,
+                    "relations":            m.relations,
                     "freshness_warning":    m.freshness_warning(),
                 })
             })
@@ -409,6 +425,7 @@ impl MemServer {
                     "memory_type":          m.memory_type,
                     "status":               m.status,
                     "severity":             m.severity,
+                    "relations":            m.relations,
                     "freshness_warning":    m.freshness_warning(),
                 })
             })
@@ -482,9 +499,10 @@ impl MemServer {
             && p.memory_type.is_none()
             && p.status.is_none()
             && p.severity.is_none()
+            && p.relations.is_none()
         {
             return tool_err(
-                "at least one of content, summary, tags, context, confidence, decay_rate, memory_type, status, or severity must be provided",
+                "at least one of content, summary, tags, context, confidence, decay_rate, memory_type, status, severity, or relations must be provided",
             );
         }
 
@@ -526,6 +544,11 @@ impl MemServer {
             None
         };
 
+        let update_relations = match p.relations.map(|m| parse_relations(Some(m))) {
+            None => None,
+            Some(Ok(r)) => Some(r),
+            Some(Err(msg)) => return tool_err(msg),
+        };
         let updated = store
             .update(
                 p.id,
@@ -540,6 +563,7 @@ impl MemServer {
                     memory_type: parse_memory_type(p.memory_type.as_deref()),
                     status: update_status,
                     severity: update_severity,
+                    relations: update_relations.as_deref(),
                 },
             )
             .await
@@ -622,6 +646,28 @@ impl ServerHandler for MemServer {
 fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
     let mut result = CallToolResult::success(vec![Content::text(msg.to_string())]);
     result.is_error = Some(true);
+    Ok(result)
+}
+
+/// Converts an optional relations map into a validated list of `(target_id, kind)` pairs.
+///
+/// Returns an error string when any key is not a valid i64 or any kind value is empty.
+fn parse_relations(
+    map: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<Vec<(i64, String)>, String> {
+    let Some(map) = map else {
+        return Ok(Vec::new());
+    };
+    let mut result = Vec::with_capacity(map.len());
+    for (key, kind) in map {
+        let id = key.parse::<i64>().map_err(|_| {
+            format!("relations key {key:?} is not a valid memory id; expected a numeric id")
+        })?;
+        if kind.trim().is_empty() {
+            return Err(format!("relations[{key}]: kind must be a non-empty string"));
+        }
+        result.push((id, kind));
+    }
     Ok(result)
 }
 

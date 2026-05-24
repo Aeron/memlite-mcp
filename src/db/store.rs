@@ -160,6 +160,8 @@ pub struct Memory {
     pub status: Option<MemoryStatus>,
     /// Optional urgency or impact level; most meaningful for finding, issue, and task memories.
     pub severity: Option<MemorySeverity>,
+    /// Outgoing directed links keyed by stringified target identifier with a free-form kind label.
+    pub relations: std::collections::BTreeMap<String, String>,
 }
 
 impl Memory {
@@ -245,6 +247,8 @@ pub struct InsertOptions<'a> {
     pub status: Option<MemoryStatus>,
     /// Optional urgency or impact level; defaults to NULL.
     pub severity: Option<MemorySeverity>,
+    /// Outgoing directed links as (target id, kind) pairs; defaults to empty.
+    pub relations: &'a [(i64, String)],
 }
 
 /// Holds the fields that can be updated on an existing memory row.
@@ -270,6 +274,8 @@ pub struct UpdateOptions<'a> {
     pub status: Option<MemoryStatus>,
     /// Replacement severity level.
     pub severity: Option<MemorySeverity>,
+    /// Replacement outgoing relations as (target id, kind) pairs; replaces the full set when provided.
+    pub relations: Option<&'a [(i64, String)]>,
 }
 
 /// Holds owned data for a single row in a batch insert operation.
@@ -296,6 +302,8 @@ pub struct BatchInsertItem {
     pub status: Option<MemoryStatus>,
     /// Optional urgency or impact level.
     pub severity: Option<MemorySeverity>,
+    /// Outgoing directed links as (target id, kind) pairs.
+    pub relations: Vec<(i64, String)>,
 }
 
 /// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
@@ -346,6 +354,7 @@ impl MemoryStore {
             memory_type,
             status,
             severity,
+            relations,
         } = opts;
         let conn = self.conn()?;
         let tags_json = serde_json::to_string(tags)?;
@@ -358,8 +367,8 @@ impl MemoryStore {
             .query(
                 "insert into memories
                     (content, summary, tags, agent, embedding, created_at, updated_at, context,
-                     confidence, decay_rate, last_seen_at, type, status, severity)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     confidence, decay_rate, last_seen_at, type, status, severity, relations)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 returning rowid",
                 libsql::params_from_iter([
                     Value::Text(content.to_owned()),
@@ -386,6 +395,13 @@ impl MemoryStore {
                     severity
                         .map(|s| Value::Text(s.as_str().to_owned()))
                         .unwrap_or(Value::Null),
+                    {
+                        let map: std::collections::BTreeMap<String, &str> = relations
+                            .iter()
+                            .map(|(id, kind)| (id.to_string(), kind.as_str()))
+                            .collect();
+                        Value::Text(serde_json::to_string(&map)?)
+                    },
                 ]),
             )
             .await?;
@@ -411,8 +427,8 @@ impl MemoryStore {
         let now = unix_secs();
         let sql = "insert into memories
                 (content, summary, tags, agent, embedding, created_at, updated_at, context,
-                 confidence, decay_rate, last_seen_at, type, status, severity)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                 confidence, decay_rate, last_seen_at, type, status, severity, relations)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         let mut ids = Vec::with_capacity(items.len());
         for item in &items {
@@ -447,6 +463,14 @@ impl MemoryStore {
                     item.severity
                         .map(|s| Value::Text(s.as_str().to_owned()))
                         .unwrap_or(Value::Null),
+                    {
+                        let map: std::collections::BTreeMap<String, &str> = item
+                            .relations
+                            .iter()
+                            .map(|(id, kind)| (id.to_string(), kind.as_str()))
+                            .collect();
+                        Value::Text(serde_json::to_string(&map)?)
+                    },
                 ]),
             )
             .await?;
@@ -488,12 +512,12 @@ impl MemoryStore {
         )?;
         params.push(Value::Integer(candidate_limit));
 
-        // dist is placed last so parse_memory_row can use a fixed column range (0-13)
+        // dist is placed last so parse_memory_row can use a fixed column range (0-14)
         let sql = format!(
             "select
                 rowid, content, summary, tags, agent,
                 created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, status, severity,
+                confidence, decay_rate, last_seen_at, type, status, severity, relations,
                 vector_distance_cos(embedding, ?) as dist
             from memories
             {where_sql}
@@ -505,7 +529,7 @@ impl MemoryStore {
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let memory = parse_memory_row(&row)?;
-            let dist: f64 = row.get(14)?;
+            let dist: f64 = row.get(15)?;
             results.push((memory, dist));
         }
         Ok(rerank_by_overlap(query_text, results, limit as usize))
@@ -540,7 +564,7 @@ impl MemoryStore {
         let sql = format!(
             "select
                 rowid, content, summary, tags, agent, created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, status, severity
+                confidence, decay_rate, last_seen_at, type, status, severity, relations
             from memories
             {where_sql}
             order by created_at desc
@@ -608,6 +632,7 @@ impl MemoryStore {
             memory_type,
             status,
             severity,
+            relations,
         } = opts;
         if content.is_none()
             && summary.is_none()
@@ -619,6 +644,7 @@ impl MemoryStore {
             && memory_type.is_none()
             && status.is_none()
             && severity.is_none()
+            && relations.is_none()
         {
             return Ok(false);
         }
@@ -676,6 +702,14 @@ impl MemoryStore {
         if let Some(sev) = severity {
             set_clauses.push("severity = ?");
             params.push(Value::Text(sev.as_str().to_owned()));
+        }
+        if let Some(rels) = relations {
+            set_clauses.push("relations = ?");
+            let map: std::collections::BTreeMap<String, &str> = rels
+                .iter()
+                .map(|(id, kind)| (id.to_string(), kind.as_str()))
+                .collect();
+            params.push(Value::Text(serde_json::to_string(&map)?));
         }
         // Always bump both timestamps: updated_at records the data change,
         // last_seen_at resets the confidence decay clock
@@ -743,7 +777,7 @@ fn build_where(
 /// Expects columns in the order selected by `list` and `search`:
 /// 0=rowid, 1=content, 2=summary, 3=tags, 4=agent,
 /// 5=created_at, 6=updated_at, 7=context,
-/// 8=confidence, 9=decay_rate, 10=last_seen_at, 11=type, 12=status, 13=severity.
+/// 8=confidence, 9=decay_rate, 10=last_seen_at, 11=type, 12=status, 13=severity, 14=relations.
 fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
@@ -779,6 +813,9 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         Value::Text(s) => MemorySeverity::from_str(&s),
         other => return Err(anyhow!("unexpected value for severity column: {other:?}")),
     };
+    let relations_json: String = row.get(14)?;
+    let relations: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&relations_json)?;
 
     let tags: Vec<String> = serde_json::from_str(&tags_json)?;
 
@@ -797,6 +834,7 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         memory_type,
         status,
         severity,
+        relations,
     })
 }
 
@@ -1587,6 +1625,7 @@ mod tests {
                     memory_type: None,
                     status: None,
                     severity: None,
+                    relations: std::collections::BTreeMap::new(),
                 },
                 dist,
             )
@@ -1617,6 +1656,7 @@ mod tests {
                     memory_type: None,
                     status: None,
                     severity: None,
+                    relations: std::collections::BTreeMap::new(),
                 },
                 dist,
             )
@@ -1760,6 +1800,7 @@ mod tests {
                 memory_type: Some(MemoryType::Project),
                 status: Some(MemoryStatus::Open),
                 severity: None,
+                relations: vec![],
             },
             BatchInsertItem {
                 content: "second".into(),
@@ -1773,6 +1814,7 @@ mod tests {
                 memory_type: None,
                 status: Some(MemoryStatus::Resolved),
                 severity: None,
+                relations: vec![],
             },
         ];
         let ids = store.insert_batch(items).await.unwrap();
@@ -1900,5 +1942,122 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows[0].severity, Some(MemorySeverity::High));
+    }
+
+    #[tokio::test]
+    async fn insert_and_list_roundtrip_with_relations() {
+        let (store, _tmp) = fresh().await;
+        // Insert a target memory first so relation ids are valid in spirit
+        let target_id = store
+            .insert("target", &V2, InsertOptions::default())
+            .await
+            .unwrap();
+        let id = store
+            .insert(
+                "source with links",
+                &V1,
+                InsertOptions {
+                    relations: &[
+                        (target_id, "caused_by".to_owned()),
+                        (99, "related_to".to_owned()),
+                    ],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let rows = store
+            .list(None, None, None, None, None, 10, 0)
+            .await
+            .unwrap();
+        let source = rows.iter().find(|m| m.id == id).unwrap();
+        let mut expected = std::collections::BTreeMap::new();
+        expected.insert(target_id.to_string(), "caused_by".to_owned());
+        expected.insert("99".to_owned(), "related_to".to_owned());
+        assert_eq!(source.relations, expected);
+    }
+
+    #[tokio::test]
+    async fn insert_with_empty_relations_roundtrips() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert("no links", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        let rows = store
+            .list(None, None, None, None, None, 10, 0)
+            .await
+            .unwrap();
+        assert!(
+            rows.iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .relations
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn update_relations() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "with links",
+                &V1,
+                InsertOptions {
+                    relations: &[(10, "blocks".to_owned()), (20, "blocks".to_owned())],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .update(
+                id,
+                UpdateOptions {
+                    relations: Some(&[(30, "causes".to_owned())]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let rows = store
+            .list(None, None, None, None, None, 1, 0)
+            .await
+            .unwrap();
+        let mut expected = std::collections::BTreeMap::new();
+        expected.insert("30".to_owned(), "causes".to_owned());
+        assert_eq!(rows[0].relations, expected);
+    }
+
+    #[tokio::test]
+    async fn update_relations_to_empty_clears_list() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "with links",
+                &V1,
+                InsertOptions {
+                    relations: &[(5, "blocks".to_owned())],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .update(
+                id,
+                UpdateOptions {
+                    relations: Some(&[]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let rows = store
+            .list(None, None, None, None, None, 1, 0)
+            .await
+            .unwrap();
+        assert!(rows[0].relations.is_empty());
     }
 }

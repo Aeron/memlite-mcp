@@ -30,6 +30,12 @@ pub struct StoreParams {
     /// Urgency or impact level; one of: "critical", "high", "medium", "low".
     /// Most meaningful for finding, issue, and task memories.
     pub severity: Option<String>,
+    /// Outgoing directed links to other memory identifiers. A JSON object
+    /// mapping target memory id (as a string) to a free-form relation kind,
+    /// e.g. {"7": "caused_by", "12": "blocks"}. Kind is any non-empty string;
+    /// use consistent snake_case labels across the project (e.g. caused_by,
+    /// blocks, depends_on, supersedes, related_to). Omit or pass null for none.
+    pub relations: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -86,6 +92,8 @@ pub struct BatchStoreItem {
     pub status: Option<String>,
     /// Urgency or impact level; one of: "critical", "high", "medium", "low".
     pub severity: Option<String>,
+    /// Outgoing directed links; same format as memory_store relations.
+    pub relations: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -127,4 +135,7 @@ pub struct UpdateParams {
     pub status: Option<String>,
     /// Replacement severity level; one of: "critical", "high", "medium", "low".
     pub severity: Option<String>,
+    /// Replacement outgoing relations; replaces the full set when provided.
+    /// Same format as memory_store: {"<id>": "<kind>"}. Pass {} to clear all links.
+    pub relations: Option<std::collections::BTreeMap<String, String>>,
 }

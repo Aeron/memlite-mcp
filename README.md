@@ -85,14 +85,43 @@ The optional `memory_type` field classifies a memory's intended use, enabling ta
 | `project` | Codebase knowledge: conventions, stack, decisions, constraints |
 | `reference` | Domain knowledge: docs, external facts, API details, terminology |
 | `task` | Things to track, follow up on, or complete in a future session |
+| `finding` | Discovered problem, audit result, or identified risk; not yet a tracked task |
+| `issue` | Known defect or bug |
+| `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
+
+## Lifecycle and severity
+
+Tasks, issues, and findings carry an optional `status` field:
+
+| Value | Meaning |
+|---|---|
+| `open` | Active and unresolved |
+| `resolved` | Completed or fixed |
+| `wontfix` | Acknowledged, will not be addressed |
+| `deferred` | Postponed for later |
+
+Do not delete resolved memories — they are useful history. Update `status` to `resolved` instead and leave the record intact for future sessions. Both `memory_search` and `memory_list` accept `status` as a filter.
+
+The optional `severity` field (`critical` / `high` / `medium` / `low`) captures urgency for findings, issues, and tasks. Most meaningful combined with `status`; both are independently filterable.
+
+## Relations
+
+Memories can carry directed outgoing links via the `relations` field: a JSON object mapping a target memory id (string key) to a free-form relation kind:
+
+```json
+{"7": "caused_by", "12": "blocks"}
+```
+
+Links are one-way — the target memory is unmodified. Common kinds: `caused_by`, `causes`, `blocks`, `depends_on`, `supersedes`, `related_to`, `duplicate_of`. Kind strings are free-form; pick a label and use it consistently within a project. `memory_update` replaces the full set; pass `{}` to clear all links.
 
 ## Tools
 
 | Tool | Description |
 |---|---|
-| `memory_store` | Embeds and persists a memory; returns its numeric id. Accepts optional `summary`, `tags`, `context`, `confidence` (trust score in [0, 1], default 1.0), `decay_rate` (per-day confidence decay, default 0.0), and `memory_type` (one of `user`/`project`/`reference`/`task`) |
-| `memory_search` | Two-stage semantic search (cosine similarity then keyword re-ranking), ordered nearest-first; supports tag and `memory_type` filtering; returns `effective_confidence` and `age_days` per result |
-| `memory_list` | Paginated list newest-first; supports tag and `memory_type` filtering; returns raw `confidence`, `decay_rate`, and `last_seen_at` fields |
+| `memory_store` | Embeds and persists a memory; returns `{"id"}`. Required: `content`, `memory_type`. Optional: `summary`, `tags`, `context`, `confidence` ([0, 1], default 1.0), `decay_rate` (per-day decay, default 0.0), `status`, `severity`, `relations` |
+| `memory_store_batch` | Stores up to 100 memories atomically in a single embedding pass; accepts `items: [{...}]` with the same fields as `memory_store`; returns `[{"id"}]` in input order |
+| `memory_search` | Two-stage semantic search (cosine + keyword re-rank), nearest-first; optional `tags`, `memory_type`, `status`, `severity` filters; returns `effective_confidence` and `age_days` per result |
+| `memory_list` | Paginated list newest-first; optional `tags`, `memory_type`, `status`, `severity` filters; returns raw `confidence`, `decay_rate`, `last_seen_at` |
 | `memory_tags` | Lists all distinct tags with occurrence counts, ordered by frequency |
 | `memory_delete` | Deletes a memory by numeric id |
-| `memory_update` | Updates content (re-embeds), summary, tags, context, `confidence`, `decay_rate`, or `memory_type`; pass `""` to clear optional text fields; resets the decay clock on every change |
+| `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear text fields, `{}` to clear relations |

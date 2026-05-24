@@ -1,41 +1,45 @@
-Local agent memory store. Embeddings generated server-side from plain text.
+Local agent memory store. Server-side embeddings from plain text.
 
 ## Tools
 
-- `memory_store`: embed + persist new memory; returns numeric id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`), `status` (`open`/`resolved`/`wontfix`/`deferred`), `severity` (`critical`/`high`/`medium`/`low`)
-- `memory_store_batch`: store multiple memories in one call; accepts `items: [...]` (max 100); embeds all in one pass, inserts atomically; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` when storing 3 or more memories at once
-- `memory_search`: cosine similarity + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Optional: `tags`, `memory_type`, `status` pre-filter
-- `memory_list`: newest-first with pagination. Optional: `tags`, `memory_type`, `status` filter; returns raw `confidence`, `decay_rate`, `last_seen_at`
+- `memory_store`: embed + persist; returns id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`), `status` (`open`/`resolved`/`wontfix`/`deferred`), `severity` (`critical`/`high`/`medium`/`low`), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`)
+- `memory_store_batch`: batch store; `items: [...]` (max 100), same fields as `memory_store`; single-pass embed, atomic insert; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` for 3+ memories
+- `memory_search`: cosine + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Pre-filter: `tags`, `memory_type`, `status`, `severity`
+- `memory_list`: newest-first with pagination. Filter: `tags`, `memory_type`, `status`, `severity`; returns raw `confidence`, `decay_rate`, `last_seen_at`
 - `memory_tags`: all tags with occurrence counts, frequency-ordered
-- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status in-place; re-embeds on content change; resets decay clock
-- `memory_delete`: remove by numeric id
+- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status/severity/relations in-place; re-embeds on content change; resets decay clock
+- `memory_delete`: remove by id
 
 ## Workflow
 
 ### Before investigating
 
-Call `memory_search` before any investigation, debugging, or implementation. Use symptom, error, component, or concept as query. Stored memory may resolve immediately or surface prior decisions. Skipping risks full-cost rediscovery.
+Call `memory_search` before any investigation, debugging, or implementation. Query: symptom, error, component, or concept. May resolve immediately or surface prior decisions. Skipping risks full-cost rediscovery.
 
 ### After completing work
 
-Before finishing, store anything that would save meaningful future effort. Don't wait to be asked. Good candidates:
+Before finishing, store anything saving meaningful future effort. Don't wait to be asked. Good candidates:
 
-- Decision made or confirmed: what was chosen, what rejected, and why
-- Non-obvious fact: quirk, undocumented behavior, workaround, env-specific detail
+- Decision: what chosen, what rejected, why
+- Non-obvious fact: quirk, undocumented behavior, workaround, env detail
 - Bug diagnosed: root cause + fix, not just symptom
-- Constraint identified: anything ruling out or shaping future approaches
-- User preference or project convention: naming style, tooling choice, process rule
+- Constraint: anything ruling out or shaping future approaches
+- User preference or project convention: naming, tooling, process
 - Significant research: if it cost time once, store it
 
-Plain mechanical steps don't need storing (e.g., "ran the tests"). Test: would a future session benefit without rediscovery?
+Plain mechanical steps don't need storing (e.g., "ran tests"). Test: would future session benefit without rediscovery?
 
 ### Before storing
 
-Call `memory_tags` to reuse existing tags; inventing synonyms fragments taxonomy. Then call `memory_search`. Distance < 0.15: update instead of creating duplicate. Store only when no close match found.
+Call `memory_tags` to reuse existing tags; inventing synonyms fragments taxonomy. Then `memory_search`. Distance < 0.15: update, not create. Store only when no close match found.
 
 ### Searching vs listing
 
-Use `memory_search` for concept/topic; semantic results regardless of age. Use `memory_list` only for chronological review (e.g., "what did I store recently?").
+`memory_search` for concept/topic; semantic, age-agnostic. `memory_list` only for chronological review (e.g., "what stored recently?").
+
+### How `memory_search` ranks
+
+Two stages: cosine selects candidate pool (~4x return count), keyword overlap re-ranks within it. Pre-filters (`tags`, `memory_type`, `status`, `severity`) exclude before both stages. Result missing: drop filters first; still absent, rephrase with different vocabulary (semantic = embedding-based, not keyword-based).
 
 ### Distance scores
 
@@ -46,19 +50,19 @@ Use `memory_search` for concept/topic; semantic results regardless of age. Use `
 
 ### `effective_confidence` and `age_days`
 
-`effective_confidence` = base confidence minus accumulated decay since last validation, clamped [0,1].
+`effective_confidence` = base confidence - accumulated decay since last validation, clamped [0,1].
 
 - >= 0.8: reliable
-- 0.5-0.8: mild caution; re-verify if decision is significant
-- < 0.5: potentially stale; confirm before relying on it
+- 0.5-0.8: mild caution; re-verify if decision significant
+- < 0.5: potentially stale; confirm before use
 
-Low-confidence memory confirmed accurate? Call `memory_update` (any field, including setting `confidence` to current value) to reset `last_seen_at` and restart decay clock.
+Confirmed low-confidence memory accurate? Call `memory_update` (any field, even setting `confidence` to current value) to reset `last_seen_at` and restart decay clock.
 
 ## Fields
 
 ### `summary`
 
-Provide when content is longer than 2-3 sentences, technical jargon, or structured data. Shown in list views; used to decide whether to read full content. Skip for short, self-describing facts. Pass `""` to clear.
+Provide when content > 2-3 sentences, uses jargon, or is structured data. Shown in list views; helps decide whether to read full content. Skip for short, self-describing facts. Pass `""` to clear.
 
 ### `context`
 
@@ -67,18 +71,18 @@ Record the *why*: reasoning, constraints, trade-offs, broader situation. Not a s
 - "What prompted this?"
 - "Who or what does this affect, and how?"
 
-Skip for plain self-contained facts. Use for decisions, architectural choices, anything where rationale will matter later. Pass `""` to clear.
+Skip for plain self-contained facts. Use for decisions, architectural choices, anything where rationale matters later. Pass `""` to clear.
 
 ### `confidence`
 
-Float [0.0, 1.0]. Provide when info is not fully certain:
+Float [0.0, 1.0]. Provide when info uncertain:
 - Speculative/inferred: 0.5-0.7
 - Believed correct, unverified: 0.8-0.9
 - Confirmed: 1.0 (default)
 
 ### `decay_rate`
 
-Float [0.0, 1.0]. Reduces `effective_confidence` by that amount per day since last validation:
+Float [0.0, 1.0]. Reduces `effective_confidence` by amount per day since last validation:
 - 0.0 (default): no decay; stable facts, decisions, conventions
 - 0.005-0.01: slow; implementation details drifting over months
 - 0.02-0.05: moderate; env state, dependency versions, workarounds
@@ -88,7 +92,7 @@ Float [0.0, 1.0]. Reduces `effective_confidence` by that amount per day since la
 
 Grouping and filtering. Lowercase, singular where natural: `"auth"` not `"Authentication"`. Examples: `["architecture", "database"]`, `["bug", "auth"]`. Skip for one-off facts with no named domain.
 
-Both `memory_search` and `memory_list` accept optional `tags` array (all must match). Combine with query in `memory_search` to narrow to a category.
+Both `memory_search` and `memory_list` accept optional `tags`. All must match (hard AND pre-filter; not a relevance boost). Fewer tags = broader pool; result missing, drop tags first. Combine with query to narrow domain.
 
 ### `memory_type`
 
@@ -102,11 +106,11 @@ Both `memory_search` and `memory_list` accept optional `tags` array (all must ma
 | `issue` | Known defect or bug |
 | `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
 
-Set when memory clearly fits one category. Skip for multi-category or unclear fit. Both `memory_search` and `memory_list` accept `memory_type` as filter; combine with `tags` and `status` for precise retrieval.
+Set when memory fits one category; skip if multi-category or unclear. Both tools accept `memory_type` as filter; combine with `tags` and `status` for precise retrieval.
 
 ### `status`
 
-Lifecycle state for task and issue memories. Omit for general knowledge, project facts, or anything without a discrete resolution state.
+Lifecycle state for task and issue memories. Omit for general knowledge or anything without discrete resolution.
 
 | Value | Use for |
 |---|---|
@@ -115,13 +119,13 @@ Lifecycle state for task and issue memories. Omit for general knowledge, project
 | `wontfix` | Acknowledged, will not be addressed |
 | `deferred` | Postponed for later |
 
-Set when storing a bug, task, or finding. Update to `resolved` when done; do not delete resolved memories -- they are useful history. Both `memory_search` and `memory_list` accept `status` as a filter; combine with `memory_type` to query e.g. all open tasks.
+Set when storing bug, task, or finding. Update to `resolved` when done; don't delete resolved memories -- useful history. Both tools accept `status` as filter; combine with `memory_type` to query e.g. all open tasks.
 
-Note: decay_rate is the wrong model for "is this still open?" -- a bug is either fixed or not. Use `status` for lifecycle, `decay_rate` for time-based staleness of facts.
+Note: `decay_rate` is wrong model for "is this still open?" -- bug is fixed or not. Use `status` for lifecycle, `decay_rate` for time-based staleness.
 
 ### `severity`
 
-Urgency or impact level for a finding, issue, or task. Omit for general knowledge, project conventions, or anything without a meaningful priority.
+Urgency/impact level for finding, issue, or task. Omit for general knowledge or anything without meaningful priority.
 
 | Value | Meaning |
 |---|---|
@@ -130,12 +134,38 @@ Urgency or impact level for a finding, issue, or task. Omit for general knowledg
 | `medium` | Noticeable impact; can be scheduled |
 | `low` | Minor impact; address when convenient |
 
-Set when storing a finding, issue, or task where priority matters. Both `memory_search` and `memory_list` accept `severity` as a filter; combine with `status` to query e.g. all open critical issues.
+Set when storing finding, issue, or task where priority matters. Both tools accept `severity` as filter; combine with `status` to query e.g. all open critical issues.
+
+### `relations`
+
+Outgoing directed links to other memory identifiers. JSON object mapping target id (string key) to free-form relation kind:
+
+```json
+{"7": "caused_by", "12": "blocks"}
+```
+
+Kind is any non-empty string. Suggested labels for consistency:
+
+| Kind | Meaning |
+|---|---|
+| `caused_by` | this memory is caused by the target (finding -> root cause) |
+| `causes` | this memory causes the target (root cause -> downstream effect) |
+| `blocks` | this memory blocks the target task or fix |
+| `depends_on` | this memory depends on the target |
+| `supersedes` | this memory replaces the target (new decision -> old decision) |
+| `related_to` | generic association |
+| `duplicate_of` | this memory is a duplicate of the target |
+
+Links are one-way: memory A having `{"7": "caused_by"}` adds no link to memory 7. Reverse traversal requires search by id or explicit back-link on other memory.
+
+`memory_update` replaces full set when `relations` provided. Pass `{}` to clear all outgoing links.
+
+Returned in both tools as JSON object (empty when no links stored).
 
 ## Updating vs deleting
 
-`memory_update` resets decay clock (`last_seen_at` = now). Use as revalidation: if memory confirmed accurate during session, update it (even just set `confidence` to current value) to signal verification.
+`memory_update` resets decay clock (`last_seen_at` = now). Use as revalidation: confirmed accurate during session, update (even just set `confidence` to current value) to signal verification.
 
-Prefer update when core identity same but details changed: decision revised, fix turned incomplete, constraint relaxed/tightened, new info extends existing. Update proactively when current work makes stored memory stale or incomplete.
+Prefer update when core identity same but details changed: decision revised, fix turned incomplete, constraint shifted, new info extends. Update proactively when current work makes memory stale.
 
-Delete only when fully obsolete or factually wrong with no salvageable parts. Content update triggers re-embedding automatically.
+Delete only when fully obsolete or factually wrong with nothing salvageable. Content update triggers re-embedding automatically.
