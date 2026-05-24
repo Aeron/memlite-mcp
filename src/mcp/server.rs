@@ -19,7 +19,7 @@ use super::params::{
 };
 use crate::{
     config::Config,
-    db::{InsertOptions, MemoryStore, MemoryType, UpdateOptions},
+    db::{InsertOptions, MemoryStatus, MemoryStore, MemoryType, UpdateOptions},
     embedding::EmbeddingService,
 };
 
@@ -142,6 +142,18 @@ impl MemServer {
                 p.memory_type
             ));
         };
+        let status = match p.status.as_deref() {
+            None => None,
+            Some(s) => match MemoryStatus::from_str(s) {
+                Some(st) => Some(st),
+                None => {
+                    return tool_err(format!(
+                        "unknown status {:?}; expected: open, resolved, wontfix, or deferred",
+                        s
+                    ));
+                }
+            },
+        };
         let tags = p.tags.unwrap_or_default();
         let store = self.open_store().await?;
         let id = store
@@ -156,6 +168,7 @@ impl MemServer {
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
                     memory_type: Some(memory_type),
+                    status,
                 },
             )
             .await
@@ -191,6 +204,7 @@ impl MemServer {
                 self.config.agent_filter(),
                 p.tags.as_deref(),
                 parse_memory_type(p.memory_type.as_deref()),
+                parse_memory_status(p.status.as_deref()),
                 limit,
             )
             .await
@@ -212,6 +226,7 @@ impl MemServer {
                     "effective_confidence": m.effective_confidence(),
                     "age_days":             m.age_days(),
                     "memory_type":          m.memory_type,
+                    "status":               m.status,
                     "freshness_warning":    m.freshness_warning(),
                 })
             })
@@ -239,6 +254,7 @@ impl MemServer {
                 self.config.agent_filter(),
                 p.tags.as_deref(),
                 parse_memory_type(p.memory_type.as_deref()),
+                parse_memory_status(p.status.as_deref()),
                 limit,
                 offset,
             )
@@ -263,6 +279,7 @@ impl MemServer {
                     "effective_confidence": m.effective_confidence(),
                     "age_days":             m.age_days(),
                     "memory_type":          m.memory_type,
+                    "status":               m.status,
                     "freshness_warning":    m.freshness_warning(),
                 })
             })
@@ -334,12 +351,25 @@ impl MemServer {
             && p.confidence.is_none()
             && p.decay_rate.is_none()
             && p.memory_type.is_none()
+            && p.status.is_none()
         {
             return tool_err(
-                "at least one of content, summary, tags, context, confidence, or decay_rate must be provided",
+                "at least one of content, summary, tags, context, confidence, decay_rate, memory_type, or status must be provided",
             );
         }
 
+        let update_status = match p.status.as_deref() {
+            None => None,
+            Some(s) => match MemoryStatus::from_str(s) {
+                Some(st) => Some(st),
+                None => {
+                    return tool_err(format!(
+                        "unknown status {:?}; expected: open, resolved, wontfix, or deferred",
+                        s
+                    ));
+                }
+            },
+        };
         let Some(store) = self.store_if_present().await? else {
             return tool_err(format!("no memory found with id {}", p.id));
         };
@@ -366,6 +396,7 @@ impl MemServer {
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
                     memory_type: parse_memory_type(p.memory_type.as_deref()),
+                    status: update_status,
                 },
             )
             .await
@@ -454,6 +485,11 @@ fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
 /// Converts an optional type string into a [`MemoryType`], returning `None` for unrecognised values.
 fn parse_memory_type(s: Option<&str>) -> Option<MemoryType> {
     s.and_then(MemoryType::from_str)
+}
+
+/// Converts an optional status string into a [`MemoryStatus`], returning `None` for unrecognised values.
+fn parse_memory_status(s: Option<&str>) -> Option<MemoryStatus> {
+    s.and_then(MemoryStatus::from_str)
 }
 
 /// Typed errors produced at the MCP boundary, converted to [`McpError`] via [`From`].

@@ -42,6 +42,43 @@ impl MemoryType {
     }
 }
 
+/// Tracks the lifecycle state of a memory; most useful for task and issue types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryStatus {
+    /// Active and unresolved; the default when set without further qualification.
+    Open,
+    /// Completed or fixed; no longer requires action.
+    Resolved,
+    /// Acknowledged but will not be addressed.
+    Wontfix,
+    /// Postponed for later consideration.
+    Deferred,
+}
+
+impl MemoryStatus {
+    /// Returns the lowercase string representation of the variant.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemoryStatus::Open => "open",
+            MemoryStatus::Resolved => "resolved",
+            MemoryStatus::Wontfix => "wontfix",
+            MemoryStatus::Deferred => "deferred",
+        }
+    }
+
+    /// Parses a lowercase string into the matching variant, returning None on mismatch.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "open" => Some(MemoryStatus::Open),
+            "resolved" => Some(MemoryStatus::Resolved),
+            "wontfix" => Some(MemoryStatus::Wontfix),
+            "deferred" => Some(MemoryStatus::Deferred),
+            _ => None,
+        }
+    }
+}
+
 /// Represents a single stored memory row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
@@ -70,6 +107,8 @@ pub struct Memory {
     pub last_seen_at: i64,
     /// Optional classification of the memory's origin or intended use.
     pub memory_type: Option<MemoryType>,
+    /// Optional lifecycle state; most meaningful for task and issue memories.
+    pub status: Option<MemoryStatus>,
 }
 
 impl Memory {
@@ -151,6 +190,8 @@ pub struct InsertOptions<'a> {
     pub decay_rate: Option<f64>,
     /// Optional classification of the memory's origin or intended use.
     pub memory_type: Option<MemoryType>,
+    /// Optional lifecycle status; defaults to NULL (no status).
+    pub status: Option<MemoryStatus>,
 }
 
 /// Holds the fields that can be updated on an existing memory row.
@@ -172,6 +213,8 @@ pub struct UpdateOptions<'a> {
     pub decay_rate: Option<f64>,
     /// Replacement memory type classification.
     pub memory_type: Option<MemoryType>,
+    /// Replacement lifecycle status.
+    pub status: Option<MemoryStatus>,
 }
 
 /// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
@@ -220,6 +263,7 @@ impl MemoryStore {
             confidence,
             decay_rate,
             memory_type,
+            status,
         } = opts;
         let conn = self.conn()?;
         let tags_json = serde_json::to_string(tags)?;
@@ -232,8 +276,8 @@ impl MemoryStore {
             .query(
                 "insert into memories
                     (content, summary, tags, agent, embedding, created_at, updated_at, context,
-                     confidence, decay_rate, last_seen_at, type)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     confidence, decay_rate, last_seen_at, type, status)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 returning rowid",
                 libsql::params_from_iter([
                     Value::Text(content.to_owned()),
@@ -253,6 +297,9 @@ impl MemoryStore {
                     Value::Integer(now),
                     memory_type
                         .map(|mt| Value::Text(mt.as_str().to_owned()))
+                        .unwrap_or(Value::Null),
+                    status
+                        .map(|s| Value::Text(s.as_str().to_owned()))
                         .unwrap_or(Value::Null),
                 ]),
             )
@@ -279,21 +326,22 @@ impl MemoryStore {
         agent_id: Option<&str>,
         tags: Option<&[String]>,
         type_filter: Option<MemoryType>,
+        status_filter: Option<MemoryStatus>,
         limit: u32,
     ) -> Result<Vec<(Memory, f64)>> {
         let conn = self.conn()?;
         let emb_blob = floats_to_blob(query_embedding);
         let candidate_limit = (limit as i64).saturating_mul(4).min(400);
         let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
-        let where_sql = build_where(agent_id, tags, type_filter, &mut params)?;
+        let where_sql = build_where(agent_id, tags, type_filter, status_filter, &mut params)?;
         params.push(Value::Integer(candidate_limit));
 
-        // dist is placed last so parse_memory_row can use a fixed column range (0-11)
+        // dist is placed last so parse_memory_row can use a fixed column range (0-12)
         let sql = format!(
             "select
                 rowid, content, summary, tags, agent,
                 created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type,
+                confidence, decay_rate, last_seen_at, type, status,
                 vector_distance_cos(embedding, ?) as dist
             from memories
             {where_sql}
@@ -305,7 +353,7 @@ impl MemoryStore {
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let memory = parse_memory_row(&row)?;
-            let dist: f64 = row.get(12)?;
+            let dist: f64 = row.get(13)?;
             results.push((memory, dist));
         }
         Ok(rerank_by_overlap(query_text, results, limit as usize))
@@ -319,19 +367,20 @@ impl MemoryStore {
         agent_id: Option<&str>,
         tags: Option<&[String]>,
         type_filter: Option<MemoryType>,
+        status_filter: Option<MemoryStatus>,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Memory>> {
         let conn = self.conn()?;
         let mut params: Vec<Value> = Vec::new();
-        let where_sql = build_where(agent_id, tags, type_filter, &mut params)?;
+        let where_sql = build_where(agent_id, tags, type_filter, status_filter, &mut params)?;
         params.push(Value::Integer(limit as i64));
         params.push(Value::Integer(offset as i64));
 
         let sql = format!(
             "select
                 rowid, content, summary, tags, agent, created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type
+                confidence, decay_rate, last_seen_at, type, status
             from memories
             {where_sql}
             order by created_at desc
@@ -350,7 +399,7 @@ impl MemoryStore {
     pub async fn tags(&self, agent_id: Option<&str>) -> Result<Vec<(String, u32)>> {
         let conn = self.conn()?;
         let mut params: Vec<Value> = Vec::new();
-        let where_sql = build_where(agent_id, None, None, &mut params)?;
+        let where_sql = build_where(agent_id, None, None, None, &mut params)?;
         let sql = format!(
             "select jt.value, count(*) as cnt
             from memories, json_each(memories.tags) jt
@@ -397,6 +446,7 @@ impl MemoryStore {
             confidence,
             decay_rate,
             memory_type,
+            status,
         } = opts;
         if content.is_none()
             && summary.is_none()
@@ -406,6 +456,7 @@ impl MemoryStore {
             && confidence.is_none()
             && decay_rate.is_none()
             && memory_type.is_none()
+            && status.is_none()
         {
             return Ok(false);
         }
@@ -456,6 +507,10 @@ impl MemoryStore {
             set_clauses.push("type = ?");
             params.push(Value::Text(mt.as_str().to_owned()));
         }
+        if let Some(st) = status {
+            set_clauses.push("status = ?");
+            params.push(Value::Text(st.as_str().to_owned()));
+        }
         // Always bump both timestamps: updated_at records the data change,
         // last_seen_at resets the confidence decay clock
         set_clauses.push("updated_at = ?");
@@ -480,6 +535,7 @@ fn build_where(
     agent_id: Option<&str>,
     tags: Option<&[String]>,
     type_filter: Option<MemoryType>,
+    status_filter: Option<MemoryStatus>,
     params: &mut Vec<Value>,
 ) -> Result<String> {
     let mut clauses: Vec<String> = Vec::new();
@@ -500,6 +556,10 @@ fn build_where(
         clauses.push("type = ?".into());
         params.push(Value::Text(mt.as_str().to_owned()));
     }
+    if let Some(sf) = status_filter {
+        clauses.push("status = ?".into());
+        params.push(Value::Text(sf.as_str().to_owned()));
+    }
     Ok(if clauses.is_empty() {
         String::new()
     } else {
@@ -512,7 +572,7 @@ fn build_where(
 /// Expects columns in the order selected by `list` and `search`:
 /// 0=rowid, 1=content, 2=summary, 3=tags, 4=agent,
 /// 5=created_at, 6=updated_at, 7=context,
-/// 8=confidence, 9=decay_rate, 10=last_seen_at, 11=type.
+/// 8=confidence, 9=decay_rate, 10=last_seen_at, 11=type, 12=status.
 fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
@@ -538,6 +598,11 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         Value::Text(s) => MemoryType::from_str(&s),
         other => return Err(anyhow!("unexpected value for type column: {other:?}")),
     };
+    let status = match row.get_value(12)? {
+        Value::Null => None,
+        Value::Text(s) => MemoryStatus::from_str(&s),
+        other => return Err(anyhow!("unexpected value for status column: {other:?}")),
+    };
 
     let tags: Vec<String> = serde_json::from_str(&tags_json)?;
 
@@ -554,6 +619,7 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         decay_rate,
         last_seen_at,
         memory_type,
+        status,
     })
 }
 
@@ -670,7 +736,7 @@ mod tests {
     #[tokio::test]
     async fn list_empty_store() {
         let (store, _tmp) = fresh().await;
-        let rows = store.list(None, None, None, 10, 0).await.unwrap();
+        let rows = store.list(None, None, None, None, 10, 0).await.unwrap();
         assert!(rows.is_empty());
     }
 
@@ -691,7 +757,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let rows = store.list(None, None, None, 10, 0).await.unwrap();
+        let rows = store.list(None, None, None, None, 10, 0).await.unwrap();
         assert_eq!(rows.len(), 1);
         let m = &rows[0];
         assert_eq!(m.id, id);
@@ -721,7 +787,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let rows = store.list(None, None, None, 1, 0).await.unwrap();
+        let rows = store.list(None, None, None, None, 1, 0).await.unwrap();
         assert_eq!(rows[0].confidence, 0.7);
         assert_eq!(rows[0].decay_rate, 0.01);
     }
@@ -752,11 +818,14 @@ mod tests {
             .await
             .unwrap();
 
-        let alice = store.list(Some("alice"), None, None, 10, 0).await.unwrap();
+        let alice = store
+            .list(Some("alice"), None, None, None, 10, 0)
+            .await
+            .unwrap();
         assert_eq!(alice.len(), 1);
         assert_eq!(alice[0].agent, "alice");
 
-        let all = store.list(None, None, None, 10, 0).await.unwrap();
+        let all = store.list(None, None, None, None, 10, 0).await.unwrap();
         assert_eq!(all.len(), 2);
     }
 
@@ -769,8 +838,8 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let page0 = store.list(None, None, None, 3, 0).await.unwrap();
-        let page1 = store.list(None, None, None, 3, 3).await.unwrap();
+        let page0 = store.list(None, None, None, None, 3, 0).await.unwrap();
+        let page1 = store.list(None, None, None, None, 3, 3).await.unwrap();
         assert_eq!(page0.len(), 3);
         assert_eq!(page1.len(), 2);
         let ids0: Vec<i64> = page0.iter().map(|m| m.id).collect();
@@ -788,7 +857,7 @@ mod tests {
         assert!(store.delete(id).await.unwrap());
         assert!(
             store
-                .list(None, None, None, 10, 0)
+                .list(None, None, None, None, 10, 0)
                 .await
                 .unwrap()
                 .is_empty()
@@ -832,20 +901,30 @@ mod tests {
             .unwrap();
 
         let bug_only = store
-            .list(None, Some(&["bug".into()]), None, 10, 0)
+            .list(None, Some(&["bug".into()]), None, None, 10, 0)
             .await
             .unwrap();
         assert_eq!(bug_only.len(), 2);
 
         let both = store
-            .list(None, Some(&["bug".into(), "config".into()]), None, 10, 0)
+            .list(
+                None,
+                Some(&["bug".into(), "config".into()]),
+                None,
+                None,
+                10,
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(both.len(), 1);
         assert_eq!(both[0].content, "a");
 
         // empty slice = no filter
-        let all = store.list(None, Some(&[]), None, 10, 0).await.unwrap();
+        let all = store
+            .list(None, Some(&[]), None, None, 10, 0)
+            .await
+            .unwrap();
         assert_eq!(all.len(), 3);
     }
 
@@ -869,7 +948,7 @@ mod tests {
             .unwrap();
 
         let results = store
-            .search("", &V1, None, Some(&["rust".into()]), None, 10)
+            .search("", &V1, None, Some(&["rust".into()]), None, None, 10)
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -967,7 +1046,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            store.list(None, None, None, 1, 0).await.unwrap()[0].content,
+            store.list(None, None, None, None, 1, 0).await.unwrap()[0].content,
             "new"
         );
     }
@@ -997,7 +1076,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            store.list(None, None, None, 1, 0).await.unwrap()[0]
+            store.list(None, None, None, None, 1, 0).await.unwrap()[0]
                 .summary
                 .is_none()
         );
@@ -1028,7 +1107,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            store.list(None, None, None, 1, 0).await.unwrap()[0]
+            store.list(None, None, None, None, 1, 0).await.unwrap()[0]
                 .context
                 .is_none()
         );
@@ -1081,7 +1160,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let m = &store.list(None, None, None, 1, 0).await.unwrap()[0];
+        let m = &store.list(None, None, None, None, 1, 0).await.unwrap()[0];
         assert_eq!(m.confidence, 0.6);
         assert_eq!(m.decay_rate, 0.02);
     }
@@ -1093,7 +1172,7 @@ mod tests {
             .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        let before = store.list(None, None, None, 1, 0).await.unwrap()[0].last_seen_at;
+        let before = store.list(None, None, None, None, 1, 0).await.unwrap()[0].last_seen_at;
         // Small sleep so the new timestamp is strictly greater
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         store
@@ -1106,7 +1185,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let after = store.list(None, None, None, 1, 0).await.unwrap()[0].last_seen_at;
+        let after = store.list(None, None, None, None, 1, 0).await.unwrap()[0].last_seen_at;
         assert!(after > before, "last_seen_at should increase after update");
     }
 
@@ -1125,7 +1204,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let m = &store.list(None, None, None, 1, 0).await.unwrap()[0];
+        let m = &store.list(None, None, None, None, 1, 0).await.unwrap()[0];
         assert_eq!(m.effective_confidence(), 0.8);
     }
 
@@ -1155,7 +1234,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let m = &store.list(None, None, None, 1, 0).await.unwrap()[0];
+        let m = &store.list(None, None, None, None, 1, 0).await.unwrap()[0];
         // 30 days * 0.5/day = 15 decay: 1.0 - 15 = -14, clamped to 0.0
         assert_eq!(m.effective_confidence(), 0.0);
     }
@@ -1167,7 +1246,7 @@ mod tests {
             .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        let m = &store.list(None, None, None, 1, 0).await.unwrap()[0];
+        let m = &store.list(None, None, None, None, 1, 0).await.unwrap()[0];
         assert_eq!(m.age_days(), 0);
     }
 
@@ -1186,7 +1265,10 @@ mod tests {
             .unwrap();
 
         // Empty query: no word-overlap re-ranking, pure cosine order preserved
-        let results = store.search("", &V1, None, None, None, 2).await.unwrap();
+        let results = store
+            .search("", &V1, None, None, None, None, 2)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(
             results[0].0.id, id1,
@@ -1216,7 +1298,7 @@ mod tests {
         // Query vector identical to V1 (so cosine order would put the first item first),
         // but query text matches the second item
         let results = store
-            .search("rust programming", &V1, None, None, None, 2)
+            .search("rust programming", &V1, None, None, None, None, 2)
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -1253,7 +1335,7 @@ mod tests {
             .unwrap();
 
         let results = store
-            .search("", &V1, Some("alice"), None, None, 10)
+            .search("", &V1, Some("alice"), None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -1277,6 +1359,7 @@ mod tests {
                     decay_rate: 0.0,
                     last_seen_at: 0,
                     memory_type: None,
+                    status: None,
                 },
                 dist,
             )
@@ -1305,6 +1388,7 @@ mod tests {
                     decay_rate: 0.0,
                     last_seen_at: 0,
                     memory_type: None,
+                    status: None,
                 },
                 dist,
             )
@@ -1315,5 +1399,104 @@ mod tests {
         let ranked = rerank_by_overlap("rust tips", candidates, 2);
         assert_eq!(ranked[0].0.content, "rust tips guide");
         assert_eq!(ranked[1].0.content, "python docs");
+    }
+
+    #[tokio::test]
+    async fn insert_and_list_roundtrip_with_status() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "fix login crash",
+                &V1,
+                InsertOptions {
+                    status: Some(MemoryStatus::Open),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let rows = store.list(None, None, None, None, 10, 0).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, id);
+        assert_eq!(rows[0].status, Some(MemoryStatus::Open));
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_status() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert(
+                "open issue",
+                &V1,
+                InsertOptions {
+                    status: Some(MemoryStatus::Open),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .insert(
+                "resolved issue",
+                &V1,
+                InsertOptions {
+                    status: Some(MemoryStatus::Resolved),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .insert("no status", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+
+        let open = store
+            .list(None, None, None, Some(MemoryStatus::Open), 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].content, "open issue");
+
+        let resolved = store
+            .list(None, None, None, Some(MemoryStatus::Resolved), 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].content, "resolved issue");
+
+        let all = store.list(None, None, None, None, 10, 0).await.unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn update_status() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "track this",
+                &V1,
+                InsertOptions {
+                    status: Some(MemoryStatus::Open),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let updated = store
+            .update(
+                id,
+                UpdateOptions {
+                    status: Some(MemoryStatus::Resolved),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(updated);
+
+        let rows = store.list(None, None, None, None, 1, 0).await.unwrap();
+        assert_eq!(rows[0].status, Some(MemoryStatus::Resolved));
     }
 }

@@ -23,6 +23,9 @@ pub struct StoreParams {
     pub decay_rate: Option<f64>,
     /// Structured category; required. One of: "user", "project", "reference", "task".
     pub memory_type: String,
+    /// Lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
+    /// Set for task and issue memories. Omit for general knowledge.
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -35,6 +38,8 @@ pub struct SearchParams {
     pub tags: Option<Vec<String>>,
     /// Restricts results to memories of the given type.
     pub memory_type: Option<String>,
+    /// Restricts results to memories with the given status.
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -47,6 +52,8 @@ pub struct ListParams {
     pub tags: Option<Vec<String>>,
     /// Restricts results to memories of the given type.
     pub memory_type: Option<String>,
+    /// Restricts results to memories with the given status.
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -76,4 +83,7 @@ pub struct UpdateParams {
     pub decay_rate: Option<f64>,
     /// Structured category: one of "user", "project", "reference", or "task".
     pub memory_type: Option<String>,
+    /// Replacement lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
+    /// Pass to transition a task or issue through its lifecycle.
+    pub status: Option<String>,
 }

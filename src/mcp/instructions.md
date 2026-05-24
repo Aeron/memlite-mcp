@@ -2,11 +2,11 @@ Local agent memory store. Embeddings generated server-side from plain text.
 
 ## Tools
 
-- `memory_store`: embed + persist new memory; returns numeric id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`)
-- `memory_search`: cosine similarity + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Optional: `tags`, `memory_type` pre-filter
-- `memory_list`: newest-first with pagination. Optional: `tags`, `memory_type` filter; returns raw `confidence`, `decay_rate`, `last_seen_at`
+- `memory_store`: embed + persist new memory; returns numeric id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`), `status` (`open`/`resolved`/`wontfix`/`deferred`)
+- `memory_search`: cosine similarity + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Optional: `tags`, `memory_type`, `status` pre-filter
+- `memory_list`: newest-first with pagination. Optional: `tags`, `memory_type`, `status` filter; returns raw `confidence`, `decay_rate`, `last_seen_at`
 - `memory_tags`: all tags with occurrence counts, frequency-ordered
-- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type in-place; re-embeds on content change; resets decay clock
+- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status in-place; re-embeds on content change; resets decay clock
 - `memory_delete`: remove by numeric id
 
 ## Workflow
@@ -98,7 +98,22 @@ Both `memory_search` and `memory_list` accept optional `tags` array (all must ma
 | `reference` | Domain knowledge, docs, external facts, API details |
 | `task` | Things to track, follow up, or complete |
 
-Set when memory clearly fits one category. Skip for multi-category or unclear fit. Both `memory_search` and `memory_list` accept `memory_type` as filter; combine with `tags` for precise retrieval.
+Set when memory clearly fits one category. Skip for multi-category or unclear fit. Both `memory_search` and `memory_list` accept `memory_type` as filter; combine with `tags` and `status` for precise retrieval.
+
+### `status`
+
+Lifecycle state for task and issue memories. Omit for general knowledge, project facts, or anything without a discrete resolution state.
+
+| Value | Use for |
+|---|---|
+| `open` | Active and unresolved |
+| `resolved` | Completed or fixed |
+| `wontfix` | Acknowledged, will not be addressed |
+| `deferred` | Postponed for later |
+
+Set when storing a bug, task, or finding. Update to `resolved` when done; do not delete resolved memories -- they are useful history. Both `memory_search` and `memory_list` accept `status` as a filter; combine with `memory_type` to query e.g. all open tasks.
+
+Note: decay_rate is the wrong model for "is this still open?" -- a bug is either fixed or not. Use `status` for lifecycle, `decay_rate` for time-based staleness of facts.
 
 ## Updating vs deleting
 
