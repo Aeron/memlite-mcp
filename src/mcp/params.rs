@@ -21,7 +21,8 @@ pub struct StoreParams {
     /// Per-day confidence decay rate in [0, 1] (default 0.0); 0.01 reduces
     /// confidence by 1% per day since the last validation.
     pub decay_rate: Option<f64>,
-    /// Structured category; required. One of: "user", "project", "reference", "task".
+    /// Structured category; required. One of: "user", "project", "reference", "task",
+    /// "finding", "issue", "decision".
     pub memory_type: String,
     /// Lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
     /// Set for task and issue memories. Omit for general knowledge.
@@ -67,7 +68,8 @@ pub struct BatchStoreItem {
     pub tags: Option<Vec<String>>,
     /// Background rationale for this memory.
     pub context: Option<String>,
-    /// Structured category: one of "user", "project", "reference", or "task".
+    /// Structured category: one of "user", "project", "reference", "task",
+    /// "finding", "issue", "decision".
     pub memory_type: Option<String>,
     /// Initial confidence score in [0, 1] (default 1.0).
     pub confidence: Option<f64>,
@@ -108,7 +110,8 @@ pub struct UpdateParams {
     pub confidence: Option<f64>,
     /// Replacement per-day confidence decay rate; clamped to [0, 1].
     pub decay_rate: Option<f64>,
-    /// Structured category: one of "user", "project", "reference", or "task".
+    /// Structured category: one of "user", "project", "reference", "task",
+    /// "finding", "issue", "decision".
     pub memory_type: Option<String>,
     /// Replacement lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
     /// Pass to transition a task or issue through its lifecycle.

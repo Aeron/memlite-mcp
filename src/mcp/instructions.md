@@ -2,7 +2,7 @@ Local agent memory store. Embeddings generated server-side from plain text.
 
 ## Tools
 
-- `memory_store`: embed + persist new memory; returns numeric id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`), `status` (`open`/`resolved`/`wontfix`/`deferred`)
+- `memory_store`: embed + persist new memory; returns numeric id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`), `status` (`open`/`resolved`/`wontfix`/`deferred`)
 - `memory_store_batch`: store multiple memories in one call; accepts `items: [...]` (max 100); embeds all in one pass, inserts atomically; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` when storing 3 or more memories at once
 - `memory_search`: cosine similarity + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Optional: `tags`, `memory_type`, `status` pre-filter
 - `memory_list`: newest-first with pagination. Optional: `tags`, `memory_type`, `status` filter; returns raw `confidence`, `decay_rate`, `last_seen_at`
@@ -98,6 +98,9 @@ Both `memory_search` and `memory_list` accept optional `tags` array (all must ma
 | `project` | Conventions, tech stack, architecture, constraints |
 | `reference` | Domain knowledge, docs, external facts, API details |
 | `task` | Things to track, follow up, or complete |
+| `finding` | Discovered problem, audit result, or identified risk; not yet a tracked task |
+| `issue` | Known defect or bug |
+| `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
 
 Set when memory clearly fits one category. Skip for multi-category or unclear fit. Both `memory_search` and `memory_list` accept `memory_type` as filter; combine with `tags` and `status` for precise retrieval.
 

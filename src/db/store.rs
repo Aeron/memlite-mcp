@@ -17,6 +17,12 @@ pub enum MemoryType {
     Reference,
     /// Things to track, follow up on, or complete in a future session.
     Task,
+    /// Discovered problem, audit result, or identified risk; not yet a tracked task.
+    Finding,
+    /// Known defect or bug.
+    Issue,
+    /// Architectural or design decision record: what was chosen, what rejected, and why.
+    Decision,
 }
 
 impl MemoryType {
@@ -27,6 +33,9 @@ impl MemoryType {
             MemoryType::Project => "project",
             MemoryType::Reference => "reference",
             MemoryType::Task => "task",
+            MemoryType::Finding => "finding",
+            MemoryType::Issue => "issue",
+            MemoryType::Decision => "decision",
         }
     }
 
@@ -37,6 +46,9 @@ impl MemoryType {
             "project" => Some(MemoryType::Project),
             "reference" => Some(MemoryType::Reference),
             "task" => Some(MemoryType::Task),
+            "finding" => Some(MemoryType::Finding),
+            "issue" => Some(MemoryType::Issue),
+            "decision" => Some(MemoryType::Decision),
             _ => None,
         }
     }

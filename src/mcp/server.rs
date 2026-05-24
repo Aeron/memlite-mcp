@@ -138,7 +138,7 @@ impl MemServer {
             .map_err(ServerError::Embed)?;
         let Some(memory_type) = MemoryType::from_str(&p.memory_type) else {
             return tool_err(format!(
-                "unknown memory_type {:?}; expected: user, project, reference, or task",
+                "unknown memory_type {:?}; expected: user, project, reference, task, finding, issue, or decision",
                 p.memory_type
             ));
         };
@@ -207,7 +207,7 @@ impl MemServer {
                     Some(t) => Some(t),
                     None => {
                         return tool_err(format!(
-                            "item {i}: unknown memory_type {s:?}; expected: user, project, reference, or task"
+                            "item {i}: unknown memory_type {s:?}; expected: user, project, reference, task, finding, issue, or decision"
                         ));
                     }
                 },
