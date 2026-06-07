@@ -4,6 +4,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StoreParams {
     /// The full text to embed and store.
+    #[schemars(length(min = 1))]
     pub content: String,
     /// One-sentence description for quick recall without reading the full
     /// content. Provide when content is long, complex, or not self-describing.
@@ -17,12 +18,14 @@ pub struct StoreParams {
     pub context: Option<String>,
     /// Initial confidence score in [0, 1] (default 1.0); lower values indicate
     /// uncertain or potentially outdated information.
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub confidence: Option<f64>,
     /// Per-day confidence decay rate in [0, 1] (default 0.0); 0.01 reduces
     /// confidence by 1% per day since the last validation.
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub decay_rate: Option<f64>,
     /// Structured category; required. One of: "user", "project", "reference", "task",
-    /// "finding", "issue", "decision".
+    /// "finding", "issue", "decision", "plan".
     pub memory_type: String,
     /// Lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
     /// Set for task and issue memories. Omit for general knowledge.
@@ -41,8 +44,10 @@ pub struct StoreParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchParams {
     /// Natural-language query; results are ranked by cosine similarity.
+    #[schemars(length(min = 1))]
     pub query: String,
     /// Maximum number of results to return (default: 10, max: 100).
+    #[schemars(range(max = 100))]
     pub limit: Option<u32>,
     /// Restricts results to memories that carry all of the given tags.
     pub tags: Option<Vec<String>>,
@@ -57,6 +62,7 @@ pub struct SearchParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListParams {
     /// Maximum number of results per page (default: 20, max: 100).
+    #[schemars(range(max = 100))]
     pub limit: Option<u32>,
     /// Zero-based offset for pagination (default: 0).
     pub offset: Option<u32>,
@@ -82,11 +88,13 @@ pub struct BatchStoreItem {
     /// Background rationale for this memory.
     pub context: Option<String>,
     /// Structured category: one of "user", "project", "reference", "task",
-    /// "finding", "issue", "decision".
+    /// "finding", "issue", "decision", "plan".
     pub memory_type: Option<String>,
     /// Initial confidence score in [0, 1] (default 1.0).
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub confidence: Option<f64>,
     /// Per-day confidence decay rate in [0, 1] (default 0.0).
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub decay_rate: Option<f64>,
     /// Lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
     pub status: Option<String>,
@@ -130,16 +138,19 @@ pub struct UpdateParams {
     /// Replacement context; pass empty string to clear the field.
     pub context: Option<String>,
     /// Replacement confidence score; clamped to [0, 1].
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub confidence: Option<f64>,
     /// Replacement per-day confidence decay rate; clamped to [0, 1].
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub decay_rate: Option<f64>,
     /// Structured category: one of "user", "project", "reference", "task",
-    /// "finding", "issue", "decision".
+    /// "finding", "issue", "decision", "plan". Pass as empty string to clear.
     pub memory_type: Option<String>,
     /// Replacement lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
-    /// Pass to transition a task or issue through its lifecycle.
+    /// Pass to transition a task or issue through its lifecycle. Pass as empty string to clear.
     pub status: Option<String>,
     /// Replacement severity level; one of: "critical", "high", "medium", "low".
+    /// Pass as empty string to clear.
     pub severity: Option<String>,
     /// Replacement outgoing relations; replaces the full set when provided.
     /// Same format as memory_store: {"<id>": "<kind>"}. Pass {} to clear all links.

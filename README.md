@@ -32,9 +32,10 @@ to remember anything about do not accumulate empty database files.
 cargo build --release
 ```
 
-The first run downloads the default embedding model and caches it in the OS
-cache directory (`~/Library/Caches/memlite-mcp` on macOS,
-`~/.cache/memlite-mcp` on Linux). Subsequent runs are fully offline.
+The embedding model is downloaded on the first `memory_store` or
+`memory_search` call, not at server start. It is cached in the OS cache
+directory (`~/Library/Caches/memlite-mcp` on macOS,
+`~/.cache/memlite-mcp` on Linux). Subsequent calls are fully offline.
 
 ## Configuration
 
@@ -45,11 +46,15 @@ flags take precedence).
 |---|---|---|---|
 | `--project-path` | `MEMLITE_PROJECT_PATH` | first MCP workspace root, or CWD | Project identifier; agents sharing the same path share a DB |
 | `--agent` | `MEMLITE_AGENT` | `""` | Filters memories to this agent (empty = see all) |
-| `--db-dir` | `MEMLITE_DB_DIR` | `~/.local/share/memlite-mcp` | Directory for per-project DB files |
-| `--in-memory` | `MEMLITE_IN_MEMORY` | `false` | `true`/`1`/`yes` for ephemeral in-memory DB |
+| `--db-dir` | `MEMLITE_DB_DIR` | OS data dir / `memlite-mcp` | Directory for per-project DB files (`~/.local/share/…` on Linux, `~/Library/Application Support/…` on macOS) |
+| `--in-memory` | `MEMLITE_IN_MEMORY` | `false` | `true`/`1`/`yes` for ephemeral in-memory DB (no persistence across restarts) |
+| `--allow-root` | `MEMLITE_ALLOW_ROOT` | `false` | Allow `/` as the project path (off by default; almost always wrong) |
+| `--allow-home` | `MEMLITE_ALLOW_HOME` | `false` | Allow the home directory as the project path (off by default; spans unrelated projects) |
 | `--embedding-model` | `MEMLITE_EMBEDDING_MODEL` | `bge-small-en-v1.5` | See models table below |
+| `--embedding-cache-dir` | `MEMLITE_EMBEDDING_CACHE_DIR` | OS cache dir / `memlite-mcp` | Override where model files are cached |
 | `--log-file` | `MEMLITE_LOG_FILE` | — | Write logs to this file instead of stderr |
-| — | `RUST_LOG` | `info` | Log level (written to stderr) |
+| `--log-level` | `MEMLITE_LOG_LEVEL` | `info` | Minimum log level when `RUST_LOG` is not set (`trace`/`debug`/`info`/`warn`/`error`) |
+| — | `RUST_LOG` | — | Standard `tracing` filter string; overrides `--log-level` when set |
 
 Run `memlite-mcp --help` for the full usage listing.
 
@@ -125,5 +130,5 @@ Links are one-way — the target memory is unmodified. Common kinds: `caused_by`
 | `memory_list` | Paginated list newest-first; optional `tags`, `memory_type`, `status`, `severity` filters; returns raw `confidence`, `decay_rate`, `last_seen_at` |
 | `memory_tags` | Lists all distinct tags with occurrence counts, ordered by frequency |
 | `memory_delete` | Deletes a memory by numeric id |
-| `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear text fields, `{}` to clear relations |
+| `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear `summary`, `context`, `memory_type`, `status`, or `severity`; pass `{}` to clear `relations` |
 | `memory_revalidate` | Resets the decay clock on a list of memory ids without changing any other field; accepts `ids: [...]`; returns count of memories updated |

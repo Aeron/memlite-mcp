@@ -34,6 +34,20 @@ const MIGRATIONS: &[&[&str]] = &[
     &["alter table memories add column relations text not null default '{}'"],
     // v7 -> v8: adds key-value metadata table for DB-level settings (e.g. embedding model)
     &["create table if not exists meta (key text primary key, value text not null)"],
+    // v8 -> v9: normalized tag table for indexed filtering (replaces json_each scan)
+    &[
+        "create table if not exists memory_tags (
+            memory_id integer not null,
+            tag       text    not null,
+            primary key (memory_id, tag)
+        )",
+        "create index if not exists memory_tags_tag on memory_tags (tag)",
+        // Populating from existing JSON column; on conflict = already there, skip
+        "insert or ignore into memory_tags (memory_id, tag)
+            select m.rowid, jt.value
+            from memories m, json_each(m.tags) jt
+            where trim(jt.value) != ''",
+    ],
 ];
 
 /// Applies all pending migrations, each wrapped in an explicit transaction.

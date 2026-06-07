@@ -272,12 +272,18 @@ pub struct UpdateOptions<'a> {
     pub confidence: Option<f64>,
     /// Replacement per-day decay rate.
     pub decay_rate: Option<f64>,
-    /// Replacement memory type classification.
+    /// Replacement memory type; set to NULL when `clear_memory_type` is true.
     pub memory_type: Option<MemoryType>,
-    /// Replacement lifecycle status.
+    /// When true, sets the type column to NULL regardless of `memory_type`.
+    pub clear_memory_type: bool,
+    /// Replacement lifecycle status; set to NULL when `clear_status` is true.
     pub status: Option<MemoryStatus>,
-    /// Replacement severity level.
+    /// When true, sets the status column to NULL regardless of `status`.
+    pub clear_status: bool,
+    /// Replacement severity level; set to NULL when `clear_severity` is true.
     pub severity: Option<MemorySeverity>,
+    /// When true, sets the severity column to NULL regardless of `severity`.
+    pub clear_severity: bool,
     /// Replacement outgoing relations as (target id, kind) pairs; replaces the full set when provided.
     pub relations: Option<&'a [(i64, String)]>,
 }
@@ -521,7 +527,17 @@ impl MemoryStore {
             .next()
             .await?
             .ok_or_else(|| anyhow!("insert returning yielded no row"))?;
-        Ok(row.get(0)?)
+        let id: i64 = row.get(0)?;
+
+        // Syncing normalized tag table
+        for tag in tags.iter().filter(|t| !t.is_empty()) {
+            conn.execute(
+                "insert or ignore into memory_tags (memory_id, tag) values (?, ?)",
+                libsql::params![id, tag.as_str()],
+            )
+            .await?;
+        }
+        Ok(id)
     }
 
     /// Inserts multiple memories in a single transaction, returning their rowids in input order.
@@ -585,7 +601,16 @@ impl MemoryStore {
                 ]),
             )
             .await?;
-            ids.push(tx.last_insert_rowid());
+            let id = tx.last_insert_rowid();
+            ids.push(id);
+            // Syncing normalized tag table within the same transaction
+            for tag in item.tags.iter().filter(|t| !t.is_empty()) {
+                tx.execute(
+                    "insert or ignore into memory_tags (memory_id, tag) values (?, ?)",
+                    libsql::params![id, tag.as_str()],
+                )
+                .await?;
+            }
         }
         tx.commit().await?;
         Ok(ids)
@@ -719,6 +744,14 @@ impl MemoryStore {
             conn.execute("delete from memories where rowid = ?", libsql::params![id])
                 .await?
         };
+        // Cleaning up normalized tag rows for the deleted memory
+        if affected > 0 {
+            conn.execute(
+                "delete from memory_tags where memory_id = ?",
+                libsql::params![id],
+            )
+            .await?;
+        }
         Ok(affected > 0)
     }
 
@@ -726,6 +759,7 @@ impl MemoryStore {
     ///
     /// - `summary = Some("")` clears the summary (sets to NULL).
     /// - `context = Some("")` clears the context (sets to NULL).
+    /// - `clear_memory_type/status/severity = true` sets the column to NULL.
     /// - Supplying a new `embedding` alongside updated content keeps the index
     ///   consistent; pass None to leave the stored vector unchanged.
     /// - `confidence` and `decay_rate` are clamped to [0.0, 1.0] when provided.
@@ -748,8 +782,11 @@ impl MemoryStore {
             confidence,
             decay_rate,
             memory_type,
+            clear_memory_type,
             status,
+            clear_status,
             severity,
+            clear_severity,
             relations,
         } = opts;
         if content.is_none()
@@ -760,8 +797,11 @@ impl MemoryStore {
             && confidence.is_none()
             && decay_rate.is_none()
             && memory_type.is_none()
+            && !clear_memory_type
             && status.is_none()
+            && !clear_status
             && severity.is_none()
+            && !clear_severity
             && relations.is_none()
         {
             return Ok(false);
@@ -812,14 +852,20 @@ impl MemoryStore {
         if let Some(mt) = memory_type {
             set_clauses.push("type = ?");
             params.push(Value::Text(mt.as_str().to_owned()));
+        } else if clear_memory_type {
+            set_clauses.push("type = null");
         }
         if let Some(st) = status {
             set_clauses.push("status = ?");
             params.push(Value::Text(st.as_str().to_owned()));
+        } else if clear_status {
+            set_clauses.push("status = null");
         }
         if let Some(sev) = severity {
             set_clauses.push("severity = ?");
             params.push(Value::Text(sev.as_str().to_owned()));
+        } else if clear_severity {
+            set_clauses.push("severity = null");
         }
         if let Some(rels) = relations {
             set_clauses.push("relations = ?");
@@ -850,6 +896,24 @@ impl MemoryStore {
         };
 
         let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
+        // Syncing memory_tags when the tags column was updated
+        if affected > 0
+            && let Some(updated_tags) = tags
+        {
+            conn.execute(
+                "delete from memory_tags where memory_id = ?",
+                libsql::params![id],
+            )
+            .await?;
+
+            for tag in updated_tags.iter().filter(|t| !t.is_empty()) {
+                conn.execute(
+                    "insert or ignore into memory_tags (memory_id, tag) values (?, ?)",
+                    libsql::params![id, tag.as_str()],
+                )
+                .await?;
+            }
+        }
         Ok(affected > 0)
     }
 
@@ -904,9 +968,11 @@ fn build_where(
         params.push(Value::Text(aid.to_owned()));
     }
     if let Some(ts) = tags.filter(|t| !t.is_empty()) {
+        // Using normalized memory_tags table for indexed filtering
         clauses.push(
-            "(select count(distinct jt.value) from json_each(tags) jt \
-            where jt.value in (select value from json_each(?))) = ?"
+            "rowid in (select memory_id from memory_tags \
+            where tag in (select value from json_each(?)) \
+            group by memory_id having count(distinct tag) = ?)"
                 .into(),
         );
         params.push(Value::Text(serde_json::to_string(ts)?));
@@ -997,13 +1063,22 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     })
 }
 
-/// Re-ranks candidates by word-overlap between the query and each memory's content.
+/// Tokenises a text string into a deduplicated set of lowercase alphanumeric words (length >= 2).
+fn word_set(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter_map(|w| {
+            let w = w.to_lowercase();
+            if w.len() >= 2 { Some(w) } else { None }
+        })
+        .collect()
+}
+
+/// Re-ranks candidates by whole-word overlap between the query and each memory's content.
 ///
-/// Computes the fraction of query words (length >= 2) that appear in each
-/// candidate's content. Sorts by overlap descending, breaking ties by cosine
-/// distance ascending. Truncates to `limit`.
-///
-/// When the query has no usable words, the original cosine-distance order is preserved.
+/// Splits both query and content into deduplicated word sets so duplicate query words
+/// do not inflate the score and substring matches (e.g. "is" inside "this") are excluded.
+/// Sorts by overlap fraction descending, breaking ties by cosine distance ascending.
+/// Truncates to `limit`. When the query has no usable words the original order is kept.
 fn rerank_by_overlap(
     query: &str,
     mut candidates: Vec<(Memory, f64)>,
@@ -1012,25 +1087,20 @@ fn rerank_by_overlap(
     if limit == 0 {
         return Vec::new();
     }
-    let words: Vec<String> = query
-        .split_whitespace()
-        .filter_map(|w| {
-            let w = w
-                .trim_matches(|c: char| !c.is_alphanumeric())
-                .to_lowercase();
-            if w.len() < 2 { None } else { Some(w) }
-        })
-        .collect();
-    if words.is_empty() {
+    let query_words = word_set(query);
+    if query_words.is_empty() {
         candidates.truncate(limit);
         return candidates;
     }
     let mut scored: Vec<(Memory, f64, f64)> = candidates
         .into_iter()
         .map(|(m, dist)| {
-            let lower = m.content.to_lowercase();
-            let hits = words.iter().filter(|w| lower.contains(w.as_str())).count();
-            let overlap = hits as f64 / words.len() as f64;
+            let content_words = word_set(&m.content);
+            let hits = query_words
+                .iter()
+                .filter(|w| content_words.contains(*w))
+                .count();
+            let overlap = hits as f64 / query_words.len() as f64;
             (m, dist, overlap)
         })
         .collect();

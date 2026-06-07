@@ -179,7 +179,10 @@ impl McpClient {
 
     /// Embeds `content` and inserts a memory row, returning its assigned identifier.
     fn store(&mut self, content: &str, tags: &[&str]) -> i64 {
-        let result = self.call_tool("memory_store", json!({"content": content, "tags": tags}));
+        let result = self.call_tool(
+            "memory_store",
+            json!({"content": content, "tags": tags, "memory_type": "reference"}),
+        );
         let text = result["content"][0]["text"].as_str().unwrap();
         serde_json::from_str::<Value>(text).unwrap()["id"]
             .as_i64()

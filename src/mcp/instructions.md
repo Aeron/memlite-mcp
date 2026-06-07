@@ -7,7 +7,7 @@ Local agent memory store. Server-side embeddings from plain text.
 - `memory_search`: cosine + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Pre-filter: `tags`, `memory_type`, `status`, `severity`
 - `memory_list`: newest-first with pagination. Filter: `tags`, `memory_type`, `status`, `severity`; returns raw `confidence`, `decay_rate`, `last_seen_at`
 - `memory_tags`: all tags with occurrence counts, frequency-ordered
-- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status/severity/relations in-place; re-embeds on content change; resets decay clock
+- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status/severity/relations in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context/memory_type/status/severity; pass `{}` to clear relations
 - `memory_delete`: remove by id
 - `memory_revalidate`: resets decay clock (`last_seen_at` = now) on a list of ids without changing any other field; returns count updated. Use when confirming one or more memories accurate in same session
 
@@ -108,7 +108,7 @@ Both `memory_search` and `memory_list` accept optional `tags`. All must match (h
 | `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
 | `plan` | High-level plan or phased roadmap; use `relations` to link to spawned tasks and decisions; apply moderate `decay_rate` (0.01-0.02) |
 
-Set when memory fits one category; skip if multi-category or unclear. Both tools accept `memory_type` as filter; combine with `tags` and `status` for precise retrieval.
+Set when memory fits one category; skip if multi-category or unclear. Pass `""` to `memory_update` to clear. Both tools accept `memory_type` as filter; combine with `tags` and `status` for precise retrieval.
 
 ### `status`
 
@@ -121,7 +121,7 @@ Lifecycle state for task and issue memories. Omit for general knowledge or anyth
 | `wontfix` | Acknowledged, will not be addressed |
 | `deferred` | Postponed for later |
 
-Set when storing bug, task, or finding. Update to `resolved` when done; don't delete resolved memories -- useful history. Both tools accept `status` as filter; combine with `memory_type` to query e.g. all open tasks.
+Set when storing bug, task, or finding. Update to `resolved` when done; don't delete resolved memories -- useful history. Pass `""` to `memory_update` to clear. Both tools accept `status` as filter; combine with `memory_type` to query e.g. all open tasks.
 
 Note: `decay_rate` is wrong model for "is this still open?" -- bug is fixed or not. Use `status` for lifecycle, `decay_rate` for time-based staleness.
 
@@ -136,7 +136,7 @@ Urgency/impact level for finding, issue, or task. Omit for general knowledge or 
 | `medium` | Noticeable impact; can be scheduled |
 | `low` | Minor impact; address when convenient |
 
-Set when storing finding, issue, or task where priority matters. Both tools accept `severity` as filter; combine with `status` to query e.g. all open critical issues.
+Set when storing finding, issue, or task where priority matters. Pass `""` to `memory_update` to clear. Both tools accept `severity` as filter; combine with `status` to query e.g. all open critical issues.
 
 ### `relations`
 

@@ -145,14 +145,13 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<StoreParams>,
     ) -> Result<CallToolResult, McpError> {
-        let embedding = self
-            .embedding
-            .embed(p.content.clone())
-            .await
-            .map_err(ServerError::Embed)?;
+        // Validating all cheap fields before triggering model load/inference
+        if p.content.trim().is_empty() {
+            return tool_err("content must not be blank");
+        }
         let Some(memory_type) = MemoryType::from_str(&p.memory_type) else {
             return tool_err(format!(
-                "unknown memory_type {:?}; expected: user, project, reference, task, finding, issue, or decision",
+                "unknown memory_type {:?}; expected: user, project, reference, task, finding, issue, decision, or plan",
                 p.memory_type
             ));
         };
@@ -185,6 +184,11 @@ impl MemServer {
             Ok(r) => r,
             Err(msg) => return tool_err(msg),
         };
+        let embedding = self
+            .embedding
+            .embed(p.content.clone())
+            .await
+            .map_err(ServerError::Embed)?;
         let store = self.open_store().await?;
         let id = store
             .insert(
@@ -241,7 +245,7 @@ impl MemServer {
                     Some(t) => Some(t),
                     None => {
                         return tool_err(format!(
-                            "item {i}: unknown memory_type {s:?}; expected: user, project, reference, task, finding, issue, or decision"
+                            "item {i}: unknown memory_type {s:?}; expected: user, project, reference, task, finding, issue, decision, or plan"
                         ));
                     }
                 },
@@ -339,6 +343,21 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        if p.query.trim().is_empty() {
+            return tool_err("query must not be blank");
+        }
+        let memory_type = match parse_memory_type(p.memory_type.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
+        };
+        let status = match parse_memory_status(p.status.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
+        };
+        let severity = match parse_memory_severity(p.severity.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
+        };
         let limit = p.limit.unwrap_or(10).min(100);
         let Some(store) = self.store_if_present().await? else {
             return Ok(CallToolResult::success(vec![Content::text("[]")]));
@@ -355,9 +374,9 @@ impl MemServer {
                 FilterOptions {
                     agent_id: self.config.agent_filter(),
                     tags: p.tags.as_deref(),
-                    memory_type: parse_memory_type(p.memory_type.as_deref()),
-                    status: parse_memory_status(p.status.as_deref()),
-                    severity: parse_memory_severity(p.severity.as_deref()),
+                    memory_type,
+                    status,
+                    severity,
                 },
                 limit,
             )
@@ -400,6 +419,18 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<ListParams>,
     ) -> Result<CallToolResult, McpError> {
+        let memory_type = match parse_memory_type(p.memory_type.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
+        };
+        let status = match parse_memory_status(p.status.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
+        };
+        let severity = match parse_memory_severity(p.severity.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
+        };
         let limit = p.limit.unwrap_or(20).min(100);
         let offset = p.offset.unwrap_or(0);
         let Some(store) = self.store_if_present().await? else {
@@ -410,9 +441,9 @@ impl MemServer {
                 FilterOptions {
                     agent_id: self.config.agent_filter(),
                     tags: p.tags.as_deref(),
-                    memory_type: parse_memory_type(p.memory_type.as_deref()),
-                    status: parse_memory_status(p.status.as_deref()),
-                    severity: parse_memory_severity(p.severity.as_deref()),
+                    memory_type,
+                    status,
+                    severity,
                 },
                 limit,
                 offset,
@@ -548,6 +579,18 @@ impl MemServer {
                 }
             },
         };
+        let (update_memory_type, clear_memory_type) = match p.memory_type.as_deref() {
+            None => (None, false),
+            Some("") => (None, true),
+            Some(s) => match MemoryType::from_str(s) {
+                Some(mt) => (Some(mt), false),
+                None => {
+                    return tool_err(format!(
+                        "unknown memory_type {s:?}; expected: user, project, reference, task, finding, issue, decision, or plan"
+                    ));
+                }
+            },
+        };
         let Some(store) = self.store_if_present().await? else {
             return tool_err(format!("no memory found with id {}", p.id));
         };
@@ -578,9 +621,12 @@ impl MemServer {
                     context: p.context.as_deref(),
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
-                    memory_type: parse_memory_type(p.memory_type.as_deref()),
+                    memory_type: update_memory_type,
+                    clear_memory_type,
                     status: update_status,
+                    clear_status: matches!(p.status.as_deref(), Some("")),
                     severity: update_severity,
+                    clear_severity: matches!(p.severity.as_deref(), Some("")),
                     relations: update_relations.as_deref(),
                 },
                 self.config.agent_filter(),
@@ -724,18 +770,36 @@ fn parse_relations(
 }
 
 /// Converts an optional type string into a [`MemoryType`], returning `None` for unrecognised values.
-fn parse_memory_type(s: Option<&str>) -> Option<MemoryType> {
-    s.and_then(MemoryType::from_str)
+/// Parses an optional memory type filter, returning an error string when a value is provided but unrecognised.
+///
+/// `None` input means no filter; `Some` with an unrecognised value is an error rather than a no-op.
+fn parse_memory_type(s: Option<&str>) -> Result<Option<MemoryType>, String> {
+    match s {
+        None => Ok(None),
+        Some(v) => MemoryType::from_str(v).map(Some).ok_or_else(|| {
+            format!("unknown memory_type {v:?}; expected: user, project, reference, task, finding, issue, decision, or plan")
+        }),
+    }
 }
 
-/// Converts an optional status string into a [`MemoryStatus`], returning `None` for unrecognised values.
-fn parse_memory_status(s: Option<&str>) -> Option<MemoryStatus> {
-    s.and_then(MemoryStatus::from_str)
+/// Parses an optional status filter, returning an error string when a value is provided but unrecognised.
+fn parse_memory_status(s: Option<&str>) -> Result<Option<MemoryStatus>, String> {
+    match s {
+        None => Ok(None),
+        Some(v) => MemoryStatus::from_str(v).map(Some).ok_or_else(|| {
+            format!("unknown status {v:?}; expected: open, resolved, wontfix, or deferred")
+        }),
+    }
 }
 
-/// Converts an optional severity string into a [`MemorySeverity`], returning `None` for unrecognised values.
-fn parse_memory_severity(s: Option<&str>) -> Option<MemorySeverity> {
-    s.and_then(MemorySeverity::from_str)
+/// Parses an optional severity filter, returning an error string when a value is provided but unrecognised.
+fn parse_memory_severity(s: Option<&str>) -> Result<Option<MemorySeverity>, String> {
+    match s {
+        None => Ok(None),
+        Some(v) => MemorySeverity::from_str(v).map(Some).ok_or_else(|| {
+            format!("unknown severity {v:?}; expected: critical, high, medium, or low")
+        }),
+    }
 }
 
 /// Typed errors produced at the MCP boundary, converted to [`McpError`] via [`From`].
