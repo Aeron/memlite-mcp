@@ -112,6 +112,12 @@ pub struct DeleteParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RevalidateParams {
+    /// Numeric identifiers of the memories to revalidate; resets the decay clock on each.
+    pub ids: Vec<i64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct UpdateParams {
     /// Numeric identifier of the memory to update.
     pub id: i64,

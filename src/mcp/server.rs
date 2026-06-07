@@ -15,7 +15,8 @@ use rmcp::{
 use tokio::sync::{Notify, OnceCell};
 
 use super::params::{
-    BatchStoreParams, DeleteParams, ListParams, SearchParams, StoreParams, TagsParams, UpdateParams,
+    BatchStoreParams, DeleteParams, ListParams, RevalidateParams, SearchParams, StoreParams,
+    TagsParams, UpdateParams,
 };
 use crate::{
     config::Config,
@@ -26,6 +27,7 @@ use crate::{
     embedding::EmbeddingService,
 };
 
+/// Initial instructions for the MCP client (caveman style).
 const INSTRUCTIONS: &str = include_str!("instructions.md");
 
 #[derive(Clone)]
@@ -579,6 +581,30 @@ impl MemServer {
         } else {
             tool_err(format!("no memory found with id {}", p.id))
         }
+    }
+
+    /// Resets the decay clock on multiple memories in a single operation.
+    #[tool(
+        description = "Reset the decay clock (last_seen_at = now) on a list of memory ids without changing any other field. Returns the count of memories actually updated. Use after confirming multiple memories are still accurate in the same session."
+    )]
+    async fn memory_revalidate(
+        &self,
+        Parameters(p): Parameters<RevalidateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if p.ids.is_empty() {
+            return tool_err("ids must not be empty");
+        }
+        let Some(store) = self.store_if_present().await? else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::json!({ "revalidated": 0 }).to_string(),
+            )]));
+        };
+        let count = store
+            .revalidate_batch(&p.ids)
+            .await
+            .map_err(ServerError::StoreOp)?;
+        let body = serde_json::json!({ "revalidated": count }).to_string();
+        Ok(CallToolResult::success(vec![Content::text(body)]))
     }
 }
 

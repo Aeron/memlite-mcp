@@ -9,6 +9,7 @@ Local agent memory store. Server-side embeddings from plain text.
 - `memory_tags`: all tags with occurrence counts, frequency-ordered
 - `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status/severity/relations in-place; re-embeds on content change; resets decay clock
 - `memory_delete`: remove by id
+- `memory_revalidate`: resets decay clock (`last_seen_at` = now) on a list of ids without changing any other field; returns count updated. Use when confirming one or more memories accurate in same session
 
 ## Workflow
 
@@ -56,7 +57,7 @@ Two stages: cosine selects candidate pool (~4x return count), keyword overlap re
 - 0.5-0.8: mild caution; re-verify if decision significant
 - < 0.5: potentially stale; confirm before use
 
-Confirmed low-confidence memory accurate? Call `memory_update` (any field, even setting `confidence` to current value) to reset `last_seen_at` and restart decay clock.
+Confirmed accurate? Call `memory_revalidate([id])`. Multiple: pass all ids in one call. If also changing a field, `memory_update` resets clock too.
 
 ## Fields
 
@@ -102,7 +103,7 @@ Both `memory_search` and `memory_list` accept optional `tags`. All must match (h
 | `project` | Conventions, tech stack, architecture, constraints |
 | `reference` | Domain knowledge, docs, external facts, API details |
 | `task` | Things to track, follow up, or complete |
-| `finding` | Discovered problem, audit result, or identified risk; not yet a tracked task |
+| `finding` | Discovered problem, audit result, or identified risk; not yet tracked task |
 | `issue` | Known defect or bug |
 | `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
 | `plan` | High-level plan or phased roadmap; use `relations` to link to spawned tasks and decisions; apply moderate `decay_rate` (0.01-0.02) |
@@ -149,13 +150,13 @@ Kind is any non-empty string. Suggested labels for consistency:
 
 | Kind | Meaning |
 |---|---|
-| `caused_by` | this memory is caused by the target (finding -> root cause) |
-| `causes` | this memory causes the target (root cause -> downstream effect) |
-| `blocks` | this memory blocks the target task or fix |
-| `depends_on` | this memory depends on the target |
-| `supersedes` | this memory replaces the target (new decision -> old decision) |
+| `caused_by` | caused by target (finding -> root cause) |
+| `causes` | causes target (root cause -> downstream effect) |
+| `blocks` | blocks target task or fix |
+| `depends_on` | depends on target |
+| `supersedes` | replaces target (new decision -> old decision) |
 | `related_to` | generic association |
-| `duplicate_of` | this memory is a duplicate of the target |
+| `duplicate_of` | duplicate of target |
 
 Links are one-way: memory A having `{"7": "caused_by"}` adds no link to memory 7. Reverse traversal requires search by id or explicit back-link on other memory.
 
@@ -165,7 +166,7 @@ Returned in both tools as JSON object (empty when no links stored).
 
 ## Updating vs deleting
 
-`memory_update` resets decay clock (`last_seen_at` = now). Use as revalidation: confirmed accurate during session, update (even just set `confidence` to current value) to signal verification.
+Revalidating without field changes: `memory_revalidate` (single or list of ids). `memory_update` also resets clock when bundling a field change.
 
 Prefer update when core identity same but details changed: decision revised, fix turned incomplete, constraint shifted, new info extends. Update proactively when current work makes memory stale.
 

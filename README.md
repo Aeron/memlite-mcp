@@ -126,3 +126,4 @@ Links are one-way — the target memory is unmodified. Common kinds: `caused_by`
 | `memory_tags` | Lists all distinct tags with occurrence counts, ordered by frequency |
 | `memory_delete` | Deletes a memory by numeric id |
 | `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear text fields, `{}` to clear relations |
+| `memory_revalidate` | Resets the decay clock on a list of memory ids without changing any other field; accepts `ids: [...]`; returns count of memories updated |

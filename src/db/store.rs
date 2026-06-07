@@ -738,6 +738,31 @@ impl MemoryStore {
         let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
         Ok(affected > 0)
     }
+
+    /// Resets the decay clock on a batch of memories without changing any other field.
+    ///
+    /// Issues a single UPDATE touching only `updated_at` and `last_seen_at`. Returns
+    /// the count of rows actually modified; may be less than `ids.len()` when some
+    /// ids do not exist.
+    pub async fn revalidate_batch(&self, ids: &[i64]) -> Result<u64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn()?;
+        let now = unix_secs();
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "update memories set updated_at = ?, last_seen_at = ? where rowid in ({placeholders})"
+        );
+        let mut params: Vec<Value> = Vec::with_capacity(2 + ids.len());
+        params.push(Value::Integer(now));
+        params.push(Value::Integer(now));
+        for id in ids {
+            params.push(Value::Integer(*id));
+        }
+        let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
+        Ok(affected)
+    }
 }
 
 // Builds a SQL WHERE clause from optional agent, tag, and type filters, appending
@@ -2128,5 +2153,57 @@ mod tests {
             .unwrap();
         let rows = store.list(FilterOptions::default(), 1, 0).await.unwrap();
         assert!(rows[0].relations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn revalidate_batch_empty_returns_zero() {
+        let (store, _tmp) = fresh().await;
+        let count = store.revalidate_batch(&[]).await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn revalidate_batch_bumps_last_seen_at() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert("x", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        let before = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let count = store.revalidate_batch(&[id]).await.unwrap();
+        assert_eq!(count, 1);
+        let after = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
+        assert!(
+            after > before,
+            "last_seen_at should increase after revalidate"
+        );
+    }
+
+    #[tokio::test]
+    async fn revalidate_batch_skips_missing_ids() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert("x", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        // Mix one real id with one nonexistent id
+        let count = store.revalidate_batch(&[id, id + 999]).await.unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn revalidate_batch_multiple_ids() {
+        let (store, _tmp) = fresh().await;
+        let id1 = store
+            .insert("a", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        let id2 = store
+            .insert("b", &V2, InsertOptions::default())
+            .await
+            .unwrap();
+        let count = store.revalidate_batch(&[id1, id2]).await.unwrap();
+        assert_eq!(count, 2);
     }
 }
