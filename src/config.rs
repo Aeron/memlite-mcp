@@ -143,6 +143,17 @@ pub enum EmbeddingModel {
     Large,
 }
 
+impl EmbeddingModel {
+    /// Output vector dimensionality for this model.
+    pub fn dims(self) -> usize {
+        match self {
+            EmbeddingModel::Small => 384,
+            EmbeddingModel::Base => 768,
+            EmbeddingModel::Large => 1024,
+        }
+    }
+}
+
 impl std::fmt::Display for EmbeddingModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.to_possible_value()

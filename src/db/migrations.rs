@@ -32,9 +32,15 @@ const MIGRATIONS: &[&[&str]] = &[
     &["alter table memories add column severity text"],
     // v6 -> v7: adds directed outgoing relation links
     &["alter table memories add column relations text not null default '{}'"],
+    // v7 -> v8: adds key-value metadata table for DB-level settings (e.g. embedding model)
+    &["create table if not exists meta (key text primary key, value text not null)"],
 ];
 
-/// Applies all pending migrations, bumping `PRAGMA user_version` after each one.
+/// Applies all pending migrations, each wrapped in an explicit transaction.
+///
+/// Wrapping each step atomically means a crash between statements leaves the
+/// database at the previous version; on restart the same step is retried
+/// cleanly from a known-good state rather than encountering half-applied DDL.
 pub async fn run(conn: &libsql::Connection) -> Result<()> {
     let version = user_version(conn).await?;
     let total = MIGRATIONS.len();
@@ -46,11 +52,23 @@ pub async fn run(conn: &libsql::Connection) -> Result<()> {
         );
     }
     for (i, stmts) in MIGRATIONS.iter().enumerate().skip(version) {
-        for stmt in *stmts {
-            conn.execute(stmt, ()).await?;
+        conn.execute("begin immediate", ()).await?;
+        let result: Result<()> = async {
+            for stmt in *stmts {
+                conn.execute(stmt, ()).await?;
+            }
+            conn.execute(&format!("pragma user_version = {}", i + 1), ())
+                .await?;
+            Ok(())
         }
-        conn.execute(&format!("PRAGMA user_version = {}", i + 1), ())
-            .await?;
+        .await;
+        match result {
+            Ok(()) => conn.execute("commit", ()).await?,
+            Err(e) => {
+                let _ = conn.execute("rollback", ()).await;
+                return Err(e);
+            }
+        };
     }
     Ok(())
 }
@@ -110,5 +128,42 @@ mod tests {
             .await
             .unwrap();
         assert!(rows.next().await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn run_creates_meta_table() {
+        let conn = mem_conn().await;
+        run(&conn).await.unwrap();
+        let mut rows = conn.query("SELECT count(*) FROM meta", ()).await.unwrap();
+        assert!(rows.next().await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn run_version_matches_migration_count() {
+        let conn = mem_conn().await;
+        run(&conn).await.unwrap();
+        assert_eq!(user_version(&conn).await.unwrap(), MIGRATIONS.len());
+    }
+
+    #[tokio::test]
+    async fn failed_migration_leaves_version_unchanged() {
+        let conn = mem_conn().await;
+        // Running partial migrations first (to v1) by hand
+        conn.execute("begin immediate", ()).await.unwrap();
+        for stmt in MIGRATIONS[0] {
+            conn.execute(stmt, ()).await.unwrap();
+        }
+        conn.execute("pragma user_version = 1", ()).await.unwrap();
+        conn.execute("commit", ()).await.unwrap();
+        assert_eq!(user_version(&conn).await.unwrap(), 1);
+
+        // Simulating a bad migration (invalid SQL) at the next step
+        conn.execute("begin immediate", ()).await.unwrap();
+        let bad_result = conn.execute("this is not valid sql", ()).await;
+        assert!(bad_result.is_err());
+        conn.execute("rollback", ()).await.unwrap();
+
+        // Version must still be 1; the bad step was rolled back
+        assert_eq!(user_version(&conn).await.unwrap(), 1);
     }
 }

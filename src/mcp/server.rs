@@ -90,15 +90,24 @@ impl MemServer {
     }
 
     /// Returns the cached store, opening (and creating) the DB file on the first call.
+    ///
+    /// Also validates that the database's recorded embedding model matches the configured
+    /// one; returns an error if they differ to prevent mixed-dimension vector corruption.
     async fn open_store(&self) -> Result<&MemoryStore, McpError> {
         let db_path = self.db_path.get().ok_or_else(|| self.path_not_resolved())?;
+        let model = self.config.embedding_model;
         self.store
             .get_or_try_init(|| {
                 let path = db_path.clone();
                 async move {
-                    MemoryStore::open(path.as_deref())
+                    let store = MemoryStore::open(path.as_deref())
                         .await
-                        .map_err(|e| McpError::from(ServerError::StoreOpen(e)))
+                        .map_err(|e| McpError::from(ServerError::StoreOpen(e)))?;
+                    store
+                        .check_embedding_model(&model.to_string(), model.dims())
+                        .await
+                        .map_err(|e| McpError::from(ServerError::StoreOpen(e)))?;
+                    Ok(store)
                 }
             })
             .await

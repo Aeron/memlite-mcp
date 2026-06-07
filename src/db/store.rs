@@ -330,10 +330,36 @@ pub struct BatchInsertItem {
 #[derive(Clone)]
 pub struct MemoryStore {
     db: Arc<Database>,
+    // Held only in in-memory mode; all operations reuse this one connection
+    // because SQLite :memory: databases are not shared across connections.
+    mem: Option<Arc<tokio::sync::Mutex<libsql::Connection>>>,
+}
+
+// Owned connection handle for a single store operation.
+//
+// File mode gets a fresh connection from the pool; memory mode locks
+// and holds the shared connection for the duration of the operation.
+enum ConnHandle {
+    File(libsql::Connection),
+    Memory(tokio::sync::OwnedMutexGuard<libsql::Connection>),
+}
+
+impl std::ops::Deref for ConnHandle {
+    type Target = libsql::Connection;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::File(c) => c,
+            Self::Memory(g) => g,
+        }
+    }
 }
 
 impl MemoryStore {
     /// Opens (or creates) a local DB at `path`, or an in-memory DB when None.
+    ///
+    /// In-memory mode retains the connection on which migrations ran and reuses
+    /// it for all subsequent operations, because SQLite `:memory:` databases
+    /// are not shared across connections.
     pub async fn open(path: Option<&Path>) -> Result<Self> {
         let db = match path {
             Some(p) => {
@@ -346,11 +372,77 @@ impl MemoryStore {
         };
         let conn = db.connect()?;
         super::migrations::run(&conn).await?;
-        Ok(MemoryStore { db: Arc::new(db) })
+        let mem = if path.is_none() {
+            Some(Arc::new(tokio::sync::Mutex::new(conn)))
+        } else {
+            None
+        };
+        Ok(MemoryStore {
+            db: Arc::new(db),
+            mem,
+        })
     }
 
-    fn conn(&self) -> Result<libsql::Connection> {
-        Ok(self.db.connect()?)
+    async fn conn_handle(&self) -> Result<ConnHandle> {
+        match &self.mem {
+            Some(arc) => Ok(ConnHandle::Memory(Arc::clone(arc).lock_owned().await)),
+            None => Ok(ConnHandle::File(self.db.connect()?)),
+        }
+    }
+
+    /// Validates that `model_name` and `dims` match what is stored in the `meta` table.
+    ///
+    /// On first call for a given database file, records the model so future opens can
+    /// detect mismatches. Returns an error when the stored model differs, preventing
+    /// mixed-dimension vectors from corrupting cosine-distance results.
+    /// Skips validation for in-memory stores (ephemeral; no persistence across restarts).
+    pub async fn check_embedding_model(&self, model_name: &str, dims: usize) -> Result<()> {
+        if self.mem.is_some() {
+            return Ok(());
+        }
+        let conn = self.conn_handle().await?;
+        let mut rows = conn
+            .query("select value from meta where key = 'embedding_model'", ())
+            .await?;
+        if let Some(row) = rows.next().await? {
+            let stored: String = row.get(0)?;
+            if stored != model_name {
+                return Err(anyhow::anyhow!(
+                    "embedding model mismatch: DB was created with '{}' ({} dims) \
+                     but '--embedding-model {}' ({} dims) was requested; \
+                     use the original model or delete the database to start fresh",
+                    stored,
+                    self.stored_dims(&conn).await.unwrap_or(0),
+                    model_name,
+                    dims,
+                ));
+            }
+        } else {
+            conn.execute(
+                "insert into meta (key, value) values ('embedding_model', ?)",
+                libsql::params![model_name],
+            )
+            .await?;
+            conn.execute(
+                "insert into meta (key, value) values ('embedding_dims', ?)",
+                libsql::params![dims.to_string()],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    // Reads the stored embedding dimension from meta; used in mismatch error messages.
+    async fn stored_dims(&self, conn: &libsql::Connection) -> Result<usize> {
+        let mut rows = conn
+            .query("select value from meta where key = 'embedding_dims'", ())
+            .await?;
+        if let Some(row) = rows.next().await? {
+            let s: String = row.get(0)?;
+            Ok(s.parse().unwrap_or(0))
+        } else {
+            Ok(0)
+        }
     }
 
     /// Inserts a new memory and returns its rowid.
@@ -375,7 +467,7 @@ impl MemoryStore {
             severity,
             relations,
         } = opts;
-        let conn = self.conn()?;
+        let conn = self.conn_handle().await?;
         let tags_json = serde_json::to_string(tags)?;
         let now = unix_secs();
         let emb_blob = floats_to_blob(embedding);
@@ -441,7 +533,7 @@ impl MemoryStore {
         if items.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn()?;
+        let conn = self.conn_handle().await?;
         let tx = conn.transaction().await?;
         let now = unix_secs();
         let sql = "insert into memories
@@ -513,7 +605,7 @@ impl MemoryStore {
         filter: FilterOptions<'_>,
         limit: u32,
     ) -> Result<Vec<(Memory, f64)>> {
-        let conn = self.conn()?;
+        let conn = self.conn_handle().await?;
         let emb_blob = floats_to_blob(query_embedding);
         let candidate_limit = (limit as i64).saturating_mul(4).min(400);
         let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
@@ -559,7 +651,7 @@ impl MemoryStore {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Memory>> {
-        let conn = self.conn()?;
+        let conn = self.conn_handle().await?;
         let mut params: Vec<Value> = Vec::new();
         let where_sql = build_where(
             filter.agent_id,
@@ -592,7 +684,7 @@ impl MemoryStore {
 
     /// Returns all distinct tags with occurrence counts, ordered by count descending.
     pub async fn tags(&self, agent_id: Option<&str>) -> Result<Vec<(String, u32)>> {
-        let conn = self.conn()?;
+        let conn = self.conn_handle().await?;
         let mut params: Vec<Value> = Vec::new();
         let where_sql = build_where(agent_id, None, None, None, None, &mut params)?;
         let sql = format!(
@@ -616,7 +708,7 @@ impl MemoryStore {
     ///
     /// When `agent_id` is set, only removes the row if it also matches that agent.
     pub async fn delete(&self, id: i64, agent_id: Option<&str>) -> Result<bool> {
-        let conn = self.conn()?;
+        let conn = self.conn_handle().await?;
         let affected = if let Some(agent) = agent_id {
             conn.execute(
                 "delete from memories where rowid = ? and agent = ?",
@@ -675,7 +767,7 @@ impl MemoryStore {
             return Ok(false);
         }
 
-        let conn = self.conn()?;
+        let conn = self.conn_handle().await?;
         let now = unix_secs();
 
         let mut set_clauses: Vec<&str> = Vec::new();
@@ -770,7 +862,7 @@ impl MemoryStore {
         if ids.is_empty() {
             return Ok(0);
         }
-        let conn = self.conn()?;
+        let conn = self.conn_handle().await?;
         let now = unix_secs();
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
         let sql = if agent_id.is_some() {
@@ -985,6 +1077,38 @@ mod tests {
     // 2-D unit vectors used throughout: cheap, no model download needed
     const V1: [f32; 2] = [1.0, 0.0];
     const V2: [f32; 2] = [0.0, 1.0];
+
+    #[tokio::test]
+    async fn in_memory_insert_list_roundtrip() {
+        let store = MemoryStore::open(None).await.unwrap();
+        let id = store
+            .insert("hello", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        let rows = store.list(FilterOptions::default(), 10, 0).await.unwrap();
+        assert_eq!(rows.len(), 1, "insert must be visible to a subsequent list");
+        assert_eq!(rows[0].id, id);
+        assert_eq!(rows[0].content, "hello");
+    }
+
+    #[tokio::test]
+    async fn in_memory_search_roundtrip() {
+        let store = MemoryStore::open(None).await.unwrap();
+        store
+            .insert("hello", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        let results = store
+            .search("hello", &V1, FilterOptions::default(), 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "insert must be visible to a subsequent search"
+        );
+        assert_eq!(results[0].0.content, "hello");
+    }
 
     #[test]
     fn floats_to_blob_empty() {
@@ -1549,7 +1673,7 @@ mod tests {
             .unwrap();
         // Forcing last_seen_at to 30 days ago via a direct update
         let thirty_days_ago = unix_secs() - 30 * 86400;
-        let conn = store.conn().unwrap();
+        let conn = store.conn_handle().await.unwrap();
         conn.execute(
             "update memories set last_seen_at = ? where rowid = ?",
             libsql::params![thirty_days_ago, id],
@@ -2252,6 +2376,51 @@ mod tests {
             .unwrap();
         let count = store.revalidate_batch(&[id1, id2], None).await.unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn check_embedding_model_records_on_first_open() {
+        let (store, _tmp) = fresh().await;
+        store
+            .check_embedding_model("bge-small-en-v1.5", 384)
+            .await
+            .unwrap();
+        // Second call with the same model must succeed
+        store
+            .check_embedding_model("bge-small-en-v1.5", 384)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_embedding_model_rejects_mismatch() {
+        let (store, _tmp) = fresh().await;
+        store
+            .check_embedding_model("bge-small-en-v1.5", 384)
+            .await
+            .unwrap();
+        let err = store
+            .check_embedding_model("bge-large-en-v1.5", 1024)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("mismatch"),
+            "error message should mention mismatch: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_embedding_model_skips_for_in_memory() {
+        let store = MemoryStore::open(None).await.unwrap();
+        // Different model names must not error for in-memory stores
+        store
+            .check_embedding_model("bge-small-en-v1.5", 384)
+            .await
+            .unwrap();
+        store
+            .check_embedding_model("bge-large-en-v1.5", 1024)
+            .await
+            .unwrap();
     }
 
     // Verifying that agent-scoped mutations respect ownership boundaries.
