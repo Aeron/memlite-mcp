@@ -62,7 +62,7 @@ impl MemServer {
     pub async fn run(self) -> anyhow::Result<()> {
         let shutdown = Arc::clone(&self.shutdown);
         let service = self.serve(rmcp::transport::stdio()).await?;
-        tracing::info!("memlite-mcp ready");
+        tracing::info!("memlite-mcp listening; project path resolves on initialize");
 
         tokio::select! {
             result = service.waiting() => {
@@ -477,7 +477,10 @@ impl MemServer {
         let Some(store) = self.store_if_present().await? else {
             return tool_err(format!("no memory found with id {}", p.id));
         };
-        let deleted = store.delete(p.id).await.map_err(ServerError::StoreOp)?;
+        let deleted = store
+            .delete(p.id, self.config.agent_filter())
+            .await
+            .map_err(ServerError::StoreOp)?;
         if deleted {
             let body = serde_json::json!({ "deleted": true, "id": p.id }).to_string();
             Ok(CallToolResult::success(vec![Content::text(body)]))
@@ -571,6 +574,7 @@ impl MemServer {
                     severity: update_severity,
                     relations: update_relations.as_deref(),
                 },
+                self.config.agent_filter(),
             )
             .await
             .map_err(ServerError::StoreOp)?;
@@ -600,7 +604,7 @@ impl MemServer {
             )]));
         };
         let count = store
-            .revalidate_batch(&p.ids)
+            .revalidate_batch(&p.ids, self.config.agent_filter())
             .await
             .map_err(ServerError::StoreOp)?;
         let body = serde_json::json!({ "revalidated": count }).to_string();
@@ -632,11 +636,20 @@ impl ServerHandler for MemServer {
         );
         let supports_roots = peer.is_some_and(|info| info.capabilities.roots.is_some());
 
+        const LIST_ROOTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
         let root_uris = if supports_roots {
-            match context.peer.list_roots().await {
-                Ok(result) => result.roots.into_iter().map(|r| r.uri).collect::<Vec<_>>(),
-                Err(e) => {
+            match tokio::time::timeout(LIST_ROOTS_TIMEOUT, context.peer.list_roots()).await {
+                Ok(Ok(result)) => result.roots.into_iter().map(|r| r.uri).collect::<Vec<_>>(),
+                Ok(Err(e)) => {
                     tracing::warn!("list_roots failed: {e}");
+                    vec![]
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "list_roots timed out after {:?}; falling back to CWD",
+                        LIST_ROOTS_TIMEOUT
+                    );
                     vec![]
                 }
             }

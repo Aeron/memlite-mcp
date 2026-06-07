@@ -95,6 +95,38 @@ pub struct Config {
     /// surface the server's stderr (e.g. Zed has no MCP log panel).
     #[arg(long = "log-file", env = "MEMLITE_LOG_FILE")]
     pub log_file: Option<PathBuf>,
+
+    /// Minimum log level when `RUST_LOG` is not set. Applies to both file and stderr output.
+    #[arg(long = "log-level", env = "MEMLITE_LOG_LEVEL", default_value_t = LogLevel::Info)]
+    log_level: LogLevel,
+}
+
+/// Minimum log verbosity level, used when `RUST_LOG` is not set.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "trace",
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        }
+    }
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Supported local embedding models.
@@ -205,11 +237,15 @@ impl Config {
         Ok(path)
     }
 
-    /// Initialises the global tracing subscriber based on `log_file`.
+    /// Initialises the global tracing subscriber based on `log_file` and `log_level`.
     ///
-    /// Writes to the file when set, falling back to stderr. Must be called once
-    /// at startup before any `tracing` macros are used.
+    /// Writes to the file when set, falling back to stderr. Respects `RUST_LOG` when
+    /// set; otherwise uses `--log-level` (default: info). Must be called once at
+    /// startup before any `tracing` macros are used.
     pub fn init_logging(&self) -> Result<()> {
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(self.log_level.as_str()));
+
         if let Some(log_path) = &self.log_file {
             if let Some(parent) = log_path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -219,15 +255,13 @@ impl Config {
                 .append(true)
                 .open(log_path)?;
             fmt()
-                .with_env_filter(
-                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")),
-                )
+                .with_env_filter(filter)
                 .with_writer(Mutex::new(file))
                 .with_ansi(false)
                 .init();
         } else {
             fmt()
-                .with_env_filter(EnvFilter::from_default_env())
+                .with_env_filter(filter)
                 .with_writer(std::io::stderr)
                 .init();
         }
@@ -290,6 +324,7 @@ mod tests {
             embedding_model: EmbeddingModel::Small,
             embedding_cache_dir: None,
             log_file: None,
+            log_level: LogLevel::Info,
         }
     }
 
@@ -304,6 +339,7 @@ mod tests {
             embedding_model: EmbeddingModel::Small,
             embedding_cache_dir: None,
             log_file: None,
+            log_level: LogLevel::Info,
         }
     }
 

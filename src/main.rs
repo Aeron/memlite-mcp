@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let embedding =
-        EmbeddingService::new(config.embedding_model.into(), config.embedding_cache_dir())?;
+        EmbeddingService::new(config.embedding_model.into(), config.embedding_cache_dir());
 
     MemServer::new(config, embedding).run().await
 }

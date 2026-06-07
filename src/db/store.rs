@@ -613,11 +613,20 @@ impl MemoryStore {
     }
 
     /// Deletes a memory by rowid; returns true if a row was actually removed.
-    pub async fn delete(&self, id: i64) -> Result<bool> {
+    ///
+    /// When `agent_id` is set, only removes the row if it also matches that agent.
+    pub async fn delete(&self, id: i64, agent_id: Option<&str>) -> Result<bool> {
         let conn = self.conn()?;
-        let affected = conn
-            .execute("delete from memories where rowid = ?", libsql::params![id])
-            .await?;
+        let affected = if let Some(agent) = agent_id {
+            conn.execute(
+                "delete from memories where rowid = ? and agent = ?",
+                libsql::params![id, agent],
+            )
+            .await?
+        } else {
+            conn.execute("delete from memories where rowid = ?", libsql::params![id])
+                .await?
+        };
         Ok(affected > 0)
     }
 
@@ -630,8 +639,14 @@ impl MemoryStore {
     /// - `confidence` and `decay_rate` are clamped to [0.0, 1.0] when provided.
     /// - `last_seen_at` is always bumped to now when any field is updated,
     ///   resetting the confidence decay clock.
+    /// - When `agent_id` is set, only modifies the row if it also matches that agent.
     /// - Returns true when at least one row was modified.
-    pub async fn update(&self, id: i64, opts: UpdateOptions<'_>) -> Result<bool> {
+    pub async fn update(
+        &self,
+        id: i64,
+        opts: UpdateOptions<'_>,
+        agent_id: Option<&str>,
+    ) -> Result<bool> {
         let UpdateOptions {
             content,
             summary,
@@ -729,11 +744,18 @@ impl MemoryStore {
         set_clauses.push("last_seen_at = ?");
         params.push(Value::Integer(now));
         params.push(Value::Integer(id));
-
-        let sql = format!(
-            "update memories set {} where rowid = ?",
-            set_clauses.join(", ")
-        );
+        let sql = if let Some(agent) = agent_id {
+            params.push(Value::Text(agent.to_owned()));
+            format!(
+                "update memories set {} where rowid = ? and agent = ?",
+                set_clauses.join(", ")
+            )
+        } else {
+            format!(
+                "update memories set {} where rowid = ?",
+                set_clauses.join(", ")
+            )
+        };
 
         let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
         Ok(affected > 0)
@@ -743,22 +765,31 @@ impl MemoryStore {
     ///
     /// Issues a single UPDATE touching only `updated_at` and `last_seen_at`. Returns
     /// the count of rows actually modified; may be less than `ids.len()` when some
-    /// ids do not exist.
-    pub async fn revalidate_batch(&self, ids: &[i64]) -> Result<u64> {
+    /// ids do not exist. When `agent_id` is set, only touches rows that match that agent.
+    pub async fn revalidate_batch(&self, ids: &[i64], agent_id: Option<&str>) -> Result<u64> {
         if ids.is_empty() {
             return Ok(0);
         }
         let conn = self.conn()?;
         let now = unix_secs();
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let sql = format!(
-            "update memories set updated_at = ?, last_seen_at = ? where rowid in ({placeholders})"
-        );
-        let mut params: Vec<Value> = Vec::with_capacity(2 + ids.len());
+        let sql = if agent_id.is_some() {
+            format!(
+                "update memories set updated_at = ?, last_seen_at = ? where rowid in ({placeholders}) and agent = ?"
+            )
+        } else {
+            format!(
+                "update memories set updated_at = ?, last_seen_at = ? where rowid in ({placeholders})"
+            )
+        };
+        let mut params: Vec<Value> = Vec::with_capacity(3 + ids.len());
         params.push(Value::Integer(now));
         params.push(Value::Integer(now));
         for id in ids {
             params.push(Value::Integer(*id));
+        }
+        if let Some(agent) = agent_id {
+            params.push(Value::Text(agent.to_owned()));
         }
         let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
         Ok(affected)
@@ -1112,7 +1143,7 @@ mod tests {
             .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        assert!(store.delete(id).await.unwrap());
+        assert!(store.delete(id, None).await.unwrap());
         assert!(
             store
                 .list(FilterOptions::default(), 10, 0)
@@ -1125,7 +1156,7 @@ mod tests {
     #[tokio::test]
     async fn delete_missing_returns_false() {
         let (store, _tmp) = fresh().await;
-        assert!(!store.delete(999).await.unwrap());
+        assert!(!store.delete(999, None).await.unwrap());
     }
 
     #[tokio::test]
@@ -1320,7 +1351,8 @@ mod tests {
                     UpdateOptions {
                         content: Some("new"),
                         ..Default::default()
-                    }
+                    },
+                    None,
                 )
                 .await
                 .unwrap()
@@ -1352,6 +1384,7 @@ mod tests {
                     summary: Some(""),
                     ..Default::default()
                 },
+                None,
             )
             .await
             .unwrap();
@@ -1383,6 +1416,7 @@ mod tests {
                     context: Some(""),
                     ..Default::default()
                 },
+                None,
             )
             .await
             .unwrap();
@@ -1403,7 +1437,8 @@ mod tests {
                     UpdateOptions {
                         content: Some("x"),
                         ..Default::default()
-                    }
+                    },
+                    None,
                 )
                 .await
                 .unwrap()
@@ -1417,7 +1452,12 @@ mod tests {
             .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        assert!(!store.update(id, UpdateOptions::default()).await.unwrap());
+        assert!(
+            !store
+                .update(id, UpdateOptions::default(), None)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1435,7 +1475,8 @@ mod tests {
                         confidence: Some(0.6),
                         decay_rate: Some(0.02),
                         ..Default::default()
-                    }
+                    },
+                    None,
                 )
                 .await
                 .unwrap()
@@ -1462,6 +1503,7 @@ mod tests {
                     content: Some("updated"),
                     ..Default::default()
                 },
+                None,
             )
             .await
             .unwrap();
@@ -1776,6 +1818,7 @@ mod tests {
                     memory_type: Some(MemoryType::Project),
                     ..Default::default()
                 },
+                None,
             )
             .await
             .unwrap();
@@ -1887,6 +1930,7 @@ mod tests {
                     status: Some(MemoryStatus::Resolved),
                     ..Default::default()
                 },
+                None,
             )
             .await
             .unwrap();
@@ -2043,6 +2087,7 @@ mod tests {
                     severity: Some(MemorySeverity::High),
                     ..Default::default()
                 },
+                None,
             )
             .await
             .unwrap();
@@ -2118,6 +2163,7 @@ mod tests {
                     relations: Some(&[(30, "causes".to_owned())]),
                     ..Default::default()
                 },
+                None,
             )
             .await
             .unwrap();
@@ -2148,6 +2194,7 @@ mod tests {
                     relations: Some(&[]),
                     ..Default::default()
                 },
+                None,
             )
             .await
             .unwrap();
@@ -2158,7 +2205,7 @@ mod tests {
     #[tokio::test]
     async fn revalidate_batch_empty_returns_zero() {
         let (store, _tmp) = fresh().await;
-        let count = store.revalidate_batch(&[]).await.unwrap();
+        let count = store.revalidate_batch(&[], None).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -2171,7 +2218,7 @@ mod tests {
             .unwrap();
         let before = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-        let count = store.revalidate_batch(&[id]).await.unwrap();
+        let count = store.revalidate_batch(&[id], None).await.unwrap();
         assert_eq!(count, 1);
         let after = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
         assert!(
@@ -2188,7 +2235,7 @@ mod tests {
             .await
             .unwrap();
         // Mix one real id with one nonexistent id
-        let count = store.revalidate_batch(&[id, id + 999]).await.unwrap();
+        let count = store.revalidate_batch(&[id, id + 999], None).await.unwrap();
         assert_eq!(count, 1);
     }
 
@@ -2203,7 +2250,161 @@ mod tests {
             .insert("b", &V2, InsertOptions::default())
             .await
             .unwrap();
-        let count = store.revalidate_batch(&[id1, id2]).await.unwrap();
+        let count = store.revalidate_batch(&[id1, id2], None).await.unwrap();
         assert_eq!(count, 2);
+    }
+
+    // Verifying that agent-scoped mutations respect ownership boundaries.
+    // A mutation with the wrong agent must not touch rows belonging to another agent.
+
+    #[tokio::test]
+    async fn delete_wrong_agent_returns_false() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "x",
+                &V1,
+                InsertOptions {
+                    agent: "alice",
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        // Attempting to delete alice's memory as bob must fail
+        assert!(!store.delete(id, Some("bob")).await.unwrap());
+        // Row still exists
+        let rows = store.list(FilterOptions::default(), 10, 0).await.unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_correct_agent_removes_row() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "x",
+                &V1,
+                InsertOptions {
+                    agent: "alice",
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(store.delete(id, Some("alice")).await.unwrap());
+        let rows = store.list(FilterOptions::default(), 10, 0).await.unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_wrong_agent_returns_false() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "original",
+                &V1,
+                InsertOptions {
+                    agent: "alice",
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let updated = store
+            .update(
+                id,
+                UpdateOptions {
+                    content: Some("tampered"),
+                    ..Default::default()
+                },
+                Some("bob"),
+            )
+            .await
+            .unwrap();
+        assert!(!updated);
+        // Content unchanged
+        let rows = store.list(FilterOptions::default(), 1, 0).await.unwrap();
+        assert_eq!(rows[0].content, "original");
+    }
+
+    #[tokio::test]
+    async fn update_correct_agent_modifies_row() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "original",
+                &V1,
+                InsertOptions {
+                    agent: "alice",
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let updated = store
+            .update(
+                id,
+                UpdateOptions {
+                    content: Some("updated"),
+                    ..Default::default()
+                },
+                Some("alice"),
+            )
+            .await
+            .unwrap();
+        assert!(updated);
+        let rows = store.list(FilterOptions::default(), 1, 0).await.unwrap();
+        assert_eq!(rows[0].content, "updated");
+    }
+
+    #[tokio::test]
+    async fn revalidate_wrong_agent_returns_zero() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "x",
+                &V1,
+                InsertOptions {
+                    agent: "alice",
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let before = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let count = store.revalidate_batch(&[id], Some("bob")).await.unwrap();
+        assert_eq!(count, 0);
+        let after = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
+        assert_eq!(
+            after, before,
+            "last_seen_at must not change when agent does not match"
+        );
+    }
+
+    #[tokio::test]
+    async fn revalidate_correct_agent_bumps_clock() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "x",
+                &V1,
+                InsertOptions {
+                    agent: "alice",
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let before = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let count = store.revalidate_batch(&[id], Some("alice")).await.unwrap();
+        assert_eq!(count, 1);
+        let after = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
+        assert!(
+            after > before,
+            "last_seen_at should increase when agent matches"
+        );
     }
 }
