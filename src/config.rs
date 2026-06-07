@@ -65,10 +65,6 @@ pub struct Config {
     #[arg(long = "db-dir", env = "MEMLITE_DB_DIR")]
     db_dir: Option<PathBuf>,
 
-    /// Use an ephemeral in-memory DB (no persistence across restarts).
-    #[arg(long = "in-memory", env = "MEMLITE_IN_MEMORY", default_value_t = false, value_parser = parse_bool)]
-    pub in_memory: bool,
-
     /// Allows the filesystem root ("/") as the project path.
     /// Off by default; using the whole filesystem as a project is almost certainly wrong.
     #[arg(long = "allow-root", env = "MEMLITE_ALLOW_ROOT", default_value_t = false, value_parser = parse_bool)]
@@ -204,15 +200,10 @@ impl Config {
         self.project_path.as_deref()
     }
 
-    /// Returns the DB file path for the given project path, or None in in-memory mode.
-    pub fn db_path_for(&self, project_path: &str) -> Option<PathBuf> {
-        if self.in_memory {
-            return None;
-        }
-        Some(
-            self.db_dir()
-                .join(format!("{}.db", Self::project_path_hash(project_path))),
-        )
+    /// Returns the DB file path for the given project path.
+    pub fn db_path_for(&self, project_path: &str) -> PathBuf {
+        self.db_dir()
+            .join(format!("{}.db", Self::project_path_hash(project_path)))
     }
 
     /// Resolves the effective project path from the explicit override or MCP roots.
@@ -324,12 +315,11 @@ fn parse_bool(s: &str) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    fn config(project_path: &str, in_memory: bool) -> Config {
+    fn config(project_path: &str) -> Config {
         Config {
             project_path: Some(project_path.into()),
             agent: String::new(),
             db_dir: None,
-            in_memory,
             allow_root: false,
             allow_home: false,
             embedding_model: EmbeddingModel::Small,
@@ -344,7 +334,6 @@ mod tests {
             project_path: None,
             agent: String::new(),
             db_dir: None,
-            in_memory: false,
             allow_root: false,
             allow_home: false,
             embedding_model: EmbeddingModel::Small,
@@ -355,13 +344,8 @@ mod tests {
     }
 
     #[test]
-    fn db_path_none_when_in_memory() {
-        assert!(config("/project", true).db_path_for("/project").is_none());
-    }
-
-    #[test]
     fn db_path_has_64_hex_chars_and_db_extension() {
-        let path = config("/project", false).db_path_for("/project").unwrap();
+        let path = config("/project").db_path_for("/project");
         let name = path.file_name().unwrap().to_str().unwrap();
         assert!(name.ends_with(".db"), "expected .db suffix, got '{name}'");
         let stem = &name[..name.len() - 3];
@@ -371,29 +355,21 @@ mod tests {
 
     #[test]
     fn db_path_is_deterministic() {
-        let a = config("/my/project", false)
-            .db_path_for("/my/project")
-            .unwrap();
-        let b = config("/my/project", false)
-            .db_path_for("/my/project")
-            .unwrap();
+        let a = config("/my/project").db_path_for("/my/project");
+        let b = config("/my/project").db_path_for("/my/project");
         assert_eq!(a, b);
     }
 
     #[test]
     fn db_path_differs_per_project() {
-        let a = config("/project/a", false)
-            .db_path_for("/project/a")
-            .unwrap();
-        let b = config("/project/b", false)
-            .db_path_for("/project/b")
-            .unwrap();
+        let a = config("/project/a").db_path_for("/project/a");
+        let b = config("/project/b").db_path_for("/project/b");
         assert_ne!(a.file_name(), b.file_name());
     }
 
     #[test]
     fn resolve_project_path_explicit_wins() {
-        let c = config("/my/project", false);
+        let c = config("/my/project");
         assert_eq!(
             c.resolve_project_path(&["file:///other".to_string()]),
             Ok("/my/project".to_owned())
@@ -417,14 +393,14 @@ mod tests {
     #[test]
     fn resolve_project_path_rejects_root_path() {
         assert_eq!(
-            config("/", false).resolve_project_path(&[]),
+            config("/").resolve_project_path(&[]),
             Err(ResolveError::RootPath)
         );
     }
 
     #[test]
     fn resolve_project_path_allow_root_opts_in() {
-        let mut c = config("/", false);
+        let mut c = config("/");
         c.allow_root = true;
         assert_eq!(c.resolve_project_path(&[]), Ok("/".to_owned()));
     }
@@ -449,7 +425,7 @@ mod tests {
             return; // skip when home dir is unavailable
         };
         assert_eq!(
-            config(&home, false).resolve_project_path(&[]),
+            config(&home).resolve_project_path(&[]),
             Err(ResolveError::HomePath)
         );
     }
@@ -459,19 +435,19 @@ mod tests {
         let Some(home) = dirs::home_dir().and_then(|h| h.to_str().map(str::to_owned)) else {
             return;
         };
-        let mut c = config(&home, false);
+        let mut c = config(&home);
         c.allow_home = true;
         assert_eq!(c.resolve_project_path(&[]), Ok(home));
     }
 
     #[test]
     fn agent_filter_empty_is_none() {
-        assert!(config("/p", false).agent_filter().is_none());
+        assert!(config("/p").agent_filter().is_none());
     }
 
     #[test]
     fn agent_filter_non_empty_is_some() {
-        let mut c = config("/p", false);
+        let mut c = config("/p");
         c.agent = "claude".into();
         assert_eq!(c.agent_filter(), Some("claude"));
     }

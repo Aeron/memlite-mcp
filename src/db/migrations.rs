@@ -66,20 +66,22 @@ pub async fn run(conn: &libsql::Connection) -> Result<()> {
         );
     }
     for (i, stmts) in MIGRATIONS.iter().enumerate().skip(version) {
-        conn.execute("begin immediate", ()).await?;
+        let tx = conn
+            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+            .await?;
         let result: Result<()> = async {
             for stmt in *stmts {
-                conn.execute(stmt, ()).await?;
+                tx.execute(stmt, ()).await?;
             }
-            conn.execute(&format!("pragma user_version = {}", i + 1), ())
+            tx.execute(&format!("pragma user_version = {}", i + 1), ())
                 .await?;
             Ok(())
         }
         .await;
         match result {
-            Ok(()) => conn.execute("commit", ()).await?,
+            Ok(()) => tx.commit().await?,
             Err(e) => {
-                let _ = conn.execute("rollback", ()).await;
+                let _ = tx.rollback().await;
                 return Err(e);
             }
         };

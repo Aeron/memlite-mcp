@@ -22,7 +22,6 @@ async fn main() -> anyhow::Result<()> {
     info!(
         project = config.explicit_project_path().unwrap_or("<auto>"),
         agent   = %config.agent,
-        in_mem  = config.in_memory,
         "starting memlite-mcp"
     );
 

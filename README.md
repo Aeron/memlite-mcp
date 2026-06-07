@@ -1,4 +1,4 @@
-# memlite-mcp
+# MemLite MCP
 
 A local-only MCP server that gives AI agents persistent, searchable memory,
 backed by **libsql** (SQLite with native vector search) and **fastembed**
@@ -18,7 +18,7 @@ dependency on a third-party endpoint, and context leaving the machine. None of
 that felt right for a tool I wanted to run silently in the background across
 all my local projects.
 
-memlite-mcp takes the other approach: the DB is a per-project SQLite file on
+MemLite MCP takes the other approach: the DB is a per-project SQLite file on
 disk, the embeddings are generated locally with a bundled ONNX model, and
 nothing ever leaves the machine. Per-project isolation means agents working on
 different codebases do not bleed into each other. Per-agent filtering means
@@ -33,9 +33,9 @@ cargo build --release
 ```
 
 The embedding model is downloaded on the first `memory_store` or
-`memory_search` call, not at server start. It is cached in the OS cache
-directory (`~/Library/Caches/memlite-mcp` on macOS,
-`~/.cache/memlite-mcp` on Linux). Subsequent calls are fully offline.
+`memory_search` call, not at server start. So, the very first tool call can be
+slower. It is cached in the OS cache directory (`~/Library/Caches/memlite-mcp`
+on macOS, `~/.cache/memlite-mcp` on Linux). Subsequent calls are fully offline.
 
 ## Configuration
 
@@ -47,7 +47,6 @@ flags take precedence).
 | `--project-path` | `MEMLITE_PROJECT_PATH` | first MCP workspace root, or CWD | Project identifier; agents sharing the same path share a DB |
 | `--agent` | `MEMLITE_AGENT` | `""` | Filters memories to this agent (empty = see all) |
 | `--db-dir` | `MEMLITE_DB_DIR` | OS data dir / `memlite-mcp` | Directory for per-project DB files (`~/.local/share/…` on Linux, `~/Library/Application Support/…` on macOS) |
-| `--in-memory` | `MEMLITE_IN_MEMORY` | `false` | `true`/`1`/`yes` for ephemeral in-memory DB (no persistence across restarts) |
 | `--allow-root` | `MEMLITE_ALLOW_ROOT` | `false` | Allow `/` as the project path (off by default; almost always wrong) |
 | `--allow-home` | `MEMLITE_ALLOW_HOME` | `false` | Allow the home directory as the project path (off by default; spans unrelated projects) |
 | `--embedding-model` | `MEMLITE_EMBEDDING_MODEL` | `bge-small-en-v1.5` | See models table below |

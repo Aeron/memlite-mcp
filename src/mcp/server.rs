@@ -32,7 +32,7 @@ const INSTRUCTIONS: &str = include_str!("instructions.md");
 
 #[derive(Clone)]
 pub struct MemServer {
-    db_path: Arc<OnceLock<Option<PathBuf>>>,
+    db_path: Arc<OnceLock<PathBuf>>,
     store: Arc<OnceCell<MemoryStore>>,
     embedding: EmbeddingService,
     config: Arc<Config>,
@@ -100,7 +100,7 @@ impl MemServer {
             .get_or_try_init(|| {
                 let path = db_path.clone();
                 async move {
-                    let store = MemoryStore::open(path.as_deref())
+                    let store = MemoryStore::open(&path)
                         .await
                         .map_err(|e| McpError::from(ServerError::StoreOpen(e)))?;
                     store
@@ -122,9 +122,7 @@ impl MemServer {
             return Ok(Some(store));
         }
         let db_path = self.db_path.get().ok_or_else(|| self.path_not_resolved())?;
-        if let Some(path) = db_path
-            && !path.exists()
-        {
+        if !db_path.exists() {
             return Ok(None);
         }
         Ok(Some(self.open_store().await?))
