@@ -88,6 +88,7 @@ The optional `memory_type` field classifies a memory's intended use, enabling ta
 | `finding` | Discovered problem, audit result, or identified risk; not yet a tracked task |
 | `issue` | Known defect or bug |
 | `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
+| `plan` | High-level plan or phased roadmap; use `relations` to link to spawned tasks and decisions |
 
 ## Lifecycle and severity
 

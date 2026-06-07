@@ -2,7 +2,7 @@ Local agent memory store. Server-side embeddings from plain text.
 
 ## Tools
 
-- `memory_store`: embed + persist; returns id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`), `status` (`open`/`resolved`/`wontfix`/`deferred`), `severity` (`critical`/`high`/`medium`/`low`), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`)
+- `memory_store`: embed + persist; returns id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`), `status` (`open`/`resolved`/`wontfix`/`deferred`), `severity` (`critical`/`high`/`medium`/`low`), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`)
 - `memory_store_batch`: batch store; `items: [...]` (max 100), same fields as `memory_store`; single-pass embed, atomic insert; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` for 3+ memories
 - `memory_search`: cosine + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Pre-filter: `tags`, `memory_type`, `status`, `severity`
 - `memory_list`: newest-first with pagination. Filter: `tags`, `memory_type`, `status`, `severity`; returns raw `confidence`, `decay_rate`, `last_seen_at`
@@ -105,6 +105,7 @@ Both `memory_search` and `memory_list` accept optional `tags`. All must match (h
 | `finding` | Discovered problem, audit result, or identified risk; not yet a tracked task |
 | `issue` | Known defect or bug |
 | `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
+| `plan` | High-level plan or phased roadmap; use `relations` to link to spawned tasks and decisions; apply moderate `decay_rate` (0.01-0.02) |
 
 Set when memory fits one category; skip if multi-category or unclear. Both tools accept `memory_type` as filter; combine with `tags` and `status` for precise retrieval.
 
