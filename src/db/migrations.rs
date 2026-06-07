@@ -31,7 +31,7 @@ const MIGRATIONS: &[&[&str]] = &[
     // v5 -> v6: adds severity field
     &["alter table memories add column severity text"],
     // v6 -> v7: adds directed outgoing relation links
-    &["alter table memories add column relations text not null default '[]'"],
+    &["alter table memories add column relations text not null default '{}'"],
 ];
 
 /// Applies all pending migrations, bumping `PRAGMA user_version` after each one.

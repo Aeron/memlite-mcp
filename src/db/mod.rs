@@ -2,6 +2,6 @@ pub(crate) mod migrations;
 pub mod store;
 
 pub use store::{
-    BatchInsertItem, InsertOptions, MemorySeverity, MemoryStatus, MemoryStore, MemoryType,
-    UpdateOptions,
+    BatchInsertItem, FilterOptions, InsertOptions, MemorySeverity, MemoryStatus, MemoryStore,
+    MemoryType, UpdateOptions,
 };

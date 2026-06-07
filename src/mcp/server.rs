@@ -20,8 +20,8 @@ use super::params::{
 use crate::{
     config::Config,
     db::{
-        BatchInsertItem, InsertOptions, MemorySeverity, MemoryStatus, MemoryStore, MemoryType,
-        UpdateOptions,
+        BatchInsertItem, FilterOptions, InsertOptions, MemorySeverity, MemoryStatus, MemoryStore,
+        MemoryType, UpdateOptions,
     },
     embedding::EmbeddingService,
 };
@@ -341,11 +341,13 @@ impl MemServer {
             .search(
                 &p.query,
                 &embedding,
-                self.config.agent_filter(),
-                p.tags.as_deref(),
-                parse_memory_type(p.memory_type.as_deref()),
-                parse_memory_status(p.status.as_deref()),
-                parse_memory_severity(p.severity.as_deref()),
+                FilterOptions {
+                    agent_id: self.config.agent_filter(),
+                    tags: p.tags.as_deref(),
+                    memory_type: parse_memory_type(p.memory_type.as_deref()),
+                    status: parse_memory_status(p.status.as_deref()),
+                    severity: parse_memory_severity(p.severity.as_deref()),
+                },
                 limit,
             )
             .await
@@ -394,11 +396,13 @@ impl MemServer {
         };
         let memories = store
             .list(
-                self.config.agent_filter(),
-                p.tags.as_deref(),
-                parse_memory_type(p.memory_type.as_deref()),
-                parse_memory_status(p.status.as_deref()),
-                parse_memory_severity(p.severity.as_deref()),
+                FilterOptions {
+                    agent_id: self.config.agent_filter(),
+                    tags: p.tags.as_deref(),
+                    memory_type: parse_memory_type(p.memory_type.as_deref()),
+                    status: parse_memory_status(p.status.as_deref()),
+                    severity: parse_memory_severity(p.severity.as_deref()),
+                },
                 limit,
                 offset,
             )

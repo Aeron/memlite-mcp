@@ -278,6 +278,21 @@ pub struct UpdateOptions<'a> {
     pub relations: Option<&'a [(i64, String)]>,
 }
 
+/// Shared pre-filter options for search and list queries.
+#[derive(Default)]
+pub struct FilterOptions<'a> {
+    /// Restricts results to those owned by this agent identifier.
+    pub agent_id: Option<&'a str>,
+    /// Restricts results to those carrying all of the given tags (hard AND).
+    pub tags: Option<&'a [String]>,
+    /// Restricts results to the given memory type.
+    pub memory_type: Option<MemoryType>,
+    /// Restricts results to the given lifecycle status.
+    pub status: Option<MemoryStatus>,
+    /// Restricts results to the given severity level.
+    pub severity: Option<MemorySeverity>,
+}
+
 /// Holds owned data for a single row in a batch insert operation.
 pub struct BatchInsertItem {
     /// Full text to embed and associate with this memory.
@@ -491,11 +506,7 @@ impl MemoryStore {
         &self,
         query_text: &str,
         query_embedding: &[f32],
-        agent_id: Option<&str>,
-        tags: Option<&[String]>,
-        type_filter: Option<MemoryType>,
-        status_filter: Option<MemoryStatus>,
-        severity_filter: Option<MemorySeverity>,
+        filter: FilterOptions<'_>,
         limit: u32,
     ) -> Result<Vec<(Memory, f64)>> {
         let conn = self.conn()?;
@@ -503,11 +514,11 @@ impl MemoryStore {
         let candidate_limit = (limit as i64).saturating_mul(4).min(400);
         let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
         let where_sql = build_where(
-            agent_id,
-            tags,
-            type_filter,
-            status_filter,
-            severity_filter,
+            filter.agent_id,
+            filter.tags,
+            filter.memory_type,
+            filter.status,
+            filter.severity,
             &mut params,
         )?;
         params.push(Value::Integer(candidate_limit));
@@ -540,22 +551,18 @@ impl MemoryStore {
     /// Optionally pre-filters by `agent_id` and/or `tags` (all supplied tags must match).
     pub async fn list(
         &self,
-        agent_id: Option<&str>,
-        tags: Option<&[String]>,
-        type_filter: Option<MemoryType>,
-        status_filter: Option<MemoryStatus>,
-        severity_filter: Option<MemorySeverity>,
+        filter: FilterOptions<'_>,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Memory>> {
         let conn = self.conn()?;
         let mut params: Vec<Value> = Vec::new();
         let where_sql = build_where(
-            agent_id,
-            tags,
-            type_filter,
-            status_filter,
-            severity_filter,
+            filter.agent_id,
+            filter.tags,
+            filter.memory_type,
+            filter.status,
+            filter.severity,
             &mut params,
         )?;
         params.push(Value::Integer(limit as i64));
@@ -952,7 +959,7 @@ mod tests {
     async fn list_empty_store() {
         let (store, _tmp) = fresh().await;
         let rows = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         assert!(rows.is_empty());
@@ -976,7 +983,7 @@ mod tests {
             .await
             .unwrap();
         let rows = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         assert_eq!(rows.len(), 1);
@@ -1009,7 +1016,7 @@ mod tests {
             .await
             .unwrap();
         let rows = store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap();
         assert_eq!(rows[0].confidence, 0.7);
@@ -1043,14 +1050,21 @@ mod tests {
             .unwrap();
 
         let alice = store
-            .list(Some("alice"), None, None, None, None, 10, 0)
+            .list(
+                FilterOptions {
+                    agent_id: Some("alice"),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(alice.len(), 1);
         assert_eq!(alice[0].agent, "alice");
 
         let all = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         assert_eq!(all.len(), 2);
@@ -1066,11 +1080,11 @@ mod tests {
                 .unwrap();
         }
         let page0 = store
-            .list(None, None, None, None, None, 3, 0)
+            .list(FilterOptions::default(), 3, 0)
             .await
             .unwrap();
         let page1 = store
-            .list(None, None, None, None, None, 3, 3)
+            .list(FilterOptions::default(), 3, 3)
             .await
             .unwrap();
         assert_eq!(page0.len(), 3);
@@ -1090,7 +1104,7 @@ mod tests {
         assert!(store.delete(id).await.unwrap());
         assert!(
             store
-                .list(None, None, None, None, None, 10, 0)
+                .list(FilterOptions::default(), 10, 0)
                 .await
                 .unwrap()
                 .is_empty()
@@ -1134,18 +1148,24 @@ mod tests {
             .unwrap();
 
         let bug_only = store
-            .list(None, Some(&["bug".into()]), None, None, None, 10, 0)
+            .list(
+                FilterOptions {
+                    tags: Some(&["bug".into()]),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(bug_only.len(), 2);
 
         let both = store
             .list(
-                None,
-                Some(&["bug".into(), "config".into()]),
-                None,
-                None,
-                None,
+                FilterOptions {
+                    tags: Some(&["bug".into(), "config".into()]),
+                    ..Default::default()
+                },
                 10,
                 0,
             )
@@ -1156,7 +1176,14 @@ mod tests {
 
         // empty slice = no filter
         let all = store
-            .list(None, Some(&[]), None, None, None, 10, 0)
+            .list(
+                FilterOptions {
+                    tags: Some(&[]),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(all.len(), 3);
@@ -1182,7 +1209,15 @@ mod tests {
             .unwrap();
 
         let results = store
-            .search("", &V1, None, Some(&["rust".into()]), None, None, None, 10)
+            .search(
+                "",
+                &V1,
+                FilterOptions {
+                    tags: Some(&["rust".into()]),
+                    ..Default::default()
+                },
+                10,
+            )
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -1281,7 +1316,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .list(None, None, None, None, None, 1, 0)
+                .list(FilterOptions::default(), 1, 0)
                 .await
                 .unwrap()[0]
                 .content,
@@ -1315,7 +1350,7 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .list(None, None, None, None, None, 1, 0)
+                .list(FilterOptions::default(), 1, 0)
                 .await
                 .unwrap()[0]
                 .summary
@@ -1349,7 +1384,7 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .list(None, None, None, None, None, 1, 0)
+                .list(FilterOptions::default(), 1, 0)
                 .await
                 .unwrap()[0]
                 .context
@@ -1405,7 +1440,7 @@ mod tests {
                 .unwrap()
         );
         let m = &store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap()[0];
         assert_eq!(m.confidence, 0.6);
@@ -1420,7 +1455,7 @@ mod tests {
             .await
             .unwrap();
         let before = store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap()[0]
             .last_seen_at;
@@ -1437,7 +1472,7 @@ mod tests {
             .await
             .unwrap();
         let after = store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap()[0]
             .last_seen_at;
@@ -1460,7 +1495,7 @@ mod tests {
             .await
             .unwrap();
         let m = &store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap()[0];
         assert_eq!(m.effective_confidence(), 0.8);
@@ -1493,7 +1528,7 @@ mod tests {
         .await
         .unwrap();
         let m = &store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap()[0];
         // 30 days * 0.5/day = 15 decay: 1.0 - 15 = -14, clamped to 0.0
@@ -1508,7 +1543,7 @@ mod tests {
             .await
             .unwrap();
         let m = &store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap()[0];
         assert_eq!(m.age_days(), 0);
@@ -1530,7 +1565,7 @@ mod tests {
 
         // Empty query: no word-overlap re-ranking, pure cosine order preserved
         let results = store
-            .search("", &V1, None, None, None, None, None, 2)
+            .search("", &V1, FilterOptions::default(), 2)
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -1562,7 +1597,7 @@ mod tests {
         // Query vector identical to V1 (so cosine order would put the first item first),
         // but query text matches the second item
         let results = store
-            .search("rust programming", &V1, None, None, None, None, None, 2)
+            .search("rust programming", &V1, FilterOptions::default(), 2)
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -1599,7 +1634,15 @@ mod tests {
             .unwrap();
 
         let results = store
-            .search("", &V1, Some("alice"), None, None, None, None, 10)
+            .search(
+                "",
+                &V1,
+                FilterOptions {
+                    agent_id: Some("alice"),
+                    ..Default::default()
+                },
+                10,
+            )
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -1670,6 +1713,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_filters_by_memory_type() {
+        let (store, _tmp) = fresh().await;
+        store
+            .insert(
+                "architectural choice",
+                &V1,
+                InsertOptions {
+                    memory_type: Some(MemoryType::Decision),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .insert(
+                "known defect",
+                &V1,
+                InsertOptions {
+                    memory_type: Some(MemoryType::Issue),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .insert("no type", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+
+        let decisions = store
+            .list(
+                FilterOptions {
+                    memory_type: Some(MemoryType::Decision),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].content, "architectural choice");
+
+        let issues = store
+            .list(
+                FilterOptions {
+                    memory_type: Some(MemoryType::Issue),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].content, "known defect");
+
+        let all = store
+            .list(FilterOptions::default(), 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn update_memory_type() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "general note",
+                &V1,
+                InsertOptions {
+                    memory_type: Some(MemoryType::Reference),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .update(
+                id,
+                UpdateOptions {
+                    memory_type: Some(MemoryType::Project),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let rows = store
+            .list(FilterOptions::default(), 1, 0)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].memory_type, Some(MemoryType::Project));
+    }
+
+    #[tokio::test]
     async fn insert_and_list_roundtrip_with_status() {
         let (store, _tmp) = fresh().await;
         let id = store
@@ -1684,7 +1823,7 @@ mod tests {
             .await
             .unwrap();
         let rows = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         assert_eq!(rows.len(), 1);
@@ -1723,21 +1862,35 @@ mod tests {
             .unwrap();
 
         let open = store
-            .list(None, None, None, Some(MemoryStatus::Open), None, 10, 0)
+            .list(
+                FilterOptions {
+                    status: Some(MemoryStatus::Open),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].content, "open issue");
 
         let resolved = store
-            .list(None, None, None, Some(MemoryStatus::Resolved), None, 10, 0)
+            .list(
+                FilterOptions {
+                    status: Some(MemoryStatus::Resolved),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].content, "resolved issue");
 
         let all = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         assert_eq!(all.len(), 3);
@@ -1771,7 +1924,7 @@ mod tests {
         assert!(updated);
 
         let rows = store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap();
         assert_eq!(rows[0].status, Some(MemoryStatus::Resolved));
@@ -1823,7 +1976,7 @@ mod tests {
         assert!(ids[1] > ids[0]);
 
         let rows = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         // list returns newest-first, so second item is at index 0
@@ -1854,7 +2007,7 @@ mod tests {
             .await
             .unwrap();
         let rows = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         assert_eq!(rows[0].id, id);
@@ -1893,11 +2046,10 @@ mod tests {
 
         let critical = store
             .list(
-                None,
-                None,
-                None,
-                None,
-                Some(MemorySeverity::Critical),
+                FilterOptions {
+                    severity: Some(MemorySeverity::Critical),
+                    ..Default::default()
+                },
                 10,
                 0,
             )
@@ -1907,7 +2059,7 @@ mod tests {
         assert_eq!(critical[0].content, "critical bug");
 
         let all = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         assert_eq!(all.len(), 3);
@@ -1938,7 +2090,7 @@ mod tests {
             .await
             .unwrap();
         let rows = store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap();
         assert_eq!(rows[0].severity, Some(MemorySeverity::High));
@@ -1967,7 +2119,7 @@ mod tests {
             .await
             .unwrap();
         let rows = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         let source = rows.iter().find(|m| m.id == id).unwrap();
@@ -1985,7 +2137,7 @@ mod tests {
             .await
             .unwrap();
         let rows = store
-            .list(None, None, None, None, None, 10, 0)
+            .list(FilterOptions::default(), 10, 0)
             .await
             .unwrap();
         assert!(
@@ -2022,7 +2174,7 @@ mod tests {
             .await
             .unwrap();
         let rows = store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap();
         let mut expected = std::collections::BTreeMap::new();
@@ -2055,7 +2207,7 @@ mod tests {
             .await
             .unwrap();
         let rows = store
-            .list(None, None, None, None, None, 1, 0)
+            .list(FilterOptions::default(), 1, 0)
             .await
             .unwrap();
         assert!(rows[0].relations.is_empty());
