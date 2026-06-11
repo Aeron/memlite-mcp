@@ -101,14 +101,16 @@ The optional `memory_type` field classifies a memory's intended use, enabling ta
 
 | Type | Stores |
 |---|---|
-| `user` | Facts about the person: preferences, identity, working style |
+| `user` | Facts about the person: preferences, identity, working style, and personal opinions on work quality or agent approach |
 | `project` | Codebase knowledge: conventions, stack, decisions, constraints |
 | `reference` | Domain knowledge: docs, external facts, API details, terminology |
 | `task` | Things to track, follow up on, or complete in a future session |
-| `finding` | Discovered problem, audit result, or identified risk; not yet a tracked task |
+| `finding` | Observation, evaluation, or risk; covers audit results, review findings, quality assessments, and retrospective notes; not yet a tracked task |
 | `issue` | Known defect or bug |
 | `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
 | `plan` | High-level plan or phased roadmap; use `relations` to link to spawned tasks and decisions |
+
+Feedback disambiguation: personal opinions on agent approach or working style -> `user`; quality or correctness observations about the work itself -> `finding` or `issue`.
 
 ## Lifecycle and severity
 

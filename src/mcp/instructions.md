@@ -10,11 +10,11 @@ Local agent memory store. Server-side embeddings from plain text.
 - `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status/severity/relations in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context/memory_type/status/severity; pass `{}` to clear relations
 - `memory_delete`: remove by id
 - `memory_revalidate`: resets decay clock (`last_seen_at` = now) on a list of ids without changing any other field; returns count updated. Use when confirming one or more memories accurate in same session
-- `memory_neighbors`: returns immediate in-neighbors and out-neighbors of a memory by id; optional `kind` filter restricts to one edge type; returns `{outgoing: [{id, kind, memory?}], incoming: [...]}`
-- `memory_traverse`: BFS from a memory node; `depth` (default 2, max 5), optional `kind` filter, `direction` ("out" default / "in" / "both"); returns `{start_id, nodes: [{id, depth, via_kind, ...}], edges: [{from_id, to_id, kind}]}`
-- `memory_path`: shortest directed path between two memories; `from_id`, `to_id`, optional `max_hops` (default 6); returns `{found, path: [{id, via_kind, ...}]}`
-- `memory_hubs`: top-N most-connected memories by total degree; optional `top_n` (default 10); returns `[{id, summary, memory_type, out_degree, in_degree, total_degree}]`
-- `memory_stats`: graph-level statistics; returns `{total_memories, by_type, total_relations, relation_kinds}`
+- `memory_neighbors`: immediate in/out neighbors; optional `kind` filter; `direction` ("out"/"in"/"both")
+- `memory_traverse`: BFS from `start_id`; `depth` (default 2, max 5), optional `kind`, `direction`
+- `memory_path`: shortest directed path; `from_id`, `to_id`, optional `max_hops` (default 6)
+- `memory_hubs`: top-N by total degree; optional `top_n` (default 10)
+- `memory_stats`: graph counts; type distribution, relation kinds
 
 ## Workflow
 
@@ -45,13 +45,13 @@ Call `memory_tags` to reuse existing tags; inventing synonyms fragments taxonomy
 
 ### Graph navigation
 
-Use graph tools when you already have memory ids and want to explore connections, not discover them from scratch:
+Use when you have ids and want to explore connections, not discover from scratch:
 
-- `memory_neighbors`: immediate links from/to a known node; use to see what a memory causes, blocks, or is caused by
-- `memory_traverse`: cluster exploration from a seed node; use when a concept fans out into related memories
-- `memory_path`: how two memories relate; use when tracing a chain of causes or decisions
-- `memory_hubs`: most-connected memories; run at session start on an unfamiliar project for quick orientation
-- `memory_stats`: graph shape overview; total counts, type distribution, relation kinds present
+- `memory_neighbors`: immediate links from/to a node
+- `memory_traverse`: BFS cluster from a seed node
+- `memory_path`: how two nodes connect; trace cause/decision chains
+- `memory_hubs`: most-connected nodes; good orientation on unfamiliar project
+- `memory_stats`: graph shape overview
 
 ### How `memory_search` ranks
 
@@ -82,12 +82,7 @@ Provide when content > 2-3 sentences, uses jargon, or is structured data. Shown 
 
 ### `context`
 
-Record the *why*: reasoning, constraints, trade-offs, broader situation. Not a summary; answers:
-- "Why this approach over alternatives?"
-- "What prompted this?"
-- "Who or what does this affect, and how?"
-
-Skip for plain self-contained facts. Use for decisions, architectural choices, anything where rationale matters later. Pass `""` to clear.
+Record the *why*: reasoning, constraints, trade-offs, broader situation. Not a summary. Use for decisions, architectural choices, anything where rationale matters later. Skip for plain self-contained facts. Pass `""` to clear.
 
 ### `confidence`
 
@@ -114,70 +109,30 @@ Both `memory_search` and `memory_list` accept optional `tags`. All must match (h
 
 | Value | Use for |
 |---|---|
-| `user` | Preferences, identity, working style |
+| `user` | Preferences, identity, working style; personal opinions on work quality or agent approach |
 | `project` | Conventions, tech stack, architecture, constraints |
 | `reference` | Domain knowledge, docs, external facts, API details |
 | `task` | Things to track, follow up, or complete |
-| `finding` | Discovered problem, audit result, or identified risk; not yet tracked task |
+| `finding` | Observation, evaluation, or risk; covers audit results, review findings, quality assessments, and retrospective notes; not yet a tracked task |
 | `issue` | Known defect or bug |
 | `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
 | `plan` | High-level plan or phased roadmap; use `relations` to link to spawned tasks and decisions; apply moderate `decay_rate` (0.01-0.02) |
 
 Set when memory fits one category; skip if multi-category or unclear. Pass `""` to `memory_update` to clear. Both tools accept `memory_type` as filter; combine with `tags` and `status` for precise retrieval.
 
+Feedback disambiguation: personal opinions on agent approach or working style -> `user`; quality or correctness observations about the work itself -> `finding` or `issue`.
+
 ### `status`
 
-Lifecycle state for task and issue memories. Omit for general knowledge or anything without discrete resolution.
-
-| Value | Use for |
-|---|---|
-| `open` | Active and unresolved |
-| `resolved` | Completed or fixed |
-| `wontfix` | Acknowledged, will not be addressed |
-| `deferred` | Postponed for later |
-
-Set when storing bug, task, or finding. Update to `resolved` when done; don't delete resolved memories (useful history). Pass `""` to `memory_update` to clear. Both tools accept `status` as filter; combine with `memory_type` to query e.g. all open tasks.
-
-Note: `decay_rate` is wrong model for "is this still open?"; bug is fixed or not. Use `status` for lifecycle, `decay_rate` for time-based staleness.
+Lifecycle: `open` / `resolved` / `wontfix` / `deferred`. For task/issue/finding; omit general knowledge. Don't delete resolved memories; update status instead. Pass `""` to clear. Use `status` for lifecycle (fixed or not), `decay_rate` for time-based staleness.
 
 ### `severity`
 
-Urgency/impact level for finding, issue, or task. Omit for general knowledge or anything without meaningful priority.
-
-| Value | Meaning |
-|---|---|
-| `critical` | Requires immediate attention; may block work or cause data loss |
-| `high` | Significant impact; should be addressed soon |
-| `medium` | Noticeable impact; can be scheduled |
-| `low` | Minor impact; address when convenient |
-
-Set when storing finding, issue, or task where priority matters. Pass `""` to `memory_update` to clear. Both tools accept `severity` as filter; combine with `status` to query e.g. all open critical issues.
+Priority: `critical` / `high` / `medium` / `low`. For finding/issue/task; omit general knowledge. Pass `""` to clear. Combine with `status` to filter e.g. open critical issues.
 
 ### `relations`
 
-Outgoing directed links to other memory identifiers. JSON object mapping target id (string key) to free-form relation kind:
-
-```json
-{"7": "caused_by", "12": "blocks"}
-```
-
-Kind is any non-empty string. Suggested labels for consistency:
-
-| Kind | Meaning |
-|---|---|
-| `caused_by` | caused by target (finding -> root cause) |
-| `causes` | causes target (root cause -> downstream effect) |
-| `blocks` | blocks target task or fix |
-| `depends_on` | depends on target |
-| `supersedes` | replaces target (new decision -> old decision) |
-| `related_to` | generic association |
-| `duplicate_of` | duplicate of target |
-
-Links are one-way: memory A having `{"7": "caused_by"}` adds no link to memory 7. Reverse traversal: use `memory_neighbors` (returns both directions) or store an explicit back-link.
-
-`memory_update` replaces full set when `relations` provided. Pass `{}` to clear all outgoing links.
-
-Returned in both tools as JSON object (empty when no links stored).
+Outgoing directed links: JSON object `{"<target_id>": "<kind>"}`. Kind is free-form; common: `caused_by`, `causes`, `blocks`, `depends_on`, `supersedes`, `related_to`, `duplicate_of`. Links one-way; reverse traversal via `memory_neighbors`. `memory_update` replaces full set; pass `{}` to clear.
 
 ## Updating vs deleting
 
