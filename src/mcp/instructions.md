@@ -10,6 +10,11 @@ Local agent memory store. Server-side embeddings from plain text.
 - `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status/severity/relations in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context/memory_type/status/severity; pass `{}` to clear relations
 - `memory_delete`: remove by id
 - `memory_revalidate`: resets decay clock (`last_seen_at` = now) on a list of ids without changing any other field; returns count updated. Use when confirming one or more memories accurate in same session
+- `memory_neighbors`: returns immediate in-neighbors and out-neighbors of a memory by id; optional `kind` filter restricts to one edge type; returns `{outgoing: [{id, kind, memory?}], incoming: [...]}`
+- `memory_traverse`: BFS from a memory node; `depth` (default 2, max 5), optional `kind` filter, `direction` ("out" default / "in" / "both"); returns `{start_id, nodes: [{id, depth, via_kind, ...}], edges: [{from_id, to_id, kind}]}`
+- `memory_path`: shortest directed path between two memories; `from_id`, `to_id`, optional `max_hops` (default 6); returns `{found, path: [{id, via_kind, ...}]}`
+- `memory_hubs`: top-N most-connected memories by total degree; optional `top_n` (default 10); returns `[{id, summary, memory_type, out_degree, in_degree, total_degree}]`
+- `memory_stats`: graph-level statistics; returns `{total_memories, by_type, total_relations, relation_kinds}`
 
 ## Workflow
 
@@ -37,6 +42,16 @@ Call `memory_tags` to reuse existing tags; inventing synonyms fragments taxonomy
 ### Searching vs listing
 
 `memory_search` for concept/topic; semantic, age-agnostic. `memory_list` only for chronological review (e.g., "what stored recently?").
+
+### Graph navigation
+
+Use graph tools when you already have memory ids and want to explore connections, not discover them from scratch:
+
+- `memory_neighbors`: immediate links from/to a known node; use to see what a memory causes, blocks, or is caused by
+- `memory_traverse`: cluster exploration from a seed node; use when a concept fans out into related memories
+- `memory_path`: how two memories relate; use when tracing a chain of causes or decisions
+- `memory_hubs`: most-connected memories; run at session start on an unfamiliar project for quick orientation
+- `memory_stats`: graph shape overview; total counts, type distribution, relation kinds present
 
 ### How `memory_search` ranks
 
@@ -121,9 +136,9 @@ Lifecycle state for task and issue memories. Omit for general knowledge or anyth
 | `wontfix` | Acknowledged, will not be addressed |
 | `deferred` | Postponed for later |
 
-Set when storing bug, task, or finding. Update to `resolved` when done; don't delete resolved memories -- useful history. Pass `""` to `memory_update` to clear. Both tools accept `status` as filter; combine with `memory_type` to query e.g. all open tasks.
+Set when storing bug, task, or finding. Update to `resolved` when done; don't delete resolved memories (useful history). Pass `""` to `memory_update` to clear. Both tools accept `status` as filter; combine with `memory_type` to query e.g. all open tasks.
 
-Note: `decay_rate` is wrong model for "is this still open?" -- bug is fixed or not. Use `status` for lifecycle, `decay_rate` for time-based staleness.
+Note: `decay_rate` is wrong model for "is this still open?"; bug is fixed or not. Use `status` for lifecycle, `decay_rate` for time-based staleness.
 
 ### `severity`
 
@@ -158,7 +173,7 @@ Kind is any non-empty string. Suggested labels for consistency:
 | `related_to` | generic association |
 | `duplicate_of` | duplicate of target |
 
-Links are one-way: memory A having `{"7": "caused_by"}` adds no link to memory 7. Reverse traversal requires search by id or explicit back-link on other memory.
+Links are one-way: memory A having `{"7": "caused_by"}` adds no link to memory 7. Reverse traversal: use `memory_neighbors` (returns both directions) or store an explicit back-link.
 
 `memory_update` replaces full set when `relations` provided. Pass `{}` to clear all outgoing links.
 

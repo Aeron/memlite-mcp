@@ -230,6 +230,88 @@ impl Memory {
     }
 }
 
+/// One neighbor edge with the referenced memory object (if it still exists).
+pub struct NeighborInfo {
+    /// Memory id on the other end of the edge.
+    pub other_id: i64,
+    /// Relation kind (e.g. "caused_by", "blocks").
+    pub kind: String,
+    /// Full memory for `other_id`; None when the target was deleted.
+    pub memory: Option<Memory>,
+}
+
+/// Immediate in-neighbors and out-neighbors of a single memory node.
+pub struct Neighbors {
+    /// Nodes this memory links to (outgoing edges).
+    pub outgoing: Vec<NeighborInfo>,
+    /// Nodes that link to this memory (incoming edges).
+    pub incoming: Vec<NeighborInfo>,
+}
+
+/// Specifies which edge directions to follow during graph traversal.
+pub enum TraverseDirection {
+    /// Follow outgoing edges only (default).
+    Out,
+    /// Follow incoming edges only.
+    In,
+    /// Follow both directions.
+    Both,
+}
+
+/// One node discovered during a BFS graph traversal.
+pub struct TraverseNode {
+    /// Full memory at this node.
+    pub memory: Memory,
+    /// BFS depth at which this node was first discovered (0 = start node).
+    pub depth: u32,
+    /// Relation kind that led to this node; None for the start node.
+    pub via_kind: Option<String>,
+}
+
+/// Result of a BFS graph traversal from a starting node.
+pub struct TraverseResult {
+    /// Id of the node the traversal started from.
+    pub start_id: i64,
+    /// All discovered nodes, ordered by depth then id.
+    pub nodes: Vec<TraverseNode>,
+    /// All traversed edges as (from_id, to_id, kind), deduplicated.
+    pub edges: Vec<(i64, i64, String)>,
+}
+
+/// One step along a path between two memory nodes.
+pub struct PathStep {
+    /// Full memory at this step.
+    pub memory: Memory,
+    /// Kind of the edge that led to this node from the previous step; None for the start.
+    pub via_kind: Option<String>,
+}
+
+/// One entry in the hub (most-connected nodes) ranking.
+pub struct HubEntry {
+    /// Memory id.
+    pub id: i64,
+    /// Short description for identification.
+    pub summary: Option<String>,
+    /// Memory type classification.
+    pub memory_type: Option<MemoryType>,
+    /// Number of outgoing relation edges.
+    pub out_degree: u32,
+    /// Number of incoming relation edges.
+    pub in_degree: u32,
+}
+
+/// Graph-level aggregate statistics.
+pub struct GraphStats {
+    /// Total memory count (filtered by agent when applicable).
+    pub total_memories: u64,
+    /// Count per memory type; None key = untyped memories.
+    pub by_type: Vec<(Option<String>, u64)>,
+    /// Total relation edges across the entire graph.
+    pub total_relations: u64,
+    /// All distinct relation kind labels present in the graph.
+    pub relation_kinds: Vec<String>,
+}
+
 /// Holds the optional metadata fields for inserting a new memory row.
 #[derive(Default)]
 pub struct InsertOptions<'a> {
@@ -487,6 +569,14 @@ impl MemoryStore {
             )
             .await?;
         }
+        // Syncing normalized relations table
+        for (to_id, kind) in relations.iter() {
+            conn.execute(
+                "insert or ignore into memory_relations (from_id, to_id, kind) values (?, ?, ?)",
+                libsql::params![id, *to_id, kind.as_str()],
+            )
+            .await?;
+        }
         Ok(id)
     }
 
@@ -558,6 +648,14 @@ impl MemoryStore {
                 tx.execute(
                     "insert or ignore into memory_tags (memory_id, tag) values (?, ?)",
                     libsql::params![id, tag.as_str()],
+                )
+                .await?;
+            }
+            // Syncing normalized relations table within the same transaction
+            for (to_id, kind) in item.relations.iter() {
+                tx.execute(
+                    "insert or ignore into memory_relations (from_id, to_id, kind) values (?, ?, ?)",
+                    libsql::params![id, *to_id, kind.as_str()],
                 )
                 .await?;
             }
@@ -694,10 +792,21 @@ impl MemoryStore {
             conn.execute("delete from memories where rowid = ?", libsql::params![id])
                 .await?
         };
-        // Cleaning up normalized tag rows for the deleted memory
+        // Cleaning up auxiliary rows for the deleted memory
         if affected > 0 {
             conn.execute(
                 "delete from memory_tags where memory_id = ?",
+                libsql::params![id],
+            )
+            .await?;
+            // Removing outgoing relations from this memory and incoming relations pointing to it
+            conn.execute(
+                "delete from memory_relations where from_id = ?",
+                libsql::params![id],
+            )
+            .await?;
+            conn.execute(
+                "delete from memory_relations where to_id = ?",
                 libsql::params![id],
             )
             .await?;
@@ -864,6 +973,23 @@ impl MemoryStore {
                 .await?;
             }
         }
+        // Syncing memory_relations when the relations column was updated
+        if affected > 0
+            && let Some(updated_rels) = relations
+        {
+            conn.execute(
+                "delete from memory_relations where from_id = ?",
+                libsql::params![id],
+            )
+            .await?;
+            for (to_id, kind) in updated_rels.iter() {
+                conn.execute(
+                    "insert or ignore into memory_relations (from_id, to_id, kind) values (?, ?, ?)",
+                    libsql::params![id, *to_id, kind.as_str()],
+                )
+                .await?;
+            }
+        }
         Ok(affected > 0)
     }
 
@@ -899,6 +1025,492 @@ impl MemoryStore {
         }
         let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
         Ok(affected)
+    }
+}
+
+/// Fetches full memory rows for a set of ids, returning a map of id -> Memory.
+/// Missing ids (deleted memories) are silently absent from the result.
+async fn fetch_memories_by_ids(
+    conn: &libsql::Connection,
+    ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Memory>> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "select rowid, content, summary, tags, agent, created_at, updated_at, context,
+                confidence, decay_rate, last_seen_at, type, status, severity, relations
+         from memories where rowid in ({placeholders})"
+    );
+    let params: Vec<Value> = ids.iter().map(|&id| Value::Integer(id)).collect();
+    let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+    let mut map = std::collections::HashMap::new();
+    while let Some(row) = rows.next().await? {
+        let m = parse_memory_row(&row)?;
+        map.insert(m.id, m);
+    }
+    Ok(map)
+}
+
+impl MemoryStore {
+    /// Returns the immediate neighbors of a memory node, with optional kind filtering.
+    ///
+    /// Both outgoing (this node -> others) and incoming (others -> this node) edges are
+    /// returned. When `kind_filter` is supplied, only edges with that exact kind are included.
+    pub async fn neighbors(&self, id: i64, kind_filter: Option<&str>) -> Result<Neighbors> {
+        let conn = self.db.connect()?;
+
+        // Outgoing: this memory -> others
+        let (out_sql, out_params): (String, Vec<Value>) = if let Some(kf) = kind_filter {
+            (
+                "select to_id, kind from memory_relations where from_id = ? and kind = ? order by kind"
+                    .to_owned(),
+                vec![Value::Integer(id), Value::Text(kf.to_owned())],
+            )
+        } else {
+            (
+                "select to_id, kind from memory_relations where from_id = ? order by kind"
+                    .to_owned(),
+                vec![Value::Integer(id)],
+            )
+        };
+        let mut out_pairs: Vec<(i64, String)> = Vec::new();
+        let mut rows = conn
+            .query(&out_sql, libsql::params_from_iter(out_params))
+            .await?;
+        while let Some(row) = rows.next().await? {
+            out_pairs.push((row.get(0)?, row.get(1)?));
+        }
+
+        // Incoming: others -> this memory
+        let (in_sql, in_params): (String, Vec<Value>) = if let Some(kf) = kind_filter {
+            (
+                "select from_id, kind from memory_relations where to_id = ? and kind = ? order by kind"
+                    .to_owned(),
+                vec![Value::Integer(id), Value::Text(kf.to_owned())],
+            )
+        } else {
+            (
+                "select from_id, kind from memory_relations where to_id = ? order by kind"
+                    .to_owned(),
+                vec![Value::Integer(id)],
+            )
+        };
+        let mut in_pairs: Vec<(i64, String)> = Vec::new();
+        let mut rows = conn
+            .query(&in_sql, libsql::params_from_iter(in_params))
+            .await?;
+        while let Some(row) = rows.next().await? {
+            in_pairs.push((row.get(0)?, row.get(1)?));
+        }
+
+        // Fetch full memories for all referenced ids in a single query
+        let all_other_ids: Vec<i64> = out_pairs
+            .iter()
+            .map(|(oid, _)| *oid)
+            .chain(in_pairs.iter().map(|(oid, _)| *oid))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let memory_map = fetch_memories_by_ids(&conn, &all_other_ids).await?;
+
+        let outgoing = out_pairs
+            .into_iter()
+            .map(|(other_id, kind)| NeighborInfo {
+                memory: memory_map.get(&other_id).cloned(),
+                other_id,
+                kind,
+            })
+            .collect();
+        let incoming = in_pairs
+            .into_iter()
+            .map(|(other_id, kind)| NeighborInfo {
+                memory: memory_map.get(&other_id).cloned(),
+                other_id,
+                kind,
+            })
+            .collect();
+
+        Ok(Neighbors { outgoing, incoming })
+    }
+
+    /// Runs a BFS from `start_id`, following edges up to `max_depth` hops.
+    ///
+    /// `direction` controls which edges are followed: outgoing, incoming, or both.
+    /// `kind_filter` restricts traversal to edges with that exact kind label.
+    /// Depth is capped at 5 regardless of the supplied value.
+    pub async fn traverse(
+        &self,
+        start_id: i64,
+        max_depth: u32,
+        kind_filter: Option<&str>,
+        direction: TraverseDirection,
+    ) -> Result<TraverseResult> {
+        let conn = self.db.connect()?;
+        let max_depth = max_depth.min(5);
+
+        // visited: id -> (depth, via_kind used to first reach this node)
+        let mut visited: std::collections::HashMap<i64, (u32, Option<String>)> =
+            std::collections::HashMap::new();
+        visited.insert(start_id, (0, None));
+        let mut frontier: Vec<i64> = vec![start_id];
+        // edges: (from_id, to_id, kind), deduplicated at the end
+        let mut edges: std::collections::HashSet<(i64, i64, String)> =
+            std::collections::HashSet::new();
+
+        for depth in 1..=max_depth {
+            if frontier.is_empty() {
+                break;
+            }
+            let placeholders = frontier.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            // next_nodes: (new_id, via_kind); may contain duplicates, deduped via visited check
+            let mut next_nodes: Vec<(i64, String)> = Vec::new();
+
+            // Outgoing edges from frontier nodes
+            if matches!(direction, TraverseDirection::Out | TraverseDirection::Both) {
+                let sql = if kind_filter.is_some() {
+                    format!(
+                        "select from_id, to_id, kind from memory_relations where from_id in ({placeholders}) and kind = ?"
+                    )
+                } else {
+                    format!(
+                        "select from_id, to_id, kind from memory_relations where from_id in ({placeholders})"
+                    )
+                };
+                let mut params: Vec<Value> =
+                    frontier.iter().map(|&fid| Value::Integer(fid)).collect();
+                if let Some(kf) = kind_filter {
+                    params.push(Value::Text(kf.to_owned()));
+                }
+                let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+                while let Some(row) = rows.next().await? {
+                    let from_id: i64 = row.get(0)?;
+                    let to_id: i64 = row.get(1)?;
+                    let kind: String = row.get(2)?;
+                    if !visited.contains_key(&to_id) {
+                        next_nodes.push((to_id, kind.clone()));
+                    }
+                    edges.insert((from_id, to_id, kind));
+                }
+            }
+
+            // Incoming edges to frontier nodes
+            if matches!(direction, TraverseDirection::In | TraverseDirection::Both) {
+                let sql = if kind_filter.is_some() {
+                    format!(
+                        "select from_id, to_id, kind from memory_relations where to_id in ({placeholders}) and kind = ?"
+                    )
+                } else {
+                    format!(
+                        "select from_id, to_id, kind from memory_relations where to_id in ({placeholders})"
+                    )
+                };
+                let mut params: Vec<Value> =
+                    frontier.iter().map(|&fid| Value::Integer(fid)).collect();
+                if let Some(kf) = kind_filter {
+                    params.push(Value::Text(kf.to_owned()));
+                }
+                let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+                while let Some(row) = rows.next().await? {
+                    let from_id: i64 = row.get(0)?;
+                    let to_id: i64 = row.get(1)?;
+                    let kind: String = row.get(2)?;
+                    // New node when traversing backwards is the from_id
+                    if !visited.contains_key(&from_id) {
+                        next_nodes.push((from_id, kind.clone()));
+                    }
+                    edges.insert((from_id, to_id, kind));
+                }
+            }
+
+            // Dedup and add to frontier
+            let mut new_frontier: Vec<i64> = Vec::new();
+            let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+            for (new_id, via_kind) in next_nodes {
+                if !visited.contains_key(&new_id) && seen.insert(new_id) {
+                    visited.insert(new_id, (depth, Some(via_kind)));
+                    new_frontier.push(new_id);
+                }
+            }
+            frontier = new_frontier;
+        }
+
+        // Fetch memories for all discovered nodes
+        let all_ids: Vec<i64> = visited.keys().copied().collect();
+        let memory_map = fetch_memories_by_ids(&conn, &all_ids).await?;
+
+        let mut nodes: Vec<TraverseNode> = visited
+            .into_iter()
+            .filter_map(|(nid, (depth, via_kind))| {
+                memory_map.get(&nid).map(|m| TraverseNode {
+                    memory: m.clone(),
+                    depth,
+                    via_kind,
+                })
+            })
+            .collect();
+        nodes.sort_by_key(|n| (n.depth, n.memory.id));
+
+        let mut edge_vec: Vec<(i64, i64, String)> = edges.into_iter().collect();
+        edge_vec.sort();
+
+        Ok(TraverseResult {
+            start_id,
+            nodes,
+            edges: edge_vec,
+        })
+    }
+
+    /// Finds the shortest directed path from `from_id` to `to_id` via outgoing edges.
+    ///
+    /// Returns None when no path exists within `max_hops` (capped at 10).
+    /// The returned vec starts with the source memory (via_kind = None) and ends
+    /// with the destination, each step carrying the relation kind used to arrive.
+    pub async fn path(
+        &self,
+        from_id: i64,
+        to_id: i64,
+        max_hops: u32,
+    ) -> Result<Option<Vec<PathStep>>> {
+        if from_id == to_id {
+            let conn = self.db.connect()?;
+            let map = fetch_memories_by_ids(&conn, &[from_id]).await?;
+            return Ok(map.get(&from_id).map(|m| {
+                vec![PathStep {
+                    memory: m.clone(),
+                    via_kind: None,
+                }]
+            }));
+        }
+
+        let conn = self.db.connect()?;
+        let max_hops = max_hops.min(10);
+
+        // BFS with parent tracking: child_id -> (parent_id, edge_kind)
+        let mut parent: std::collections::HashMap<i64, (i64, String)> =
+            std::collections::HashMap::new();
+        let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        visited.insert(from_id);
+        let mut frontier: Vec<i64> = vec![from_id];
+        let mut found = false;
+
+        'bfs: for _ in 0..max_hops {
+            if frontier.is_empty() {
+                break;
+            }
+            let placeholders = frontier.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "select from_id, to_id, kind from memory_relations where from_id in ({placeholders})"
+            );
+            let params: Vec<Value> = frontier.iter().map(|&fid| Value::Integer(fid)).collect();
+            let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+            let mut next_frontier: Vec<i64> = Vec::new();
+            while let Some(row) = rows.next().await? {
+                let f: i64 = row.get(0)?;
+                let t: i64 = row.get(1)?;
+                let kind: String = row.get(2)?;
+                if !visited.contains(&t) {
+                    visited.insert(t);
+                    parent.insert(t, (f, kind));
+                    if t == to_id {
+                        found = true;
+                        break 'bfs;
+                    }
+                    next_frontier.push(t);
+                }
+            }
+            frontier = next_frontier;
+        }
+
+        if !found {
+            return Ok(None);
+        }
+
+        // Reconstruct path by walking parent links from to_id back to from_id
+        let mut path_ids: Vec<(i64, Option<String>)> = Vec::new();
+        let mut current = to_id;
+        loop {
+            if current == from_id {
+                path_ids.push((from_id, None));
+                break;
+            }
+            match parent.get(&current) {
+                Some((p, kind)) => {
+                    path_ids.push((current, Some(kind.clone())));
+                    current = *p;
+                }
+                None => {
+                    path_ids.push((current, None));
+                    break;
+                }
+            }
+        }
+        path_ids.reverse();
+
+        // Fetch memories for all path nodes
+        let ids: Vec<i64> = path_ids.iter().map(|(id, _)| *id).collect();
+        let memory_map = fetch_memories_by_ids(&conn, &ids).await?;
+
+        let steps = path_ids
+            .into_iter()
+            .filter_map(|(id, via_kind)| {
+                memory_map.get(&id).map(|m| PathStep {
+                    memory: m.clone(),
+                    via_kind,
+                })
+            })
+            .collect();
+
+        Ok(Some(steps))
+    }
+
+    /// Returns the top-N most-connected memories by total degree (out + in).
+    ///
+    /// Degree is computed globally across all agents. Memories without any relations
+    /// are not included. The result is ordered by total degree descending.
+    pub async fn hubs(&self, top_n: u32) -> Result<Vec<HubEntry>> {
+        let conn = self.db.connect()?;
+        let top_n = top_n.min(50) as i64;
+
+        // Using a CTE to union out-degree and in-degree aggregates, then join with memories
+        let sql = "
+            with out_deg as (
+                select from_id as id, count(*) as cnt
+                from memory_relations
+                group by from_id
+            ),
+            in_deg as (
+                select to_id as id, count(*) as cnt
+                from memory_relations
+                group by to_id
+            ),
+            all_ids as (
+                select id from out_deg
+                union
+                select id from in_deg
+            )
+            select
+                a.id,
+                coalesce(o.cnt, 0) as out_degree,
+                coalesce(i.cnt, 0) as in_degree,
+                m.summary,
+                m.type
+            from all_ids a
+            left join out_deg o on o.id = a.id
+            left join in_deg i on i.id = a.id
+            left join memories m on m.rowid = a.id
+            order by (coalesce(o.cnt, 0) + coalesce(i.cnt, 0)) desc, a.id asc
+            limit ?
+        ";
+
+        let mut rows = conn.query(sql, libsql::params![top_n]).await?;
+        let mut entries = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let id: i64 = row.get(0)?;
+            let out_degree: i64 = row.get(1)?;
+            let in_degree: i64 = row.get(2)?;
+            let summary = match row.get_value(3)? {
+                Value::Null => None,
+                Value::Text(s) => Some(s),
+                _ => None,
+            };
+            let memory_type = match row.get_value(4)? {
+                Value::Null => None,
+                Value::Text(s) => MemoryType::from_str(&s),
+                _ => None,
+            };
+            entries.push(HubEntry {
+                id,
+                summary,
+                memory_type,
+                out_degree: out_degree as u32,
+                in_degree: in_degree as u32,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Returns graph-level statistics: memory counts, relation totals, and relation kinds.
+    ///
+    /// Memory counts are scoped by `agent_id` when provided; relation stats are always global.
+    pub async fn graph_stats(&self, agent_id: Option<&str>) -> Result<GraphStats> {
+        let conn = self.db.connect()?;
+
+        // Total memories
+        let (count_sql, count_params): (String, Vec<Value>) = if let Some(agent) = agent_id {
+            (
+                "select count(*) from memories where agent = ?".to_owned(),
+                vec![Value::Text(agent.to_owned())],
+            )
+        } else {
+            ("select count(*) from memories".to_owned(), vec![])
+        };
+        let mut rows = conn
+            .query(&count_sql, libsql::params_from_iter(count_params))
+            .await?;
+        let total_memories = rows
+            .next()
+            .await?
+            .map(|r| r.get::<i64>(0).unwrap_or(0) as u64)
+            .unwrap_or(0);
+
+        // Memories by type
+        let (type_sql, type_params): (String, Vec<Value>) = if let Some(agent) = agent_id {
+            (
+                "select type, count(*) from memories where agent = ? group by type order by count(*) desc"
+                    .to_owned(),
+                vec![Value::Text(agent.to_owned())],
+            )
+        } else {
+            (
+                "select type, count(*) from memories group by type order by count(*) desc"
+                    .to_owned(),
+                vec![],
+            )
+        };
+        let mut rows = conn
+            .query(&type_sql, libsql::params_from_iter(type_params))
+            .await?;
+        let mut by_type: Vec<(Option<String>, u64)> = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let type_name = match row.get_value(0)? {
+                Value::Null => None,
+                Value::Text(s) => Some(s),
+                _ => None,
+            };
+            let cnt: i64 = row.get(1)?;
+            by_type.push((type_name, cnt as u64));
+        }
+
+        // Total relation edges (always global)
+        let mut rows = conn
+            .query("select count(*) from memory_relations", ())
+            .await?;
+        let total_relations = rows
+            .next()
+            .await?
+            .map(|r| r.get::<i64>(0).unwrap_or(0) as u64)
+            .unwrap_or(0);
+
+        // Distinct relation kinds
+        let mut rows = conn
+            .query(
+                "select distinct kind from memory_relations order by kind",
+                (),
+            )
+            .await?;
+        let mut relation_kinds: Vec<String> = Vec::new();
+        while let Some(row) = rows.next().await? {
+            relation_kinds.push(row.get(0)?);
+        }
+
+        Ok(GraphStats {
+            total_memories,
+            by_type,
+            total_relations,
+            relation_kinds,
+        })
     }
 }
 

@@ -15,14 +15,15 @@ use rmcp::{
 use tokio::sync::{Notify, OnceCell};
 
 use super::params::{
-    BatchStoreParams, DeleteParams, ListParams, RevalidateParams, SearchParams, StoreParams,
-    TagsParams, UpdateParams,
+    BatchStoreParams, DeleteParams, GraphStatsParams, HubsParams, ListParams, NeighborsParams,
+    PathParams, RevalidateParams, SearchParams, StoreParams, TagsParams, TraverseParams,
+    UpdateParams,
 };
 use crate::{
     config::Config,
     db::{
         BatchInsertItem, FilterOptions, InsertOptions, MemorySeverity, MemoryStatus, MemoryStore,
-        MemoryType, UpdateOptions,
+        MemoryType, TraverseDirection, UpdateOptions,
     },
     embedding::EmbeddingService,
 };
@@ -663,6 +664,211 @@ impl MemServer {
         let body = serde_json::json!({ "revalidated": count }).to_string();
         Ok(CallToolResult::success(vec![Content::text(body)]))
     }
+
+    /// Returns the direct neighbors of a memory: nodes it links to and nodes that link to it.
+    #[tool(
+        description = "Returns immediate in-neighbors and out-neighbors of a memory node. Useful for exploring what a memory directly references and what references it. Optional kind filter restricts to one edge type."
+    )]
+    async fn memory_neighbors(
+        &self,
+        Parameters(p): Parameters<NeighborsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.store_if_present().await? else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "{\"outgoing\":[],\"incoming\":[]}",
+            )]));
+        };
+        let neighbors = store
+            .neighbors(p.id, p.kind.as_deref())
+            .await
+            .map_err(ServerError::StoreOp)?;
+
+        fn format_neighbor(n: crate::db::NeighborInfo) -> serde_json::Value {
+            let mem = n.memory.map(|m| {
+                serde_json::json!({
+                    "id":                   m.id,
+                    "summary":              m.summary,
+                    "memory_type":          m.memory_type,
+                    "status":               m.status,
+                    "effective_confidence": m.effective_confidence(),
+                })
+            });
+            serde_json::json!({
+                "id":     n.other_id,
+                "kind":   n.kind,
+                "memory": mem,
+            })
+        }
+
+        let body = serde_json::json!({
+            "outgoing": neighbors.outgoing.into_iter().map(format_neighbor).collect::<Vec<_>>(),
+            "incoming": neighbors.incoming.into_iter().map(format_neighbor).collect::<Vec<_>>(),
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            body.to_string(),
+        )]))
+    }
+
+    /// BFS traversal from a starting memory node.
+    #[tool(
+        description = "BFS traversal from a memory node up to a given depth. Returns all reachable nodes and traversed edges. direction: 'out' (default) follows outgoing edges, 'in' follows incoming, 'both' follows all. Optional kind filter restricts which edges are traversed."
+    )]
+    async fn memory_traverse(
+        &self,
+        Parameters(p): Parameters<TraverseParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.store_if_present().await? else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::json!({"start_id": p.start_id, "nodes": [], "edges": []}).to_string(),
+            )]));
+        };
+        let direction = parse_direction(p.direction.as_deref());
+        let depth = p.depth.unwrap_or(2);
+        let result = store
+            .traverse(p.start_id, depth, p.kind.as_deref(), direction)
+            .await
+            .map_err(ServerError::StoreOp)?;
+
+        let nodes: Vec<_> = result
+            .nodes
+            .into_iter()
+            .map(|n| {
+                let m = n.memory;
+                serde_json::json!({
+                    "id":                   m.id,
+                    "depth":                n.depth,
+                    "via_kind":             n.via_kind,
+                    "summary":              m.summary,
+                    "memory_type":          m.memory_type,
+                    "status":               m.status,
+                    "effective_confidence": m.effective_confidence(),
+                    "tags":                 m.tags,
+                })
+            })
+            .collect();
+        let edges: Vec<_> = result
+            .edges
+            .into_iter()
+            .map(|(f, t, k)| serde_json::json!({"from_id": f, "to_id": t, "kind": k}))
+            .collect();
+        let body = serde_json::json!({"start_id": result.start_id, "nodes": nodes, "edges": edges});
+        Ok(CallToolResult::success(vec![Content::text(
+            body.to_string(),
+        )]))
+    }
+
+    /// Finds the shortest directed path between two memory nodes.
+    #[tool(
+        description = "Finds the shortest directed path between two memory nodes via outgoing relations. Returns the sequence of memories and relation kinds. Use to understand how one concept connects to another through the relation graph."
+    )]
+    async fn memory_path(
+        &self,
+        Parameters(p): Parameters<PathParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.store_if_present().await? else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::json!({"found": false, "path": []}).to_string(),
+            )]));
+        };
+        let max_hops = p.max_hops.unwrap_or(6);
+        let result = store
+            .path(p.from_id, p.to_id, max_hops)
+            .await
+            .map_err(ServerError::StoreOp)?;
+
+        let body = match result {
+            None => serde_json::json!({"found": false, "path": []}),
+            Some(steps) => {
+                let path: Vec<_> = steps
+                    .into_iter()
+                    .map(|s| {
+                        let m = s.memory;
+                        serde_json::json!({
+                            "id":        m.id,
+                            "via_kind":  s.via_kind,
+                            "summary":   m.summary,
+                            "memory_type": m.memory_type,
+                            "effective_confidence": m.effective_confidence(),
+                        })
+                    })
+                    .collect();
+                serde_json::json!({"found": true, "path": path})
+            }
+        };
+        Ok(CallToolResult::success(vec![Content::text(
+            body.to_string(),
+        )]))
+    }
+
+    /// Returns the most-connected memories ranked by total relation degree.
+    #[tool(
+        description = "Returns the top-N most connected memory nodes by total relation degree (outgoing + incoming). These are the 'hub' memories that the rest of the graph revolves around. Useful for orientation at the start of a session."
+    )]
+    async fn memory_hubs(
+        &self,
+        Parameters(p): Parameters<HubsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.store_if_present().await? else {
+            return Ok(CallToolResult::success(vec![Content::text("[]")]));
+        };
+        let top_n = p.top_n.unwrap_or(10);
+        let entries = store.hubs(top_n).await.map_err(ServerError::StoreOp)?;
+        let body: Vec<_> = entries
+            .into_iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id":           e.id,
+                    "summary":      e.summary,
+                    "memory_type":  e.memory_type,
+                    "out_degree":   e.out_degree,
+                    "in_degree":    e.in_degree,
+                    "total_degree": e.out_degree + e.in_degree,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&body).unwrap(),
+        )]))
+    }
+
+    /// Returns graph-level aggregate statistics.
+    #[tool(
+        description = "Returns graph-level statistics: total memory count (scoped to this agent), breakdown by memory type, total relation edges, and distinct relation kind labels. Good starting point for understanding the shape of the memory graph."
+    )]
+    async fn memory_stats(
+        &self,
+        Parameters(_p): Parameters<GraphStatsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.store_if_present().await? else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::json!({
+                    "total_memories": 0,
+                    "by_type": [],
+                    "total_relations": 0,
+                    "relation_kinds": [],
+                })
+                .to_string(),
+            )]));
+        };
+        let stats = store
+            .graph_stats(self.config.agent_filter())
+            .await
+            .map_err(ServerError::StoreOp)?;
+        let by_type: Vec<_> = stats
+            .by_type
+            .into_iter()
+            .map(|(k, v)| serde_json::json!({"type": k, "count": v}))
+            .collect();
+        let body = serde_json::json!({
+            "total_memories":  stats.total_memories,
+            "by_type":         by_type,
+            "total_relations": stats.total_relations,
+            "relation_kinds":  stats.relation_kinds,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            body.to_string(),
+        )]))
+    }
 }
 
 #[tool_handler]
@@ -787,6 +993,15 @@ fn parse_memory_status(s: Option<&str>) -> Result<Option<MemoryStatus>, String> 
         Some(v) => MemoryStatus::from_str(v).map(Some).ok_or_else(|| {
             format!("unknown status {v:?}; expected: open, resolved, wontfix, or deferred")
         }),
+    }
+}
+
+/// Converts a direction string into a [`TraverseDirection`]; defaults to `Out` for unrecognised values.
+fn parse_direction(s: Option<&str>) -> TraverseDirection {
+    match s {
+        Some("in") => TraverseDirection::In,
+        Some("both") => TraverseDirection::Both,
+        _ => TraverseDirection::Out,
     }
 }
 

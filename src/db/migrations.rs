@@ -48,6 +48,21 @@ const MIGRATIONS: &[&[&str]] = &[
             from memories m, json_each(m.tags) jt
             where trim(jt.value) != ''",
     ],
+    // v9 -> v10: normalized relation table for indexed graph queries
+    &[
+        "create table if not exists memory_relations (
+            from_id integer not null,
+            to_id   integer not null,
+            kind    text    not null default '',
+            primary key (from_id, to_id, kind)
+        )",
+        "create index if not exists memory_relations_to on memory_relations (to_id)",
+        // Backfilling from existing JSON relations column; keys are stringified integer ids
+        "insert or ignore into memory_relations (from_id, to_id, kind)
+            select m.rowid, cast(jt.key as integer), jt.value
+            from memories m, json_each(m.relations) jt
+            where trim(jt.key) != '' and cast(jt.key as integer) > 0",
+    ],
 ];
 
 /// Applies all pending migrations, each wrapped in an explicit transaction.

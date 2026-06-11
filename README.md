@@ -26,6 +26,22 @@ multiple agents sharing a project can coexist without noise. And since only
 `memory_store` actually creates the DB file, projects you never ask the agent
 to remember anything about do not accumulate empty database files.
 
+## Features
+
+- **Local-only, no API keys**: one SQLite file per project via libsql; ONNX embeddings via fastembed; nothing leaves the machine
+- **Semantic search**: cosine vector search with word-overlap re-rank as a second stage; no BM25, no full-text index required
+- **Knowledge graph**: directed relations between memories backed by a normalized `memory_relations(from_id, to_id, kind)` table indexed for both forward and reverse lookups
+- **Graph traversal**: BFS from any node (`memory_traverse`), shortest directed path (`memory_path`), immediate neighbor lookup (`memory_neighbors`), hub detection (`memory_hubs`)
+- **Graph statistics**: `memory_stats` reports total memories, type distribution, total relation count, and all distinct relation kind labels
+- **Confidence and decay**: per-memory `confidence` score (0.0-1.0) with optional per-day `decay_rate`; `effective_confidence` computed at query time and returned with each result
+- **Revalidation**: `memory_revalidate` resets the decay clock on a list of ids without touching any other field
+- **Lifecycle tracking**: `status` (open/resolved/wontfix/deferred) and `severity` (critical/high/medium/low) fields; both independently filterable in search and list
+- **8 memory types**: user, project, reference, task, finding, issue, decision, plan
+- **Tag filtering**: normalized `memory_tags` table; AND semantics; usable as a pre-filter in both `memory_search` and `memory_list`
+- **Batch store**: up to 100 memories in a single ONNX embedding pass; atomic insert
+- **Per-project and per-agent isolation**: one DB per project path; optional `--agent` filter scopes reads and writes
+- **Three embedding models**: bge-small-en-v1.5 (384d, ~67 MB), bge-base-en-v1.5 (768d, ~210 MB), bge-large-en-v1.5 (1024d, ~620 MB)
+
 ## Build
 
 ```sh
@@ -119,6 +135,12 @@ Memories can carry directed outgoing links via the `relations` field: a JSON obj
 
 Links are one-way — the target memory is unmodified. Common kinds: `caused_by`, `causes`, `blocks`, `depends_on`, `supersedes`, `related_to`, `duplicate_of`. Kind strings are free-form; pick a label and use it consistently within a project. `memory_update` replaces the full set; pass `{}` to clear all links.
 
+## Graph traversal
+
+Relations are stored in a normalized `memory_relations(from_id, to_id, kind)` table with an index on `to_id` for efficient reverse lookups. All write operations (`memory_store`, `memory_store_batch`, `memory_update`, `memory_delete`) keep this table in sync with the `relations` JSON column.
+
+Five tools operate on this table: `memory_neighbors`, `memory_traverse`, `memory_path`, `memory_hubs`, and `memory_stats`. See the Tools table below for parameters and return shapes.
+
 ## Tools
 
 | Tool | Description |
@@ -131,3 +153,8 @@ Links are one-way — the target memory is unmodified. Common kinds: `caused_by`
 | `memory_delete` | Deletes a memory by numeric id |
 | `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear `summary`, `context`, `memory_type`, `status`, or `severity`; pass `{}` to clear `relations` |
 | `memory_revalidate` | Resets the decay clock on a list of memory ids without changing any other field; accepts `ids: [...]`; returns count of memories updated |
+| `memory_neighbors` | Returns immediate in-neighbors and out-neighbors of a memory; params: `id`, optional `kind` filter; returns `{outgoing: [{id, kind, memory?}], incoming: [...]}` |
+| `memory_traverse` | BFS from `start_id` up to `depth` (default 2, max 5); optional `kind` filter and `direction` (out/in/both); returns `{start_id, nodes, edges}` |
+| `memory_path` | Shortest directed path between two memories; params: `from_id`, `to_id`, optional `max_hops` (default 6); returns `{found, path}` |
+| `memory_hubs` | Top-N memories by total degree (in + out); optional `top_n` (default 10); returns `[{id, summary, memory_type, out_degree, in_degree, total_degree}]` |
+| `memory_stats` | Graph-level statistics; returns `{total_memories, by_type, total_relations, relation_kinds}` |

@@ -126,6 +126,49 @@ pub struct RevalidateParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NeighborsParams {
+    /// Numeric id of the memory to get neighbors for.
+    pub id: i64,
+    /// Optional relation kind filter (e.g. "blocks", "caused_by").
+    /// When omitted, all edge kinds are returned.
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TraverseParams {
+    /// Numeric id of the start memory.
+    pub start_id: i64,
+    /// BFS depth limit; default 2, max 5.
+    #[schemars(range(min = 1, max = 5))]
+    pub depth: Option<u32>,
+    /// Optional relation kind filter; only edges with this exact kind are traversed.
+    pub kind: Option<String>,
+    /// Edge direction to follow: "out" (default), "in", or "both".
+    pub direction: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PathParams {
+    /// Numeric id of the start memory.
+    pub from_id: i64,
+    /// Numeric id of the destination memory.
+    pub to_id: i64,
+    /// Maximum hops to explore before giving up; default 6, max 10.
+    #[schemars(range(min = 1, max = 10))]
+    pub max_hops: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct HubsParams {
+    /// Number of top hubs to return; default 10, max 50.
+    #[schemars(range(min = 1, max = 50))]
+    pub top_n: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GraphStatsParams {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct UpdateParams {
     /// Numeric identifier of the memory to update.
     pub id: i64,
