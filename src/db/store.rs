@@ -166,6 +166,8 @@ pub struct Memory {
     pub severity: Option<MemorySeverity>,
     /// Outgoing directed links keyed by stringified target identifier with a free-form kind label.
     pub relations: std::collections::BTreeMap<String, String>,
+    /// External reference pointers: file paths, symbol names, URLs, issue IDs, etc.
+    pub refs: Vec<String>,
 }
 
 impl Memory {
@@ -335,6 +337,8 @@ pub struct InsertOptions<'a> {
     pub severity: Option<MemorySeverity>,
     /// Outgoing directed links as (target id, kind) pairs; defaults to empty.
     pub relations: &'a [(i64, String)],
+    /// External reference pointers; defaults to empty.
+    pub refs: &'a [String],
 }
 
 /// Holds the fields that can be updated on an existing memory row.
@@ -368,6 +372,8 @@ pub struct UpdateOptions<'a> {
     pub clear_severity: bool,
     /// Replacement outgoing relations as (target id, kind) pairs; replaces the full set when provided.
     pub relations: Option<&'a [(i64, String)]>,
+    /// Replacement external reference pointers; replaces the full set when provided.
+    pub refs: Option<&'a [String]>,
 }
 
 /// Shared pre-filter options for search and list queries.
@@ -383,6 +389,8 @@ pub struct FilterOptions<'a> {
     pub status: Option<MemoryStatus>,
     /// Restricts results to the given severity level.
     pub severity: Option<MemorySeverity>,
+    /// Restricts results to memories whose refs array contains this substring.
+    pub refs_contain: Option<&'a str>,
 }
 
 /// Holds owned data for a single row in a batch insert operation.
@@ -411,6 +419,8 @@ pub struct BatchInsertItem {
     pub severity: Option<MemorySeverity>,
     /// Outgoing directed links as (target id, kind) pairs.
     pub relations: Vec<(i64, String)>,
+    /// External reference pointers.
+    pub refs: Vec<String>,
 }
 
 /// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
@@ -504,6 +514,7 @@ impl MemoryStore {
             status,
             severity,
             relations,
+            refs,
         } = opts;
         let conn = self.db.connect()?;
         let tags_json = serde_json::to_string(tags)?;
@@ -512,12 +523,13 @@ impl MemoryStore {
         let confidence = confidence.unwrap_or(1.0).clamp(0.0, 1.0);
         let decay_rate = decay_rate.unwrap_or(0.0).clamp(0.0, 1.0);
 
+        let refs_json = serde_json::to_string(refs)?;
         let mut rows = conn
             .query(
                 "insert into memories
                     (content, summary, tags, agent, embedding, created_at, updated_at, context,
-                     confidence, decay_rate, last_seen_at, type, status, severity, relations)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     confidence, decay_rate, last_seen_at, type, status, severity, relations, refs)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 returning rowid",
                 libsql::params_from_iter([
                     Value::Text(content.to_owned()),
@@ -551,6 +563,7 @@ impl MemoryStore {
                             .collect();
                         Value::Text(serde_json::to_string(&map)?)
                     },
+                    Value::Text(refs_json),
                 ]),
             )
             .await?;
@@ -594,12 +607,13 @@ impl MemoryStore {
         let now = unix_secs();
         let sql = "insert into memories
                 (content, summary, tags, agent, embedding, created_at, updated_at, context,
-                 confidence, decay_rate, last_seen_at, type, status, severity, relations)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                 confidence, decay_rate, last_seen_at, type, status, severity, relations, refs)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         let mut ids = Vec::with_capacity(items.len());
         for item in &items {
             let tags_json = serde_json::to_string(&item.tags)?;
+            let item_refs_json = serde_json::to_string(&item.refs)?;
             let emb_blob = floats_to_blob(&item.embedding);
             tx.execute(
                 sql,
@@ -638,6 +652,7 @@ impl MemoryStore {
                             .collect();
                         Value::Text(serde_json::to_string(&map)?)
                     },
+                    Value::Text(item_refs_json),
                 ]),
             )
             .await?;
@@ -688,16 +703,17 @@ impl MemoryStore {
             filter.memory_type,
             filter.status,
             filter.severity,
+            filter.refs_contain,
             &mut params,
         )?;
         params.push(Value::Integer(candidate_limit));
 
-        // dist is placed last so parse_memory_row can use a fixed column range (0-14)
+        // dist is placed last so parse_memory_row can use a fixed column range (0-15)
         let sql = format!(
             "select
                 rowid, content, summary, tags, agent,
                 created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, status, severity, relations,
+                confidence, decay_rate, last_seen_at, type, status, severity, relations, refs,
                 vector_distance_cos(embedding, ?) as dist
             from memories
             {where_sql}
@@ -709,7 +725,7 @@ impl MemoryStore {
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let memory = parse_memory_row(&row)?;
-            let dist: f64 = row.get(15)?;
+            let dist: f64 = row.get(16)?;
             results.push((memory, dist));
         }
         Ok(rerank_by_overlap(query_text, results, limit as usize))
@@ -732,6 +748,7 @@ impl MemoryStore {
             filter.memory_type,
             filter.status,
             filter.severity,
+            filter.refs_contain,
             &mut params,
         )?;
         params.push(Value::Integer(limit as i64));
@@ -740,7 +757,7 @@ impl MemoryStore {
         let sql = format!(
             "select
                 rowid, content, summary, tags, agent, created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, status, severity, relations
+                confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
             from memories
             {where_sql}
             order by created_at desc
@@ -759,7 +776,7 @@ impl MemoryStore {
     pub async fn tags(&self, agent_id: Option<&str>) -> Result<Vec<(String, u32)>> {
         let conn = self.db.connect()?;
         let mut params: Vec<Value> = Vec::new();
-        let where_sql = build_where(agent_id, None, None, None, None, &mut params)?;
+        let where_sql = build_where(agent_id, None, None, None, None, None, &mut params)?;
         let sql = format!(
             "select jt.value, count(*) as cnt
             from memories, json_each(memories.tags) jt
@@ -847,6 +864,7 @@ impl MemoryStore {
             severity,
             clear_severity,
             relations,
+            refs,
         } = opts;
         if content.is_none()
             && summary.is_none()
@@ -862,6 +880,7 @@ impl MemoryStore {
             && severity.is_none()
             && !clear_severity
             && relations.is_none()
+            && refs.is_none()
         {
             return Ok(false);
         }
@@ -933,6 +952,10 @@ impl MemoryStore {
                 .map(|(id, kind)| (id.to_string(), kind.as_str()))
                 .collect();
             params.push(Value::Text(serde_json::to_string(&map)?));
+        }
+        if let Some(r) = refs {
+            set_clauses.push("refs = ?");
+            params.push(Value::Text(serde_json::to_string(r)?));
         }
         // Always bump both timestamps: updated_at records the data change,
         // last_seen_at resets the confidence decay clock
@@ -1040,7 +1063,7 @@ async fn fetch_memories_by_ids(
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let sql = format!(
         "select rowid, content, summary, tags, agent, created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, status, severity, relations
+                confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
          from memories where rowid in ({placeholders})"
     );
     let params: Vec<Value> = ids.iter().map(|&id| Value::Integer(id)).collect();
@@ -1522,6 +1545,7 @@ fn build_where(
     type_filter: Option<MemoryType>,
     status_filter: Option<MemoryStatus>,
     severity_filter: Option<MemorySeverity>,
+    refs_contain: Option<&str>,
     params: &mut Vec<Value>,
 ) -> Result<String> {
     let mut clauses: Vec<String> = Vec::new();
@@ -1552,6 +1576,11 @@ fn build_where(
         clauses.push("severity = ?".into());
         params.push(Value::Text(sev.as_str().to_owned()));
     }
+    if let Some(rc) = refs_contain {
+        clauses
+            .push("exists (select 1 from json_each(refs) jt where instr(jt.value, ?) > 0)".into());
+        params.push(Value::Text(rc.to_owned()));
+    }
     Ok(if clauses.is_empty() {
         String::new()
     } else {
@@ -1564,7 +1593,8 @@ fn build_where(
 /// Expects columns in the order selected by `list` and `search`:
 /// 0=rowid, 1=content, 2=summary, 3=tags, 4=agent,
 /// 5=created_at, 6=updated_at, 7=context,
-/// 8=confidence, 9=decay_rate, 10=last_seen_at, 11=type, 12=status, 13=severity, 14=relations.
+/// 8=confidence, 9=decay_rate, 10=last_seen_at, 11=type, 12=status, 13=severity,
+/// 14=relations, 15=refs.
 fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
@@ -1606,6 +1636,9 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
 
     let tags: Vec<String> = serde_json::from_str(&tags_json)?;
 
+    let refs_json: String = row.get(15)?;
+    let refs: Vec<String> = serde_json::from_str(&refs_json)?;
+
     Ok(Memory {
         id,
         content,
@@ -1622,6 +1655,7 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         status,
         severity,
         relations,
+        refs,
     })
 }
 
@@ -2414,6 +2448,7 @@ mod tests {
                     status: None,
                     severity: None,
                     relations: std::collections::BTreeMap::new(),
+                    refs: vec![],
                 },
                 dist,
             )
@@ -2445,6 +2480,7 @@ mod tests {
                     status: None,
                     severity: None,
                     relations: std::collections::BTreeMap::new(),
+                    refs: vec![],
                 },
                 dist,
             )
@@ -2686,6 +2722,7 @@ mod tests {
                 status: Some(MemoryStatus::Open),
                 severity: None,
                 relations: vec![],
+                refs: vec![],
             },
             BatchInsertItem {
                 content: "second".into(),
@@ -2700,6 +2737,7 @@ mod tests {
                 status: Some(MemoryStatus::Resolved),
                 severity: None,
                 relations: vec![],
+                refs: vec![],
             },
         ];
         let ids = store.insert_batch(items).await.unwrap();

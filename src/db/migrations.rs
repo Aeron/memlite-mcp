@@ -63,6 +63,8 @@ const MIGRATIONS: &[&[&str]] = &[
             from memories m, json_each(m.relations) jt
             where trim(jt.key) != '' and cast(jt.key as integer) > 0",
     ],
+    // v10 -> v11: external reference pointers (file paths, symbol names, URLs, etc.)
+    &["alter table memories add column refs text not null default '[]'"],
 ];
 
 /// Applies all pending migrations, each wrapped in an explicit transaction.

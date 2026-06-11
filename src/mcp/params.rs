@@ -39,6 +39,10 @@ pub struct StoreParams {
     /// use consistent snake_case labels across the project (e.g. caused_by,
     /// blocks, depends_on, supersedes, related_to). Omit or pass null for none.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
+    /// External reference pointers for this memory. Free-form strings: project-relative
+    /// file paths (e.g. "src/db/store.rs"), symbol names (e.g. "MemoryStore::insert"),
+    /// URLs, or issue IDs. Prefer short paths over absolute paths.
+    pub refs: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -57,6 +61,9 @@ pub struct SearchParams {
     pub status: Option<String>,
     /// Restricts results to memories with the given severity.
     pub severity: Option<String>,
+    /// Restricts results to memories whose refs array contains this substring.
+    /// Useful for finding all memories that mention a specific file or symbol.
+    pub refs_contain: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -74,6 +81,8 @@ pub struct ListParams {
     pub status: Option<String>,
     /// Restricts results to memories with the given severity.
     pub severity: Option<String>,
+    /// Restricts results to memories whose refs array contains this substring.
+    pub refs_contain: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -102,6 +111,8 @@ pub struct BatchStoreItem {
     pub severity: Option<String>,
     /// Outgoing directed links; same format as memory_store relations.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
+    /// External reference pointers; same format as memory_store refs.
+    pub refs: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -198,4 +209,7 @@ pub struct UpdateParams {
     /// Replacement outgoing relations; replaces the full set when provided.
     /// Same format as memory_store: {"<id>": "<kind>"}. Pass {} to clear all links.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
+    /// Replacement external reference pointers; replaces the full set when provided.
+    /// Pass [] to clear all refs.
+    pub refs: Option<Vec<String>>,
 }

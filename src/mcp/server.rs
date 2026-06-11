@@ -179,6 +179,7 @@ impl MemServer {
             },
         };
         let tags = p.tags.unwrap_or_default();
+        let refs = p.refs.unwrap_or_default();
         let relations = match parse_relations(p.relations) {
             Ok(r) => r,
             Err(msg) => return tool_err(msg),
@@ -204,6 +205,7 @@ impl MemServer {
                     status,
                     severity,
                     relations: &relations,
+                    refs: &refs,
                 },
             )
             .await
@@ -312,6 +314,7 @@ impl MemServer {
                         status,
                         severity,
                         relations,
+                        refs: item.refs.unwrap_or_default(),
                     }
                 },
             )
@@ -376,6 +379,7 @@ impl MemServer {
                     memory_type,
                     status,
                     severity,
+                    refs_contain: p.refs_contain.as_deref(),
                 },
                 limit,
             )
@@ -401,6 +405,7 @@ impl MemServer {
                     "status":               m.status,
                     "severity":             m.severity,
                     "relations":            m.relations,
+                    "refs":                 m.refs,
                     "freshness_warning":    m.freshness_warning(),
                 })
             })
@@ -443,6 +448,7 @@ impl MemServer {
                     memory_type,
                     status,
                     severity,
+                    refs_contain: p.refs_contain.as_deref(),
                 },
                 limit,
                 offset,
@@ -471,6 +477,7 @@ impl MemServer {
                     "status":               m.status,
                     "severity":             m.severity,
                     "relations":            m.relations,
+                    "refs":                 m.refs,
                     "freshness_warning":    m.freshness_warning(),
                 })
             })
@@ -548,9 +555,10 @@ impl MemServer {
             && p.status.is_none()
             && p.severity.is_none()
             && p.relations.is_none()
+            && p.refs.is_none()
         {
             return tool_err(
-                "at least one of content, summary, tags, context, confidence, decay_rate, memory_type, status, severity, or relations must be provided",
+                "at least one of content, summary, tags, context, confidence, decay_rate, memory_type, status, severity, relations, or refs must be provided",
             );
         }
 
@@ -609,6 +617,7 @@ impl MemServer {
             Some(Ok(r)) => Some(r),
             Some(Err(msg)) => return tool_err(msg),
         };
+        let update_refs = p.refs.as_deref();
         let updated = store
             .update(
                 p.id,
@@ -627,6 +636,7 @@ impl MemServer {
                     severity: update_severity,
                     clear_severity: matches!(p.severity.as_deref(), Some("")),
                     relations: update_relations.as_deref(),
+                    refs: update_refs,
                 },
                 self.config.agent_filter(),
             )

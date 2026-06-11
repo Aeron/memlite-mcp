@@ -2,12 +2,12 @@ Local agent memory store. Server-side embeddings from plain text.
 
 ## Tools
 
-- `memory_store`: embed + persist; returns id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`), `status` (`open`/`resolved`/`wontfix`/`deferred`), `severity` (`critical`/`high`/`medium`/`low`), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`)
+- `memory_store`: embed + persist; returns id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`), `status` (`open`/`resolved`/`wontfix`/`deferred`), `severity` (`critical`/`high`/`medium`/`low`), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`), `refs` (array of strings: file paths, symbol names, URLs)
 - `memory_store_batch`: batch store; `items: [...]` (max 100), same fields as `memory_store`; single-pass embed, atomic insert; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` for 3+ memories
-- `memory_search`: cosine + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Pre-filter: `tags`, `memory_type`, `status`, `severity`
-- `memory_list`: newest-first with pagination. Filter: `tags`, `memory_type`, `status`, `severity`; returns raw `confidence`, `decay_rate`, `last_seen_at`
+- `memory_search`: cosine + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Pre-filter: `tags`, `memory_type`, `status`, `severity`, `refs_contain`
+- `memory_list`: newest-first with pagination. Filter: `tags`, `memory_type`, `status`, `severity`, `refs_contain`; returns raw `confidence`, `decay_rate`, `last_seen_at`
 - `memory_tags`: all tags with occurrence counts, frequency-ordered
-- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status/severity/relations in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context/memory_type/status/severity; pass `{}` to clear relations
+- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/status/severity/relations/refs in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context/memory_type/status/severity; pass `{}` to clear relations; pass `[]` to clear refs
 - `memory_delete`: remove by id
 - `memory_revalidate`: resets decay clock (`last_seen_at` = now) on a list of ids without changing any other field; returns count updated. Use when confirming one or more memories accurate in same session
 - `memory_neighbors`: immediate in/out neighbors; optional `kind` filter; `direction` ("out"/"in"/"both")
@@ -129,6 +129,10 @@ Lifecycle: `open` / `resolved` / `wontfix` / `deferred`. For task/issue/finding;
 ### `severity`
 
 Priority: `critical` / `high` / `medium` / `low`. For finding/issue/task; omit general knowledge. Pass `""` to clear. Combine with `status` to filter e.g. open critical issues.
+
+### `refs`
+
+External reference pointers. Free-form array of strings: file paths, symbol names, URLs, or issue IDs. Examples: `["src/db/store.rs", "MemoryStore::insert"]`, `["https://github.com/foo/issues/42"]`. Use short project-relative paths (`src/db/store.rs`) not absolute paths. `memory_update` replaces the full set; pass `[]` to clear. `memory_search` and `memory_list` accept `refs_contain` for substring filtering.
 
 ### `relations`
 
