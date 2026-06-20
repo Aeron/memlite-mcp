@@ -148,17 +148,20 @@ impl MemServer {
         if p.content.trim().is_empty() {
             return tool_err("content must not be blank");
         }
-        let Some(memory_type) = MemoryType::from_str(&p.memory_type) else {
-            return tool_err(format!(
-                "unknown memory_type {:?}; expected: user, project, reference, task, finding, issue, decision, or plan",
-                p.memory_type
-            ));
+        let memory_type = match MemoryType::try_from(p.memory_type.as_str()) {
+            Ok(t) => t,
+            Err(msg) => return tool_err(msg),
         };
-        let status = match parse_memory_status(p.status.as_deref()) {
+        let status = match p.status.as_deref().map(MemoryStatus::try_from).transpose() {
             Ok(v) => v,
             Err(msg) => return tool_err(msg),
         };
-        let severity = match parse_memory_severity(p.severity.as_deref()) {
+        let severity = match p
+            .severity
+            .as_deref()
+            .map(MemorySeverity::try_from)
+            .transpose()
+        {
             Ok(v) => v,
             Err(msg) => return tool_err(msg),
         };
@@ -168,6 +171,8 @@ impl MemServer {
             Ok(r) => r,
             Err(msg) => return tool_err(msg),
         };
+
+        // Embedding content and persisting the new memory row
         let embedding = self
             .embedding
             .embed(p.content.clone())
@@ -224,38 +229,32 @@ impl MemServer {
         let mut parsed_severities: Vec<Option<MemorySeverity>> = Vec::with_capacity(p.items.len());
         let mut parsed_relations: Vec<Vec<(i64, String)>> = Vec::with_capacity(p.items.len());
         for (i, item) in p.items.iter().enumerate() {
-            let mt = match item.memory_type.as_deref() {
-                None => None,
-                Some(s) => match MemoryType::from_str(s) {
-                    Some(t) => Some(t),
-                    None => {
-                        return tool_err(format!(
-                            "item {i}: unknown memory_type {s:?}; expected: user, project, reference, task, finding, issue, decision, or plan"
-                        ));
-                    }
-                },
+            let mt = match item
+                .memory_type
+                .as_deref()
+                .map(MemoryType::try_from)
+                .transpose()
+            {
+                Ok(v) => v,
+                Err(msg) => return tool_err(format!("item {i}: {msg}")),
             };
-            let st = match item.status.as_deref() {
-                None => None,
-                Some(s) => match MemoryStatus::from_str(s) {
-                    Some(t) => Some(t),
-                    None => {
-                        return tool_err(format!(
-                            "item {i}: unknown status {s:?}; expected: open, resolved, wontfix, or deferred"
-                        ));
-                    }
-                },
+            let st = match item
+                .status
+                .as_deref()
+                .map(MemoryStatus::try_from)
+                .transpose()
+            {
+                Ok(v) => v,
+                Err(msg) => return tool_err(format!("item {i}: {msg}")),
             };
-            let sev = match item.severity.as_deref() {
-                None => None,
-                Some(s) => match MemorySeverity::from_str(s) {
-                    Some(sv) => Some(sv),
-                    None => {
-                        return tool_err(format!(
-                            "item {i}: unknown severity {s:?}; expected: critical, high, medium, or low"
-                        ));
-                    }
-                },
+            let sev = match item
+                .severity
+                .as_deref()
+                .map(MemorySeverity::try_from)
+                .transpose()
+            {
+                Ok(v) => v,
+                Err(msg) => return tool_err(format!("item {i}: {msg}")),
             };
             let rels = match parse_relations(item.relations.clone()) {
                 Ok(r) => r,
@@ -267,6 +266,7 @@ impl MemServer {
             parsed_relations.push(rels);
         }
 
+        // Embedding all items in one inference pass
         let contents: Vec<String> = p.items.iter().map(|item| item.content.clone()).collect();
         let embeddings = self
             .embedding
@@ -274,6 +274,7 @@ impl MemServer {
             .await
             .map_err(ServerError::Embed)?;
 
+        // Assembling BatchInsertItem values from zipped iterators
         let agent = self.config.agent.clone();
         let batch_items: Vec<BatchInsertItem> = p
             .items
@@ -332,15 +333,25 @@ impl MemServer {
         if p.query.trim().is_empty() {
             return tool_err("query must not be blank");
         }
-        let memory_type = match parse_memory_type(p.memory_type.as_deref()) {
+        let memory_type = match p
+            .memory_type
+            .as_deref()
+            .map(MemoryType::try_from)
+            .transpose()
+        {
             Ok(v) => v,
             Err(msg) => return tool_err(msg),
         };
-        let status = match parse_memory_status(p.status.as_deref()) {
+        let status = match p.status.as_deref().map(MemoryStatus::try_from).transpose() {
             Ok(v) => v,
             Err(msg) => return tool_err(msg),
         };
-        let severity = match parse_memory_severity(p.severity.as_deref()) {
+        let severity = match p
+            .severity
+            .as_deref()
+            .map(MemorySeverity::try_from)
+            .transpose()
+        {
             Ok(v) => v,
             Err(msg) => return tool_err(msg),
         };
@@ -407,15 +418,25 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<ListParams>,
     ) -> Result<CallToolResult, McpError> {
-        let memory_type = match parse_memory_type(p.memory_type.as_deref()) {
+        let memory_type = match p
+            .memory_type
+            .as_deref()
+            .map(MemoryType::try_from)
+            .transpose()
+        {
             Ok(v) => v,
             Err(msg) => return tool_err(msg),
         };
-        let status = match parse_memory_status(p.status.as_deref()) {
+        let status = match p.status.as_deref().map(MemoryStatus::try_from).transpose() {
             Ok(v) => v,
             Err(msg) => return tool_err(msg),
         };
-        let severity = match parse_memory_severity(p.severity.as_deref()) {
+        let severity = match p
+            .severity
+            .as_deref()
+            .map(MemorySeverity::try_from)
+            .transpose()
+        {
             Ok(v) => v,
             Err(msg) => return tool_err(msg),
         };
@@ -546,29 +567,36 @@ impl MemServer {
             );
         }
 
-        let update_status = match parse_memory_status(p.status.as_deref()) {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
+        // Parsing nullable enum fields: empty string clears the column
+        let (update_status, clear_status) = match p.status.as_deref() {
+            None => (None, false),
+            Some("") => (None, true),
+            Some(s) => match MemoryStatus::try_from(s) {
+                Ok(st) => (Some(st), false),
+                Err(msg) => return tool_err(msg),
+            },
         };
-        let update_severity = match parse_memory_severity(p.severity.as_deref()) {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
+        let (update_severity, clear_severity) = match p.severity.as_deref() {
+            None => (None, false),
+            Some("") => (None, true),
+            Some(s) => match MemorySeverity::try_from(s) {
+                Ok(sev) => (Some(sev), false),
+                Err(msg) => return tool_err(msg),
+            },
         };
         let (update_memory_type, clear_memory_type) = match p.memory_type.as_deref() {
             None => (None, false),
             Some("") => (None, true),
-            Some(s) => match MemoryType::from_str(s) {
-                Some(mt) => (Some(mt), false),
-                None => {
-                    return tool_err(format!(
-                        "unknown memory_type {s:?}; expected: user, project, reference, task, finding, issue, decision, or plan"
-                    ));
-                }
+            Some(s) => match MemoryType::try_from(s) {
+                Ok(mt) => (Some(mt), false),
+                Err(msg) => return tool_err(msg),
             },
         };
         let Some(store) = self.store_if_present().await? else {
             return tool_err(format!("no memory found with id {}", p.id));
         };
+
+        // Re-embedding only when content changes
         let new_embedding = if let Some(ref c) = p.content {
             Some(
                 self.embedding
@@ -600,9 +628,9 @@ impl MemServer {
                     memory_type: update_memory_type,
                     clear_memory_type,
                     status: update_status,
-                    clear_status: matches!(p.status.as_deref(), Some("")),
+                    clear_status,
                     severity: update_severity,
-                    clear_severity: matches!(p.severity.as_deref(), Some("")),
+                    clear_severity,
                     relations: update_relations.as_deref(),
                     refs: update_refs,
                 },
@@ -700,7 +728,7 @@ impl MemServer {
                 serde_json::json!({"start_id": p.start_id, "nodes": [], "edges": []}).to_string(),
             )]));
         };
-        let direction = parse_direction(p.direction.as_deref());
+        let direction = TraverseDirection::from(p.direction.as_deref());
         let depth = p.depth.unwrap_or(2);
         let result = store
             .traverse(p.start_id, depth, p.kind.as_deref(), direction)
@@ -946,47 +974,6 @@ fn parse_relations(
         result.push((id, kind));
     }
     Ok(result)
-}
-
-/// Parses an optional memory type filter, returning an error string when a value is provided but unrecognised.
-///
-/// `None` input means no filter; `Some` with an unrecognised value is an error rather than a no-op.
-fn parse_memory_type(s: Option<&str>) -> Result<Option<MemoryType>, String> {
-    match s {
-        None => Ok(None),
-        Some(v) => MemoryType::from_str(v).map(Some).ok_or_else(|| {
-            format!("unknown memory_type {v:?}; expected: user, project, reference, task, finding, issue, decision, or plan")
-        }),
-    }
-}
-
-/// Parses an optional status filter, returning an error string when a value is provided but unrecognised.
-fn parse_memory_status(s: Option<&str>) -> Result<Option<MemoryStatus>, String> {
-    match s {
-        None => Ok(None),
-        Some(v) => MemoryStatus::from_str(v).map(Some).ok_or_else(|| {
-            format!("unknown status {v:?}; expected: open, resolved, wontfix, or deferred")
-        }),
-    }
-}
-
-/// Converts a direction string into a [`TraverseDirection`]; defaults to `Out` for unrecognised values.
-fn parse_direction(s: Option<&str>) -> TraverseDirection {
-    match s {
-        Some("in") => TraverseDirection::In,
-        Some("both") => TraverseDirection::Both,
-        _ => TraverseDirection::Out,
-    }
-}
-
-/// Parses an optional severity filter, returning an error string when a value is provided but unrecognised.
-fn parse_memory_severity(s: Option<&str>) -> Result<Option<MemorySeverity>, String> {
-    match s {
-        None => Ok(None),
-        Some(v) => MemorySeverity::from_str(v).map(Some).ok_or_else(|| {
-            format!("unknown severity {v:?}; expected: critical, high, medium, or low")
-        }),
-    }
 }
 
 /// Typed errors produced at the MCP boundary, converted to [`McpError`] via [`From`].
