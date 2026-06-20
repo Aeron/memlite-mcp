@@ -480,7 +480,7 @@ impl MemoryStore {
         Ok(())
     }
 
-    // Reads the stored embedding dimension from meta; used in mismatch error messages.
+    /// Reads the stored embedding dimension from meta; used in mismatch error messages.
     async fn stored_dims(&self, conn: &libsql::Connection) -> Result<usize> {
         let mut rows = conn
             .query("select value from meta where key = 'embedding_dims'", ())
@@ -556,13 +556,7 @@ impl MemoryStore {
                     severity
                         .map(|s| Value::Text(s.as_str().to_owned()))
                         .unwrap_or(Value::Null),
-                    {
-                        let map: std::collections::BTreeMap<String, &str> = relations
-                            .iter()
-                            .map(|(id, kind)| (id.to_string(), kind.as_str()))
-                            .collect();
-                        Value::Text(serde_json::to_string(&map)?)
-                    },
+                    Value::Text(relations_to_json(relations)?),
                     Value::Text(refs_json),
                 ]),
             )
@@ -644,14 +638,7 @@ impl MemoryStore {
                     item.severity
                         .map(|s| Value::Text(s.as_str().to_owned()))
                         .unwrap_or(Value::Null),
-                    {
-                        let map: std::collections::BTreeMap<String, &str> = item
-                            .relations
-                            .iter()
-                            .map(|(id, kind)| (id.to_string(), kind.as_str()))
-                            .collect();
-                        Value::Text(serde_json::to_string(&map)?)
-                    },
+                    Value::Text(relations_to_json(&item.relations)?),
                     Value::Text(item_refs_json),
                 ]),
             )
@@ -773,18 +760,31 @@ impl MemoryStore {
     }
 
     /// Returns all distinct tags with occurrence counts, ordered by count descending.
+    ///
+    /// Reads from the normalized `memory_tags` table (indexed) rather than scanning the
+    /// JSON column; joins onto `memories` only when an agent filter is supplied.
     pub async fn tags(&self, agent_id: Option<&str>) -> Result<Vec<(String, u32)>> {
         let conn = self.db.connect()?;
-        let mut params: Vec<Value> = Vec::new();
-        let where_sql = build_where(agent_id, None, None, None, None, None, &mut params)?;
-        let sql = format!(
-            "select jt.value, count(*) as cnt
-            from memories, json_each(memories.tags) jt
-            {where_sql}
-            group by jt.value
-            order by cnt desc"
-        );
-        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+        let (sql, params): (&str, Vec<Value>) = if let Some(agent) = agent_id {
+            (
+                "select t.tag, count(*) as cnt
+                from memory_tags t
+                join memories m on m.rowid = t.memory_id
+                where m.agent = ?
+                group by t.tag
+                order by cnt desc",
+                vec![Value::Text(agent.to_owned())],
+            )
+        } else {
+            (
+                "select tag, count(*) as cnt
+                from memory_tags
+                group by tag
+                order by cnt desc",
+                Vec::new(),
+            )
+        };
+        let mut rows = conn.query(sql, libsql::params_from_iter(params)).await?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let tag: String = row.get(0)?;
@@ -947,11 +947,7 @@ impl MemoryStore {
         }
         if let Some(rels) = relations {
             set_clauses.push("relations = ?");
-            let map: std::collections::BTreeMap<String, &str> = rels
-                .iter()
-                .map(|(id, kind)| (id.to_string(), kind.as_str()))
-                .collect();
-            params.push(Value::Text(serde_json::to_string(&map)?));
+            params.push(Value::Text(relations_to_json(rels)?));
         }
         if let Some(r) = refs {
             set_clauses.push("refs = ?");
@@ -1708,6 +1704,18 @@ fn rerank_by_overlap(
     });
     scored.truncate(limit);
     scored.into_iter().map(|(m, dist, _)| (m, dist)).collect()
+}
+
+/// Serialises directed relations into the JSON object stored in the `relations` column.
+///
+/// Maps each `(target_id, kind)` pair to a `{"<id>": "<kind>"}` entry, keyed by the
+/// stringified id so the on-disk shape matches the BTreeMap the read path deserialises.
+fn relations_to_json(relations: &[(i64, String)]) -> Result<String> {
+    let map: std::collections::BTreeMap<String, &str> = relations
+        .iter()
+        .map(|(id, kind)| (id.to_string(), kind.as_str()))
+        .collect();
+    Ok(serde_json::to_string(&map)?)
 }
 
 /// Packs a float slice as little-endian IEEE 754 bytes, matching libsql's `float32` vector format.

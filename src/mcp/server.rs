@@ -154,29 +154,13 @@ impl MemServer {
                 p.memory_type
             ));
         };
-        let status = match p.status.as_deref() {
-            None => None,
-            Some(s) => match MemoryStatus::from_str(s) {
-                Some(st) => Some(st),
-                None => {
-                    return tool_err(format!(
-                        "unknown status {:?}; expected: open, resolved, wontfix, or deferred",
-                        s
-                    ));
-                }
-            },
+        let status = match parse_memory_status(p.status.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
         };
-        let severity = match p.severity.as_deref() {
-            None => None,
-            Some(s) => match MemorySeverity::from_str(s) {
-                Some(sev) => Some(sev),
-                None => {
-                    return tool_err(format!(
-                        "unknown severity {:?}; expected: critical, high, medium, or low",
-                        s
-                    ));
-                }
-            },
+        let severity = match parse_memory_severity(p.severity.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
         };
         let tags = p.tags.unwrap_or_default();
         let refs = p.refs.unwrap_or_default();
@@ -562,29 +546,13 @@ impl MemServer {
             );
         }
 
-        let update_status = match p.status.as_deref() {
-            None => None,
-            Some(s) => match MemoryStatus::from_str(s) {
-                Some(st) => Some(st),
-                None => {
-                    return tool_err(format!(
-                        "unknown status {:?}; expected: open, resolved, wontfix, or deferred",
-                        s
-                    ));
-                }
-            },
+        let update_status = match parse_memory_status(p.status.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
         };
-        let update_severity = match p.severity.as_deref() {
-            None => None,
-            Some(s) => match MemorySeverity::from_str(s) {
-                Some(sev) => Some(sev),
-                None => {
-                    return tool_err(format!(
-                        "unknown severity {:?}; expected: critical, high, medium, or low",
-                        s
-                    ));
-                }
-            },
+        let update_severity = match parse_memory_severity(p.severity.as_deref()) {
+            Ok(v) => v,
+            Err(msg) => return tool_err(msg),
         };
         let (update_memory_type, clear_memory_type) = match p.memory_type.as_deref() {
             None => (None, false),
@@ -983,7 +951,6 @@ fn parse_relations(
     Ok(result)
 }
 
-/// Converts an optional type string into a [`MemoryType`], returning `None` for unrecognised values.
 /// Parses an optional memory type filter, returning an error string when a value is provided but unrecognised.
 ///
 /// `None` input means no filter; `Some` with an unrecognised value is an error rather than a no-op.
