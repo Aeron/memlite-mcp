@@ -156,6 +156,8 @@ Relations are stored in a normalized `memory_relations(from_id, to_id, kind)` ta
 
 Five tools operate on this table: `memory_neighbors`, `memory_traverse`, `memory_path`, `memory_hubs`, and `memory_stats`. See the Tools table below for parameters and return shapes.
 
+All five operate on the full global graph regardless of the `--agent` filter. The relation graph is a single shared structure (`memory_relations` has no agent column) and edges may legitimately cross agent boundaries, so scoping traversal to one agent would hide real connections. `memory_stats` follows the same rule: every count it returns (including `total_memories` and `by_type`) is global. The `--agent` filter applies only to the CRUD and tag tools (`memory_search`, `memory_list`, `memory_tags`, `memory_delete`, `memory_update`, `memory_revalidate`).
+
 ## Tools
 
 | Tool | Description |

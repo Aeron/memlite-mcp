@@ -1452,22 +1452,14 @@ impl MemoryStore {
 
     /// Returns graph-level statistics: memory counts, relation totals, and relation kinds.
     ///
-    /// Memory counts are scoped by `agent_id` when provided; relation stats are always global.
-    pub async fn graph_stats(&self, agent_id: Option<&str>) -> Result<GraphStats> {
+    /// All counts are global across agents, matching the rest of the graph subsystem
+    /// (`neighbors`, `traverse`, `path`, `hubs`): the relation graph is a single shared
+    /// structure with no agent column, and edges may legitimately cross agent boundaries.
+    pub async fn graph_stats(&self) -> Result<GraphStats> {
         let conn = self.db.connect()?;
 
         // Total memories
-        let (count_sql, count_params): (String, Vec<Value>) = if let Some(agent) = agent_id {
-            (
-                "select count(*) from memories where agent = ?".to_owned(),
-                vec![Value::Text(agent.to_owned())],
-            )
-        } else {
-            ("select count(*) from memories".to_owned(), vec![])
-        };
-        let mut rows = conn
-            .query(&count_sql, libsql::params_from_iter(count_params))
-            .await?;
+        let mut rows = conn.query("select count(*) from memories", ()).await?;
         let total_memories = rows
             .next()
             .await?
@@ -1475,21 +1467,11 @@ impl MemoryStore {
             .unwrap_or(0);
 
         // Memories by type
-        let (type_sql, type_params): (String, Vec<Value>) = if let Some(agent) = agent_id {
-            (
-                "select type, count(*) from memories where agent = ? group by type order by count(*) desc"
-                    .to_owned(),
-                vec![Value::Text(agent.to_owned())],
-            )
-        } else {
-            (
-                "select type, count(*) from memories group by type order by count(*) desc"
-                    .to_owned(),
-                vec![],
-            )
-        };
         let mut rows = conn
-            .query(&type_sql, libsql::params_from_iter(type_params))
+            .query(
+                "select type, count(*) from memories group by type order by count(*) desc",
+                (),
+            )
             .await?;
         let mut by_type: Vec<(Option<String>, u64)> = Vec::new();
         while let Some(row) = rows.next().await? {

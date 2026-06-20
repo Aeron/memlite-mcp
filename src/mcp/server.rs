@@ -811,7 +811,7 @@ impl MemServer {
 
     /// Returns graph-level aggregate statistics.
     #[tool(
-        description = "Returns graph-level statistics: total memory count (scoped to this agent), breakdown by memory type, total relation edges, and distinct relation kind labels. Good starting point for understanding the shape of the memory graph."
+        description = "Returns graph-level statistics: total memory count, breakdown by memory type, total relation edges, and distinct relation kind labels. Counts are global (not scoped to an agent), matching the rest of the graph tools. Good starting point for understanding the shape of the memory graph."
     )]
     async fn memory_stats(
         &self,
@@ -828,10 +828,7 @@ impl MemServer {
                 .to_string(),
             )]));
         };
-        let stats = store
-            .graph_stats(self.config.agent_filter())
-            .await
-            .map_err(ServerError::StoreOp)?;
+        let stats = store.graph_stats().await.map_err(ServerError::StoreOp)?;
         let by_type: Vec<_> = stats
             .by_type
             .into_iter()

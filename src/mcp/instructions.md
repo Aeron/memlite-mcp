@@ -53,6 +53,8 @@ Use when you have ids and want to explore connections, not discover from scratch
 - `memory_hubs`: most-connected nodes; good orientation on unfamiliar project
 - `memory_stats`: graph shape overview
 
+All graph tools global scope: ignore `--agent` filter (relation graph is one shared structure; edges cross agents). `memory_stats` counts global too. Agent filter applies only to CRUD/tag tools.
+
 ### How `memory_search` ranks
 
 Two stages: cosine selects candidate pool (~4x return count), keyword overlap re-ranks within it. Pre-filters (`tags`, `memory_type`, `status`, `severity`) exclude before both stages. Result missing: drop filters first; still absent, rephrase with different vocabulary (semantic = embedding-based, not keyword-based).
