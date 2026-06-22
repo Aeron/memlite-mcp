@@ -1010,6 +1010,7 @@ impl MemoryStore {
                 memory_type,
                 out_degree: out_degree as u32,
                 in_degree: in_degree as u32,
+                total_degree: (out_degree + in_degree) as u32,
             });
         }
         Ok(entries)

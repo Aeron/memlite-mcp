@@ -274,35 +274,31 @@ impl MemServer {
             .await
             .map_err(ServerError::Embed)?;
 
-        // Assembling BatchInsertItem values from zipped iterators
+        // Assembling BatchInsertItem values; all parallel vecs have the same length as p.items
         let agent = self.config.agent.clone();
+        let mut embeddings = embeddings.into_iter();
+        let mut parsed_types = parsed_types.into_iter();
+        let mut parsed_statuses = parsed_statuses.into_iter();
+        let mut parsed_severities = parsed_severities.into_iter();
+        let mut parsed_relations = parsed_relations.into_iter();
         let batch_items: Vec<BatchInsertItem> = p
             .items
             .into_iter()
-            .zip(embeddings)
-            .zip(parsed_types)
-            .zip(parsed_statuses)
-            .zip(parsed_severities)
-            .zip(parsed_relations)
-            .map(
-                |(((((item, embedding), memory_type), status), severity), relations)| {
-                    BatchInsertItem {
-                        content: item.content,
-                        embedding,
-                        summary: item.summary,
-                        tags: item.tags.unwrap_or_default(),
-                        agent: agent.clone(),
-                        context: item.context,
-                        confidence: item.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
-                        decay_rate: item.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
-                        memory_type,
-                        status,
-                        severity,
-                        relations,
-                        refs: item.refs.unwrap_or_default(),
-                    }
-                },
-            )
+            .map(|item| BatchInsertItem {
+                content: item.content,
+                embedding: embeddings.next().unwrap(),
+                summary: item.summary,
+                tags: item.tags.unwrap_or_default(),
+                agent: agent.clone(),
+                context: item.context,
+                confidence: item.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
+                decay_rate: item.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
+                memory_type: parsed_types.next().unwrap(),
+                status: parsed_statuses.next().unwrap(),
+                severity: parsed_severities.next().unwrap(),
+                relations: parsed_relations.next().unwrap(),
+                refs: item.refs.unwrap_or_default(),
+            })
             .collect();
 
         let store = self.open_store().await?;
@@ -828,7 +824,7 @@ impl MemServer {
                     "memory_type":  e.memory_type,
                     "out_degree":   e.out_degree,
                     "in_degree":    e.in_degree,
-                    "total_degree": e.out_degree + e.in_degree,
+                    "total_degree": e.total_degree,
                 })
             })
             .collect();
@@ -966,7 +962,7 @@ fn parse_relations(
     let mut result = Vec::with_capacity(map.len());
     for (key, kind) in map {
         let id = key.parse::<i64>().map_err(|_| {
-            format!("relations key {key:?} is not a valid memory id; expected a numeric id")
+            format!("relations key {key} is not a valid memory id; expected a numeric id")
         })?;
         if kind.trim().is_empty() {
             return Err(format!("relations[{key}]: kind must be a non-empty string"));

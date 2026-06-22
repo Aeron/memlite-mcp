@@ -367,6 +367,8 @@ pub struct HubEntry {
     pub out_degree: u32,
     /// Number of incoming relation edges.
     pub in_degree: u32,
+    /// Sum of out_degree and in_degree.
+    pub total_degree: u32,
 }
 
 /// Graph-level aggregate statistics.
