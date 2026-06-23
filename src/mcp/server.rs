@@ -31,12 +31,11 @@ use crate::{
 /// Initial instructions for the MCP client (caveman style).
 const INSTRUCTIONS: &str = include_str!("instructions.md");
 
-#[derive(Clone)]
 pub struct MemServer {
-    db_path: Arc<OnceLock<PathBuf>>,
-    store: Arc<OnceCell<MemoryStore>>,
+    db_path: OnceLock<PathBuf>,
+    store: OnceCell<MemoryStore>,
     embedding: EmbeddingService,
-    config: Arc<Config>,
+    config: Config,
     shutdown: Arc<Notify>,
 
     #[allow(dead_code)]
@@ -47,10 +46,10 @@ pub struct MemServer {
 impl MemServer {
     pub fn new(config: Config, embedding: EmbeddingService) -> Self {
         MemServer {
-            db_path: Arc::new(OnceLock::new()),
-            store: Arc::new(OnceCell::new()),
+            db_path: OnceLock::new(),
+            store: OnceCell::new(),
             embedding,
-            config: Arc::new(config),
+            config,
             shutdown: Arc::new(Notify::new()),
             tool_router: Self::tool_router(),
         }
