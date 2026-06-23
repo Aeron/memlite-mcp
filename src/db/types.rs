@@ -13,8 +13,6 @@ pub struct Memory {
     pub summary: Option<String>,
     /// Category labels attached to this memory for grouping and filtering.
     pub tags: Vec<String>,
-    /// Identifier of the agent that created this memory.
-    pub agent: String,
     /// Unix timestamp (seconds) when the row was first inserted.
     pub created_at: i64,
     /// Unix timestamp (seconds) when the row was last modified.
@@ -269,8 +267,6 @@ pub struct BatchInsertItem {
     pub summary: Option<String>,
     /// Category labels.
     pub tags: Vec<String>,
-    /// Agent identifier.
-    pub agent: String,
     /// Background rationale.
     pub context: Option<String>,
     /// Base trust score in [0.0, 1.0]; caller is responsible for clamping.
@@ -373,7 +369,7 @@ pub struct HubEntry {
 
 /// Graph-level aggregate statistics.
 pub struct GraphStats {
-    /// Total memory count (filtered by agent when applicable).
+    /// Total memory count across the project.
     pub total_memories: u64,
     /// Count per memory type; None key = untyped memories.
     pub by_type: Vec<(Option<String>, u64)>,

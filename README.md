@@ -21,8 +21,7 @@ all my local projects.
 MemLite MCP takes the other approach: the DB is a per-project SQLite file on
 disk, the embeddings are generated locally with a bundled ONNX model, and
 nothing ever leaves the machine. Per-project isolation means agents working on
-different codebases do not bleed into each other. Per-agent filtering means
-multiple agents sharing a project can coexist without noise. And since only
+different codebases do not bleed into each other. And since only
 `memory_store` actually creates the DB file, projects you never ask the agent
 to remember anything about do not accumulate empty database files.
 
@@ -40,7 +39,7 @@ to remember anything about do not accumulate empty database files.
 - **Tag filtering**: normalized `memory_tags` table; AND semantics; usable as a pre-filter in both `memory_search` and `memory_list`
 - **External references**: optional `refs` field (array of free-form strings) attaches file paths, symbol names, URLs, or issue IDs to a memory; `refs_contain` substring filter in search and list
 - **Batch store**: up to 100 memories in a single ONNX embedding pass; atomic insert
-- **Per-project and per-agent isolation**: one DB per project path; optional `--agent` filter scopes reads and writes
+- **Per-project isolation**: one DB per project path; all agents on the same project share the same DB
 - **Three embedding models**: bge-small-en-v1.5 (384d, ~67 MB), bge-base-en-v1.5 (768d, ~210 MB), bge-large-en-v1.5 (1024d, ~620 MB)
 
 ## Build
@@ -62,7 +61,6 @@ flags take precedence).
 | Flag | Env var | Default | Description |
 |---|---|---|---|
 | `--project-path` | `MEMLITE_PROJECT_PATH` | first MCP workspace root, or CWD | Project identifier; agents sharing the same path share a DB |
-| `--agent` | `MEMLITE_AGENT` | `""` | Filters memories to this agent (empty = see all) |
 | `--db-dir` | `MEMLITE_DB_DIR` | OS data dir / `memlite-mcp` | Directory for per-project DB files (`~/.local/share/…` on Linux, `~/Library/Application Support/…` on macOS) |
 | `--allow-root` | `MEMLITE_ALLOW_ROOT` | `false` | Allow `/` as the project path (off by default; almost always wrong) |
 | `--allow-home` | `MEMLITE_ALLOW_HOME` | `false` | Allow the home directory as the project path (off by default; spans unrelated projects) |
@@ -156,7 +154,7 @@ Relations are stored in a normalized `memory_relations(from_id, to_id, kind)` ta
 
 Five tools operate on this table: `memory_neighbors`, `memory_traverse`, `memory_path`, `memory_hubs`, and `memory_stats`. See the Tools table below for parameters and return shapes.
 
-All five operate on the full global graph regardless of the `--agent` filter. The relation graph is a single shared structure (`memory_relations` has no agent column) and edges may legitimately cross agent boundaries, so scoping traversal to one agent would hide real connections. `memory_stats` follows the same rule: every count it returns (including `total_memories` and `by_type`) is global. The `--agent` filter applies only to the CRUD and tag tools (`memory_search`, `memory_list`, `memory_tags`, `memory_delete`, `memory_update`, `memory_revalidate`).
+All five tools operate on the full global graph. `memory_stats` counts are also global: `total_memories`, `by_type`, `total_relations`, and `relation_kinds` all reflect the entire project DB.
 
 ## Tools
 

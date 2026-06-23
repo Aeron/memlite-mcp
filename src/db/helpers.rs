@@ -16,9 +16,11 @@ pub(super) async fn fetch_memories_by_ids(
     }
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let sql = format!(
-        "select rowid, content, summary, tags, agent, created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
-         from memories where rowid in ({placeholders})"
+        "select
+            rowid, content, summary, tags, created_at, updated_at, context,
+            confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
+         from memories
+         where rowid in ({placeholders})"
     );
     let params: Vec<Value> = ids.iter().map(|&id| Value::Integer(id)).collect();
     let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
@@ -30,10 +32,9 @@ pub(super) async fn fetch_memories_by_ids(
     Ok(map)
 }
 
-// Builds a SQL WHERE clause from optional agent, tag, and type filters, appending
+// Builds a SQL WHERE clause from optional tag, type, and other filters, appending
 // the corresponding bind params in the correct placeholder order.
 pub(super) fn build_where(
-    agent_id: Option<&str>,
     tags: Option<&[String]>,
     type_filter: Option<MemoryType>,
     status_filter: Option<MemoryStatus>,
@@ -42,17 +43,17 @@ pub(super) fn build_where(
     params: &mut Vec<Value>,
 ) -> Result<String> {
     let mut clauses: Vec<String> = Vec::new();
-    if let Some(aid) = agent_id {
-        clauses.push("agent = ?".into());
-        params.push(Value::Text(aid.to_owned()));
-    }
     if let Some(ts) = tags.filter(|t| !t.is_empty()) {
         // Using normalized memory_tags table for indexed filtering
         clauses.push(
-            "rowid in (select memory_id from memory_tags \
-            where tag in (select value from json_each(?)) \
-            group by memory_id having count(distinct tag) = ?)"
-                .into(),
+            "rowid in (
+                select memory_id from memory_tags
+                where tag in (
+                    select value from json_each(?)
+                )
+                group by memory_id having count(distinct tag) = ?
+            )"
+            .into(),
         );
         params.push(Value::Text(serde_json::to_string(ts)?));
         params.push(Value::Integer(ts.len() as i64));
@@ -84,10 +85,10 @@ pub(super) fn build_where(
 /// Deserialises a database row into a [`Memory`] value.
 ///
 /// Expects columns in the order selected by `list` and `search`:
-/// 0=rowid, 1=content, 2=summary, 3=tags, 4=agent,
-/// 5=created_at, 6=updated_at, 7=context,
-/// 8=confidence, 9=decay_rate, 10=last_seen_at, 11=type, 12=status, 13=severity,
-/// 14=relations, 15=refs.
+/// 0=rowid, 1=content, 2=summary, 3=tags,
+/// 4=created_at, 5=updated_at, 6=context,
+/// 7=confidence, 8=decay_rate, 9=last_seen_at, 10=type, 11=status, 12=severity,
+/// 13=relations, 14=refs.
 pub(super) fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
@@ -97,38 +98,37 @@ pub(super) fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         other => return Err(anyhow!("unexpected type for summary: {other:?}")),
     };
     let tags_json: String = row.get(3)?;
-    let agent: String = row.get(4)?;
-    let created_at: i64 = row.get(5)?;
-    let updated_at: i64 = row.get(6)?;
-    let context = match row.get_value(7)? {
+    let created_at: i64 = row.get(4)?;
+    let updated_at: i64 = row.get(5)?;
+    let context = match row.get_value(6)? {
         Value::Null => None,
         Value::Text(s) => Some(s),
         other => return Err(anyhow!("unexpected type for context: {other:?}")),
     };
-    let confidence: f64 = row.get(8)?;
-    let decay_rate: f64 = row.get(9)?;
-    let last_seen_at: i64 = row.get(10)?;
-    let memory_type = match row.get_value(11)? {
+    let confidence: f64 = row.get(7)?;
+    let decay_rate: f64 = row.get(8)?;
+    let last_seen_at: i64 = row.get(9)?;
+    let memory_type = match row.get_value(10)? {
         Value::Null => None,
         Value::Text(s) => MemoryType::from_str(&s),
         other => return Err(anyhow!("unexpected value for type column: {other:?}")),
     };
-    let status = match row.get_value(12)? {
+    let status = match row.get_value(11)? {
         Value::Null => None,
         Value::Text(s) => MemoryStatus::from_str(&s),
         other => return Err(anyhow!("unexpected value for status column: {other:?}")),
     };
-    let severity = match row.get_value(13)? {
+    let severity = match row.get_value(12)? {
         Value::Null => None,
         Value::Text(s) => MemorySeverity::from_str(&s),
         other => return Err(anyhow!("unexpected value for severity column: {other:?}")),
     };
-    let relations_json: String = row.get(14)?;
+    let relations_json: String = row.get(13)?;
     let relations: BTreeMap<String, String> = serde_json::from_str(&relations_json)?;
 
     let tags: Vec<String> = serde_json::from_str(&tags_json)?;
 
-    let refs_json: String = row.get(15)?;
+    let refs_json: String = row.get(14)?;
     let refs: Vec<String> = serde_json::from_str(&refs_json)?;
 
     Ok(Memory {
@@ -136,7 +136,6 @@ pub(super) fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         content,
         summary,
         tags,
-        agent,
         created_at,
         updated_at,
         context,
@@ -264,7 +263,6 @@ mod tests {
                     content: content.to_owned(),
                     summary: None,
                     tags: vec![],
-                    agent: String::new(),
                     created_at: 0,
                     updated_at: 0,
                     context: None,
@@ -296,7 +294,6 @@ mod tests {
                     content: content.to_owned(),
                     summary: None,
                     tags: vec![],
-                    agent: String::new(),
                     created_at: 0,
                     updated_at: 0,
                     context: None,

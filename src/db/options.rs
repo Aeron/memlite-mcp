@@ -7,8 +7,6 @@ pub struct InsertOptions<'a> {
     pub summary: Option<&'a str>,
     /// Category labels stored as a JSON array.
     pub tags: &'a [String],
-    /// Agent identifier; empty string means no specific agent.
-    pub agent: &'a str,
     /// Background rationale for the memory.
     pub context: Option<&'a str>,
     /// Base trust score in [0.0, 1.0]; defaults to 1.0.
@@ -65,8 +63,6 @@ pub struct UpdateOptions<'a> {
 /// Shared pre-filter options for search and list queries.
 #[derive(Default)]
 pub struct FilterOptions<'a> {
-    /// Restricts results to those owned by this agent identifier.
-    pub agent_id: Option<&'a str>,
     /// Restricts results to those carrying all of the given tags (hard AND).
     pub tags: Option<&'a [String]>,
     /// Restricts results to the given memory type.

@@ -185,7 +185,6 @@ impl MemServer {
                 InsertOptions {
                     summary: p.summary.as_deref(),
                     tags: &tags,
-                    agent: &self.config.agent,
                     context: p.context.as_deref(),
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
@@ -274,7 +273,6 @@ impl MemServer {
             .map_err(ServerError::Embed)?;
 
         // Assembling BatchInsertItem values; all parallel vecs have the same length as p.items
-        let agent = self.config.agent.clone();
         let mut embeddings = embeddings.into_iter();
         let mut parsed_types = parsed_types.into_iter();
         let mut parsed_statuses = parsed_statuses.into_iter();
@@ -288,7 +286,6 @@ impl MemServer {
                 embedding: embeddings.next().unwrap(),
                 summary: item.summary,
                 tags: item.tags.unwrap_or_default(),
-                agent: agent.clone(),
                 context: item.context,
                 confidence: item.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
                 decay_rate: item.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
@@ -364,7 +361,6 @@ impl MemServer {
                 &p.query,
                 &embedding,
                 FilterOptions {
-                    agent_id: self.config.agent_filter(),
                     tags: p.tags.as_deref(),
                     memory_type,
                     status,
@@ -384,7 +380,6 @@ impl MemServer {
                     "content":              m.content,
                     "summary":              m.summary,
                     "tags":                 m.tags,
-                    "agent":                m.agent,
                     "created_at":           m.created_at,
                     "updated_at":           m.updated_at,
                     "context":              m.context,
@@ -443,7 +438,6 @@ impl MemServer {
         let memories = store
             .list(
                 FilterOptions {
-                    agent_id: self.config.agent_filter(),
                     tags: p.tags.as_deref(),
                     memory_type,
                     status,
@@ -464,7 +458,6 @@ impl MemServer {
                     "content":              m.content,
                     "summary":              m.summary,
                     "tags":                 m.tags,
-                    "agent":                m.agent,
                     "created_at":           m.created_at,
                     "updated_at":           m.updated_at,
                     "context":              m.context,
@@ -498,10 +491,7 @@ impl MemServer {
         let Some(store) = self.store_if_present().await? else {
             return Ok(CallToolResult::success(vec![Content::text("[]")]));
         };
-        let tags = store
-            .tags(self.config.agent_filter())
-            .await
-            .map_err(ServerError::StoreOp)?;
+        let tags = store.tags().await.map_err(ServerError::StoreOp)?;
 
         let body: Vec<_> = tags
             .into_iter()
@@ -523,10 +513,7 @@ impl MemServer {
         let Some(store) = self.store_if_present().await? else {
             return tool_err(format!("no memory found with id {}", p.id));
         };
-        let deleted = store
-            .delete(p.id, self.config.agent_filter())
-            .await
-            .map_err(ServerError::StoreOp)?;
+        let deleted = store.delete(p.id).await.map_err(ServerError::StoreOp)?;
         if deleted {
             let body = serde_json::json!({ "deleted": true, "id": p.id }).to_string();
             Ok(CallToolResult::success(vec![Content::text(body)]))
@@ -629,7 +616,6 @@ impl MemServer {
                     relations: update_relations.as_deref(),
                     refs: update_refs,
                 },
-                self.config.agent_filter(),
             )
             .await
             .map_err(ServerError::StoreOp)?;
@@ -659,7 +645,7 @@ impl MemServer {
             )]));
         };
         let count = store
-            .revalidate_batch(&p.ids, self.config.agent_filter())
+            .revalidate_batch(&p.ids)
             .await
             .map_err(ServerError::StoreOp)?;
         let body = serde_json::json!({ "revalidated": count }).to_string();

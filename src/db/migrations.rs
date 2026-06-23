@@ -65,6 +65,11 @@ const MIGRATIONS: &[&[&str]] = &[
     ],
     // v10 -> v11: external reference pointers (file paths, symbol names, URLs, etc.)
     &["alter table memories add column refs text not null default '[]'"],
+    // v11 -> v12: removes per-row agent column (isolation handled at DB file level)
+    &[
+        "drop index if exists memories_agent",
+        "alter table memories drop column agent",
+    ],
 ];
 
 /// Applies all pending migrations, each wrapped in an explicit transaction.

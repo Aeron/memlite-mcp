@@ -96,7 +96,6 @@ impl MemoryStore {
         let InsertOptions {
             summary,
             tags,
-            agent,
             context,
             confidence,
             decay_rate,
@@ -117,10 +116,10 @@ impl MemoryStore {
         // Inserting the main memory row
         let mut rows = conn
             .query(
-                "insert into memories
-                    (content, summary, tags, agent, embedding, created_at, updated_at, context,
-                     confidence, decay_rate, last_seen_at, type, status, severity, relations, refs)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "insert into memories (
+                    content, summary, tags, embedding, created_at, updated_at, context,
+                    confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 returning rowid",
                 libsql::params_from_iter([
                     Value::Text(content.to_owned()),
@@ -128,7 +127,6 @@ impl MemoryStore {
                         .map(|s| Value::Text(s.to_owned()))
                         .unwrap_or(Value::Null),
                     Value::Text(tags_json),
-                    Value::Text(agent.to_owned()),
                     Value::Blob(emb_blob),
                     Value::Integer(now),
                     Value::Integer(now),
@@ -167,6 +165,7 @@ impl MemoryStore {
             )
             .await?;
         }
+
         // Syncing normalized relations table
         for (to_id, kind) in relations.iter() {
             conn.execute(
@@ -175,6 +174,7 @@ impl MemoryStore {
             )
             .await?;
         }
+
         Ok(id)
     }
 
@@ -187,19 +187,21 @@ impl MemoryStore {
         if items.is_empty() {
             return Ok(Vec::new());
         }
+
         let conn = self.db.connect()?;
         let tx = conn.transaction().await?;
         let now = unix_secs();
-        let sql = "insert into memories
-                (content, summary, tags, agent, embedding, created_at, updated_at, context,
-                 confidence, decay_rate, last_seen_at, type, status, severity, relations, refs)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-
+        let sql = "insert into memories (
+                content, summary, tags, embedding, created_at, updated_at, context,
+                confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         let mut ids = Vec::with_capacity(items.len());
+
         for item in &items {
             let tags_json = serde_json::to_string(&item.tags)?;
             let item_refs_json = serde_json::to_string(&item.refs)?;
             let emb_blob = floats_to_blob(&item.embedding);
+
             tx.execute(
                 sql,
                 libsql::params_from_iter([
@@ -209,7 +211,6 @@ impl MemoryStore {
                         .map(|s| Value::Text(s.to_owned()))
                         .unwrap_or(Value::Null),
                     Value::Text(tags_json),
-                    Value::Text(item.agent.clone()),
                     Value::Blob(emb_blob),
                     Value::Integer(now),
                     Value::Integer(now),
@@ -234,8 +235,10 @@ impl MemoryStore {
                 ]),
             )
             .await?;
+
             let id = tx.last_insert_rowid();
             ids.push(id);
+
             // Syncing normalized tag table within the same transaction
             for tag in item.tags.iter().filter(|t| !t.is_empty()) {
                 tx.execute(
@@ -244,6 +247,7 @@ impl MemoryStore {
                 )
                 .await?;
             }
+
             // Syncing normalized relations table within the same transaction
             for (to_id, kind) in item.relations.iter() {
                 tx.execute(
@@ -253,7 +257,9 @@ impl MemoryStore {
                 .await?;
             }
         }
+
         tx.commit().await?;
+
         Ok(ids)
     }
 
@@ -276,7 +282,6 @@ impl MemoryStore {
         let candidate_limit = (limit as i64).saturating_mul(4).min(400);
         let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
         let where_sql = build_where(
-            filter.agent_id,
             filter.tags,
             filter.memory_type,
             filter.status,
@@ -286,10 +291,10 @@ impl MemoryStore {
         )?;
         params.push(Value::Integer(candidate_limit));
 
-        // dist is placed last so parse_memory_row can use a fixed column range (0-15)
+        // NOTE: dist is placed last so parse_memory_row can use a fixed column range (0-15)
         let sql = format!(
             "select
-                rowid, content, summary, tags, agent,
+                rowid, content, summary, tags,
                 created_at, updated_at, context,
                 confidence, decay_rate, last_seen_at, type, status, severity, relations, refs,
                 vector_distance_cos(embedding, ?) as dist
@@ -303,9 +308,10 @@ impl MemoryStore {
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let memory = parse_memory_row(&row)?;
-            let dist: f64 = row.get(16)?;
+            let dist: f64 = row.get(15)?;
             results.push((memory, dist));
         }
+
         Ok(rerank_by_overlap(query_text, results, limit as usize))
     }
 
@@ -321,7 +327,6 @@ impl MemoryStore {
         let conn = self.db.connect()?;
         let mut params: Vec<Value> = Vec::new();
         let where_sql = build_where(
-            filter.agent_id,
             filter.tags,
             filter.memory_type,
             filter.status,
@@ -334,7 +339,7 @@ impl MemoryStore {
 
         let sql = format!(
             "select
-                rowid, content, summary, tags, agent, created_at, updated_at, context,
+                rowid, content, summary, tags, created_at, updated_at, context,
                 confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
             from memories
             {where_sql}
@@ -347,35 +352,24 @@ impl MemoryStore {
         while let Some(row) = rows.next().await? {
             results.push(parse_memory_row(&row)?);
         }
+
         Ok(results)
     }
 
     /// Returns all distinct tags with occurrence counts, ordered by count descending.
     ///
-    /// Reads from the normalized `memory_tags` table (indexed) rather than scanning the
-    /// JSON column; joins onto `memories` only when an agent filter is supplied.
-    pub async fn tags(&self, agent_id: Option<&str>) -> Result<Vec<(String, u32)>> {
+    /// Reads from the normalized `memory_tags` table (indexed).
+    pub async fn tags(&self) -> Result<Vec<(String, u32)>> {
         let conn = self.db.connect()?;
-        let (sql, params): (&str, Vec<Value>) = if let Some(agent) = agent_id {
-            (
-                "select t.tag, count(*) as cnt
-                from memory_tags t
-                join memories m on m.rowid = t.memory_id
-                where m.agent = ?
-                group by t.tag
-                order by cnt desc",
-                vec![Value::Text(agent.to_owned())],
-            )
-        } else {
-            (
+        let mut rows = conn
+            .query(
                 "select tag, count(*) as cnt
                 from memory_tags
                 group by tag
                 order by cnt desc",
-                Vec::new(),
+                (),
             )
-        };
-        let mut rows = conn.query(sql, libsql::params_from_iter(params)).await?;
+            .await?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let tag: String = row.get(0)?;
@@ -386,20 +380,12 @@ impl MemoryStore {
     }
 
     /// Deletes a memory by rowid; returns true if a row was actually removed.
-    ///
-    /// When `agent_id` is set, only removes the row if it also matches that agent.
-    pub async fn delete(&self, id: i64, agent_id: Option<&str>) -> Result<bool> {
+    pub async fn delete(&self, id: i64) -> Result<bool> {
         let conn = self.db.connect()?;
-        let affected = if let Some(agent) = agent_id {
-            conn.execute(
-                "delete from memories where rowid = ? and agent = ?",
-                libsql::params![id, agent],
-            )
-            .await?
-        } else {
-            conn.execute("delete from memories where rowid = ?", libsql::params![id])
-                .await?
-        };
+        let affected = conn
+            .execute("delete from memories where rowid = ?", libsql::params![id])
+            .await?;
+
         // Cleaning up auxiliary rows for the deleted memory
         if affected > 0 {
             conn.execute(
@@ -407,6 +393,7 @@ impl MemoryStore {
                 libsql::params![id],
             )
             .await?;
+
             // Removing outgoing relations from this memory and incoming relations pointing to it
             conn.execute(
                 "delete from memory_relations where from_id = ?",
@@ -419,6 +406,7 @@ impl MemoryStore {
             )
             .await?;
         }
+
         Ok(affected > 0)
     }
 
@@ -434,12 +422,7 @@ impl MemoryStore {
     ///   resetting the confidence decay clock.
     /// - When `agent_id` is set, only modifies the row if it also matches that agent.
     /// - Returns true when at least one row was modified.
-    pub async fn update(
-        &self,
-        id: i64,
-        opts: UpdateOptions<'_>,
-        agent_id: Option<&str>,
-    ) -> Result<bool> {
+    pub async fn update(&self, id: i64, opts: UpdateOptions<'_>) -> Result<bool> {
         let UpdateOptions {
             content,
             summary,
@@ -552,20 +535,13 @@ impl MemoryStore {
         set_clauses.push("last_seen_at = ?");
         params.push(Value::Integer(now));
         params.push(Value::Integer(id));
-        let sql = if let Some(agent) = agent_id {
-            params.push(Value::Text(agent.to_owned()));
-            format!(
-                "update memories set {} where rowid = ? and agent = ?",
-                set_clauses.join(", ")
-            )
-        } else {
-            format!(
-                "update memories set {} where rowid = ?",
-                set_clauses.join(", ")
-            )
-        };
+        let sql = format!(
+            "update memories set {} where rowid = ?",
+            set_clauses.join(", ")
+        );
 
         let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
+
         // Syncing memory_tags when the tags column was updated
         if affected > 0
             && let Some(updated_tags) = tags
@@ -584,6 +560,7 @@ impl MemoryStore {
                 .await?;
             }
         }
+
         // Syncing memory_relations when the relations column was updated
         if affected > 0
             && let Some(updated_rels) = relations
@@ -601,6 +578,7 @@ impl MemoryStore {
                 .await?;
             }
         }
+
         Ok(affected > 0)
     }
 
@@ -608,31 +586,22 @@ impl MemoryStore {
     ///
     /// Issues a single UPDATE touching only `updated_at` and `last_seen_at`. Returns
     /// the count of rows actually modified; may be less than `ids.len()` when some
-    /// ids do not exist. When `agent_id` is set, only touches rows that match that agent.
-    pub async fn revalidate_batch(&self, ids: &[i64], agent_id: Option<&str>) -> Result<u64> {
+    /// ids do not exist.
+    pub async fn revalidate_batch(&self, ids: &[i64]) -> Result<u64> {
         if ids.is_empty() {
             return Ok(0);
         }
         let conn = self.db.connect()?;
         let now = unix_secs();
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let sql = if agent_id.is_some() {
-            format!(
-                "update memories set updated_at = ?, last_seen_at = ? where rowid in ({placeholders}) and agent = ?"
-            )
-        } else {
-            format!(
-                "update memories set updated_at = ?, last_seen_at = ? where rowid in ({placeholders})"
-            )
-        };
-        let mut params: Vec<Value> = Vec::with_capacity(3 + ids.len());
+        let sql = format!(
+            "update memories set updated_at = ?, last_seen_at = ? where rowid in ({placeholders})"
+        );
+        let mut params: Vec<Value> = Vec::with_capacity(2 + ids.len());
         params.push(Value::Integer(now));
         params.push(Value::Integer(now));
         for id in ids {
             params.push(Value::Integer(*id));
-        }
-        if let Some(agent) = agent_id {
-            params.push(Value::Text(agent.to_owned()));
         }
         let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
         Ok(affected)
@@ -660,6 +629,7 @@ impl MemoryStore {
             )
         };
         let mut out_pairs: Vec<(i64, String)> = Vec::new();
+
         let mut rows = conn
             .query(&out_sql, libsql::params_from_iter(out_params))
             .await?;
@@ -682,6 +652,7 @@ impl MemoryStore {
             )
         };
         let mut in_pairs: Vec<(i64, String)> = Vec::new();
+
         let mut rows = conn
             .query(&in_sql, libsql::params_from_iter(in_params))
             .await?;
@@ -738,10 +709,10 @@ impl MemoryStore {
         let mut visited: std::collections::HashMap<i64, (u32, Option<String>)> =
             std::collections::HashMap::new();
         visited.insert(start_id, (0, None));
-        let mut frontier: Vec<i64> = vec![start_id];
         // edges: (from_id, to_id, kind), deduplicated at the end
         let mut edges: std::collections::HashSet<(i64, i64, String)> =
             std::collections::HashSet::new();
+        let mut frontier: Vec<i64> = vec![start_id];
 
         for depth in 1..=max_depth {
             if frontier.is_empty() {
@@ -767,6 +738,7 @@ impl MemoryStore {
                 if let Some(kf) = kind_filter {
                     params.push(Value::Text(kf.to_owned()));
                 }
+
                 let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
                 while let Some(row) = rows.next().await? {
                     let from_id: i64 = row.get(0)?;
@@ -795,15 +767,18 @@ impl MemoryStore {
                 if let Some(kf) = kind_filter {
                     params.push(Value::Text(kf.to_owned()));
                 }
+
                 let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
                 while let Some(row) = rows.next().await? {
                     let from_id: i64 = row.get(0)?;
                     let to_id: i64 = row.get(1)?;
                     let kind: String = row.get(2)?;
+
                     // New node when traversing backwards is the from_id
                     if !visited.contains_key(&from_id) {
                         next_nodes.push((from_id, kind.clone()));
                     }
+
                     edges.insert((from_id, to_id, kind));
                 }
             }
@@ -1126,7 +1101,6 @@ mod tests {
                 InsertOptions {
                     summary: Some("summ"),
                     tags: &["tag".into()],
-                    agent: "bot",
                     context: Some("why it matters"),
                     ..Default::default()
                 },
@@ -1140,7 +1114,6 @@ mod tests {
         assert_eq!(m.content, "content");
         assert_eq!(m.summary.as_deref(), Some("summ"));
         assert_eq!(m.tags, ["tag"]);
-        assert_eq!(m.agent, "bot");
         assert_eq!(m.context.as_deref(), Some("why it matters"));
         // Defaults
         assert_eq!(m.confidence, 1.0);
@@ -1169,50 +1142,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_filters_by_agent() {
-        let (store, _tmp) = fresh().await;
-        store
-            .insert(
-                "a",
-                &V1,
-                InsertOptions {
-                    agent: "alice",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        store
-            .insert(
-                "b",
-                &V1,
-                InsertOptions {
-                    agent: "bob",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        let alice = store
-            .list(
-                FilterOptions {
-                    agent_id: Some("alice"),
-                    ..Default::default()
-                },
-                10,
-                0,
-            )
-            .await
-            .unwrap();
-        assert_eq!(alice.len(), 1);
-        assert_eq!(alice[0].agent, "alice");
-
-        let all = store.list(FilterOptions::default(), 10, 0).await.unwrap();
-        assert_eq!(all.len(), 2);
-    }
-
-    #[tokio::test]
     async fn list_paginates_without_overlap() {
         let (store, _tmp) = fresh().await;
         for i in 0..5 {
@@ -1237,7 +1166,7 @@ mod tests {
             .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        assert!(store.delete(id, None).await.unwrap());
+        assert!(store.delete(id).await.unwrap());
         assert!(
             store
                 .list(FilterOptions::default(), 10, 0)
@@ -1250,7 +1179,7 @@ mod tests {
     #[tokio::test]
     async fn delete_missing_returns_false() {
         let (store, _tmp) = fresh().await;
-        assert!(!store.delete(999, None).await.unwrap());
+        assert!(!store.delete(999).await.unwrap());
     }
 
     #[tokio::test]
@@ -1390,45 +1319,11 @@ mod tests {
             .await
             .unwrap();
 
-        let counts = store.tags(None).await.unwrap();
+        let counts = store.tags().await.unwrap();
         assert_eq!(counts.len(), 2);
         // ordered by count desc: "a" (2) before "b" (1)
         assert_eq!(counts[0], ("a".into(), 2));
         assert_eq!(counts[1], ("b".into(), 1));
-    }
-
-    #[tokio::test]
-    async fn tags_filters_by_agent() {
-        let (store, _tmp) = fresh().await;
-        store
-            .insert(
-                "x",
-                &V1,
-                InsertOptions {
-                    tags: &["shared".into()],
-                    agent: "alice",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        store
-            .insert(
-                "y",
-                &V1,
-                InsertOptions {
-                    tags: &["shared".into(), "private".into()],
-                    agent: "bob",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        let alice_tags = store.tags(Some("alice")).await.unwrap();
-        assert_eq!(alice_tags.len(), 1);
-        assert_eq!(alice_tags[0].0, "shared");
-        assert!(!alice_tags.iter().any(|(t, _)| t == "private"));
     }
 
     #[tokio::test]
@@ -1446,7 +1341,6 @@ mod tests {
                         content: Some("new"),
                         ..Default::default()
                     },
-                    None,
                 )
                 .await
                 .unwrap()
@@ -1478,7 +1372,6 @@ mod tests {
                     summary: Some(""),
                     ..Default::default()
                 },
-                None,
             )
             .await
             .unwrap();
@@ -1510,7 +1403,6 @@ mod tests {
                     context: Some(""),
                     ..Default::default()
                 },
-                None,
             )
             .await
             .unwrap();
@@ -1532,7 +1424,6 @@ mod tests {
                         content: Some("x"),
                         ..Default::default()
                     },
-                    None,
                 )
                 .await
                 .unwrap()
@@ -1546,12 +1437,7 @@ mod tests {
             .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        assert!(
-            !store
-                .update(id, UpdateOptions::default(), None)
-                .await
-                .unwrap()
-        );
+        assert!(!store.update(id, UpdateOptions::default()).await.unwrap());
     }
 
     #[tokio::test]
@@ -1570,7 +1456,6 @@ mod tests {
                         decay_rate: Some(0.02),
                         ..Default::default()
                     },
-                    None,
                 )
                 .await
                 .unwrap()
@@ -1597,7 +1482,6 @@ mod tests {
                     content: Some("updated"),
                     ..Default::default()
                 },
-                None,
             )
             .await
             .unwrap();
@@ -1725,48 +1609,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_filters_by_agent() {
-        let (store, _tmp) = fresh().await;
-        store
-            .insert(
-                "alice",
-                &V1,
-                InsertOptions {
-                    agent: "alice",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        store
-            .insert(
-                "bob",
-                &V1,
-                InsertOptions {
-                    agent: "bob",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        let results = store
-            .search(
-                "",
-                &V1,
-                FilterOptions {
-                    agent_id: Some("alice"),
-                    ..Default::default()
-                },
-                10,
-            )
-            .await
-            .unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0.agent, "alice");
-    }
-
-    #[tokio::test]
     async fn list_filters_by_memory_type() {
         let (store, _tmp) = fresh().await;
         store
@@ -1849,7 +1691,6 @@ mod tests {
                     memory_type: Some(MemoryType::Project),
                     ..Default::default()
                 },
-                None,
             )
             .await
             .unwrap();
@@ -1961,7 +1802,6 @@ mod tests {
                     status: Some(MemoryStatus::Resolved),
                     ..Default::default()
                 },
-                None,
             )
             .await
             .unwrap();
@@ -1987,7 +1827,6 @@ mod tests {
                 embedding: V1.to_vec(),
                 summary: Some("s1".into()),
                 tags: vec!["a".into()],
-                agent: "bot".into(),
                 context: None,
                 confidence: 1.0,
                 decay_rate: 0.0,
@@ -2002,7 +1841,6 @@ mod tests {
                 embedding: V2.to_vec(),
                 summary: None,
                 tags: vec![],
-                agent: "bot".into(),
                 context: None,
                 confidence: 0.8,
                 decay_rate: 0.01,
@@ -2120,7 +1958,6 @@ mod tests {
                     severity: Some(MemorySeverity::High),
                     ..Default::default()
                 },
-                None,
             )
             .await
             .unwrap();
@@ -2196,7 +2033,6 @@ mod tests {
                     relations: Some(&[(30, "causes".to_owned())]),
                     ..Default::default()
                 },
-                None,
             )
             .await
             .unwrap();
@@ -2227,7 +2063,6 @@ mod tests {
                     relations: Some(&[]),
                     ..Default::default()
                 },
-                None,
             )
             .await
             .unwrap();
@@ -2238,7 +2073,7 @@ mod tests {
     #[tokio::test]
     async fn revalidate_batch_empty_returns_zero() {
         let (store, _tmp) = fresh().await;
-        let count = store.revalidate_batch(&[], None).await.unwrap();
+        let count = store.revalidate_batch(&[]).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -2251,7 +2086,7 @@ mod tests {
             .unwrap();
         let before = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-        let count = store.revalidate_batch(&[id], None).await.unwrap();
+        let count = store.revalidate_batch(&[id]).await.unwrap();
         assert_eq!(count, 1);
         let after = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
         assert!(
@@ -2268,7 +2103,7 @@ mod tests {
             .await
             .unwrap();
         // Mix one real id with one nonexistent id
-        let count = store.revalidate_batch(&[id, id + 999], None).await.unwrap();
+        let count = store.revalidate_batch(&[id, id + 999]).await.unwrap();
         assert_eq!(count, 1);
     }
 
@@ -2283,7 +2118,7 @@ mod tests {
             .insert("b", &V2, InsertOptions::default())
             .await
             .unwrap();
-        let count = store.revalidate_batch(&[id1, id2], None).await.unwrap();
+        let count = store.revalidate_batch(&[id1, id2]).await.unwrap();
         assert_eq!(count, 2);
     }
 
@@ -2315,160 +2150,6 @@ mod tests {
         assert!(
             err.to_string().contains("mismatch"),
             "error message should mention mismatch: {err}"
-        );
-    }
-
-    // Verifying that agent-scoped mutations respect ownership boundaries.
-    // A mutation with the wrong agent must not touch rows belonging to another agent.
-
-    #[tokio::test]
-    async fn delete_wrong_agent_returns_false() {
-        let (store, _tmp) = fresh().await;
-        let id = store
-            .insert(
-                "x",
-                &V1,
-                InsertOptions {
-                    agent: "alice",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        // Attempting to delete alice's memory as bob must fail
-        assert!(!store.delete(id, Some("bob")).await.unwrap());
-        // Row still exists
-        let rows = store.list(FilterOptions::default(), 10, 0).await.unwrap();
-        assert_eq!(rows.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn delete_correct_agent_removes_row() {
-        let (store, _tmp) = fresh().await;
-        let id = store
-            .insert(
-                "x",
-                &V1,
-                InsertOptions {
-                    agent: "alice",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert!(store.delete(id, Some("alice")).await.unwrap());
-        let rows = store.list(FilterOptions::default(), 10, 0).await.unwrap();
-        assert!(rows.is_empty());
-    }
-
-    #[tokio::test]
-    async fn update_wrong_agent_returns_false() {
-        let (store, _tmp) = fresh().await;
-        let id = store
-            .insert(
-                "original",
-                &V1,
-                InsertOptions {
-                    agent: "alice",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        let updated = store
-            .update(
-                id,
-                UpdateOptions {
-                    content: Some("tampered"),
-                    ..Default::default()
-                },
-                Some("bob"),
-            )
-            .await
-            .unwrap();
-        assert!(!updated);
-        // Content unchanged
-        let rows = store.list(FilterOptions::default(), 1, 0).await.unwrap();
-        assert_eq!(rows[0].content, "original");
-    }
-
-    #[tokio::test]
-    async fn update_correct_agent_modifies_row() {
-        let (store, _tmp) = fresh().await;
-        let id = store
-            .insert(
-                "original",
-                &V1,
-                InsertOptions {
-                    agent: "alice",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        let updated = store
-            .update(
-                id,
-                UpdateOptions {
-                    content: Some("updated"),
-                    ..Default::default()
-                },
-                Some("alice"),
-            )
-            .await
-            .unwrap();
-        assert!(updated);
-        let rows = store.list(FilterOptions::default(), 1, 0).await.unwrap();
-        assert_eq!(rows[0].content, "updated");
-    }
-
-    #[tokio::test]
-    async fn revalidate_wrong_agent_returns_zero() {
-        let (store, _tmp) = fresh().await;
-        let id = store
-            .insert(
-                "x",
-                &V1,
-                InsertOptions {
-                    agent: "alice",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        let before = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-        let count = store.revalidate_batch(&[id], Some("bob")).await.unwrap();
-        assert_eq!(count, 0);
-        let after = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
-        assert_eq!(
-            after, before,
-            "last_seen_at must not change when agent does not match"
-        );
-    }
-
-    #[tokio::test]
-    async fn revalidate_correct_agent_bumps_clock() {
-        let (store, _tmp) = fresh().await;
-        let id = store
-            .insert(
-                "x",
-                &V1,
-                InsertOptions {
-                    agent: "alice",
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        let before = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-        let count = store.revalidate_batch(&[id], Some("alice")).await.unwrap();
-        assert_eq!(count, 1);
-        let after = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
-        assert!(
-            after > before,
-            "last_seen_at should increase when agent matches"
         );
     }
 }

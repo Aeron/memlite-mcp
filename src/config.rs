@@ -56,11 +56,6 @@ pub struct Config {
     #[arg(long = "project-path", env = "MEMLITE_PROJECT_PATH")]
     project_path: Option<String>,
 
-    /// Agent name stored on each memory row. Empty means no filtering:
-    /// all memories in the project are visible.
-    #[arg(long = "agent", env = "MEMLITE_AGENT", default_value = "")]
-    pub agent: String,
-
     /// Directory for per-project DB files. Defaults to the XDG data home.
     #[arg(long = "db-dir", env = "MEMLITE_DB_DIR")]
     db_dir: Option<PathBuf>,
@@ -270,15 +265,6 @@ impl Config {
         Ok(())
     }
 
-    /// Returns Some(agent) when non-empty, for use as an optional query filter.
-    pub fn agent_filter(&self) -> Option<&str> {
-        if self.agent.is_empty() {
-            None
-        } else {
-            Some(&self.agent)
-        }
-    }
-
     /// Returns a SHA-256 hex digest of the given project path string.
     pub fn project_path_hash(project_path: &str) -> String {
         let hash = Sha256::digest(project_path.as_bytes());
@@ -318,7 +304,6 @@ mod tests {
     fn config(project_path: &str) -> Config {
         Config {
             project_path: Some(project_path.into()),
-            agent: String::new(),
             db_dir: None,
             allow_root: false,
             allow_home: false,
@@ -332,7 +317,6 @@ mod tests {
     fn config_no_path() -> Config {
         Config {
             project_path: None,
-            agent: String::new(),
             db_dir: None,
             allow_root: false,
             allow_home: false,
@@ -438,18 +422,6 @@ mod tests {
         let mut c = config(&home);
         c.allow_home = true;
         assert_eq!(c.resolve_project_path(&[]), Ok(home));
-    }
-
-    #[test]
-    fn agent_filter_empty_is_none() {
-        assert!(config("/p").agent_filter().is_none());
-    }
-
-    #[test]
-    fn agent_filter_non_empty_is_some() {
-        let mut c = config("/p");
-        c.agent = "claude".into();
-        assert_eq!(c.agent_filter(), Some("claude"));
     }
 
     #[test]
