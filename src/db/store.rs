@@ -37,7 +37,7 @@ impl MemoryStore {
     /// On first call for a given database file, records the model so future opens can
     /// detect mismatches. Returns an error when the stored model differs, preventing
     /// mixed-dimension vectors from corrupting cosine-distance results.
-    pub async fn check_embedding_model(&self, model_name: &str, dims: usize) -> Result<()> {
+    pub async fn check_embedding_model(&self, model_name: &str) -> Result<()> {
         let conn = self.db.connect()?;
         let mut rows = conn
             .query("select value from meta where key = 'embedding_model'", ())
@@ -46,13 +46,11 @@ impl MemoryStore {
             let stored: String = row.get(0)?;
             if stored != model_name {
                 return Err(anyhow::anyhow!(
-                    "embedding model mismatch: DB was created with '{}' ({} dims) \
-                     but '--embedding-model {}' ({} dims) was requested; \
+                    "embedding model mismatch: DB was created with '{}' \
+                     but '{}' was requested; \
                      use the original model or delete the database to start fresh",
                     stored,
-                    self.stored_dims(&conn).await.unwrap_or(0),
                     model_name,
-                    dims,
                 ));
             }
         } else {
@@ -61,26 +59,8 @@ impl MemoryStore {
                 libsql::params![model_name],
             )
             .await?;
-            conn.execute(
-                "insert into meta (key, value) values ('embedding_dims', ?)",
-                libsql::params![dims.to_string()],
-            )
-            .await?;
         }
         Ok(())
-    }
-
-    /// Reads the stored embedding dimension from meta; used in mismatch error messages.
-    async fn stored_dims(&self, conn: &libsql::Connection) -> Result<usize> {
-        let mut rows = conn
-            .query("select value from meta where key = 'embedding_dims'", ())
-            .await?;
-        if let Some(row) = rows.next().await? {
-            let s: String = row.get(0)?;
-            Ok(s.parse().unwrap_or(0))
-        } else {
-            Ok(0)
-        }
     }
 
     /// Inserts a new memory and returns its rowid.
@@ -2126,12 +2106,12 @@ mod tests {
     async fn check_embedding_model_records_on_first_open() {
         let (store, _tmp) = fresh().await;
         store
-            .check_embedding_model("bge-small-en-v1.5", 384)
+            .check_embedding_model("bge-small-en-v1.5")
             .await
             .unwrap();
         // Second call with the same model must succeed
         store
-            .check_embedding_model("bge-small-en-v1.5", 384)
+            .check_embedding_model("bge-small-en-v1.5")
             .await
             .unwrap();
     }
@@ -2140,11 +2120,11 @@ mod tests {
     async fn check_embedding_model_rejects_mismatch() {
         let (store, _tmp) = fresh().await;
         store
-            .check_embedding_model("bge-small-en-v1.5", 384)
+            .check_embedding_model("bge-small-en-v1.5")
             .await
             .unwrap();
         let err = store
-            .check_embedding_model("bge-large-en-v1.5", 1024)
+            .check_embedding_model("bge-large-en-v1.5")
             .await
             .unwrap_err();
         assert!(

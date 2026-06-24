@@ -104,7 +104,7 @@ impl MemServer {
                         .await
                         .map_err(|e| McpError::from(ServerError::StoreOpen(e)))?;
                     store
-                        .check_embedding_model(&model.to_string(), model.dims())
+                        .check_embedding_model(&model.to_string())
                         .await
                         .map_err(|e| McpError::from(ServerError::StoreOpen(e)))?;
                     Ok(store)

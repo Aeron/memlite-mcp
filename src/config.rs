@@ -62,12 +62,12 @@ pub struct Config {
 
     /// Allows the filesystem root ("/") as the project path.
     /// Off by default; using the whole filesystem as a project is almost certainly wrong.
-    #[arg(long = "allow-root", env = "MEMLITE_ALLOW_ROOT", default_value_t = false, value_parser = parse_bool)]
+    #[arg(long = "allow-root", env = "MEMLITE_ALLOW_ROOT", default_value_t = false, value_parser = clap::builder::BoolishValueParser::new())]
     allow_root: bool,
 
     /// Allows the home directory as the project path.
     /// Off by default; the home directory spans many unrelated projects.
-    #[arg(long = "allow-home", env = "MEMLITE_ALLOW_HOME", default_value_t = false, value_parser = parse_bool)]
+    #[arg(long = "allow-home", env = "MEMLITE_ALLOW_HOME", default_value_t = false, value_parser = clap::builder::BoolishValueParser::new())]
     allow_home: bool,
 
     /// Embedding model to use for new memories.
@@ -102,21 +102,15 @@ pub enum LogLevel {
     Error,
 }
 
-impl LogLevel {
-    fn as_str(self) -> &'static str {
-        match self {
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             LogLevel::Trace => "trace",
             LogLevel::Debug => "debug",
             LogLevel::Info => "info",
             LogLevel::Warn => "warn",
             LogLevel::Error => "error",
-        }
-    }
-}
-
-impl std::fmt::Display for LogLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        })
     }
 }
 
@@ -132,17 +126,6 @@ pub enum EmbeddingModel {
     /// BAAI/bge-large-en-v1.5 (1024 dims, ~620 MB)
     #[value(name = "bge-large-en-v1.5")]
     Large,
-}
-
-impl EmbeddingModel {
-    /// Output vector dimensionality for this model.
-    pub fn dims(self) -> usize {
-        match self {
-            EmbeddingModel::Small => 384,
-            EmbeddingModel::Base => 768,
-            EmbeddingModel::Large => 1024,
-        }
-    }
 }
 
 impl std::fmt::Display for EmbeddingModel {
@@ -241,7 +224,7 @@ impl Config {
     /// startup before any `tracing` macros are used.
     pub fn init_logging(&self) -> Result<()> {
         let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(self.log_level.as_str()));
+            .unwrap_or_else(|_| EnvFilter::new(self.log_level.to_string()));
 
         if let Some(log_path) = &self.log_file {
             if let Some(parent) = log_path.parent() {
@@ -286,15 +269,6 @@ fn is_home_path(path: &str) -> bool {
     dirs::home_dir()
         .and_then(|h| h.to_str().map(|s| s == path))
         .unwrap_or(false)
-}
-
-/// Parses a bool from a CLI/env string, accepting `true/false/1/0/yes/no`.
-fn parse_bool(s: &str) -> Result<bool, String> {
-    match s {
-        "true" | "1" | "yes" => Ok(true),
-        "false" | "0" | "no" => Ok(false),
-        _ => Err(format!("expected true/false/1/0, got '{s}'")),
-    }
 }
 
 #[cfg(test)]
