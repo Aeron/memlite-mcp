@@ -13,7 +13,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -211,13 +211,30 @@ impl Drop for McpClient {
     }
 }
 
-/// Stores `count` memories by cycling through `SEED_CONTENT`.
+/// Seeds `count` memories via `memory_store_batch` (100 items per call), cycling through `SEED_CONTENT`.
 ///
-/// Warms up the ONNX runtime as a side effect: after this call the embedding
-/// model is fully loaded and subsequent calls reflect steady-state latency.
+/// Batching keeps seeding time manageable for large corpora: ONNX runs one
+/// inference pass per batch instead of per item. Also warms the ONNX runtime
+/// as a side effect; subsequent calls reflect steady-state latency.
+///
+/// Approximate seeding times (bge-small, M-series Mac): 100 ~1s, 1k ~5s,
+/// 10k ~30s, 100k ~5min.
 fn seed(client: &mut McpClient, count: usize) {
-    for i in 0..count {
-        client.store(SEED_CONTENT[i % SEED_CONTENT.len()], &["seeded"]);
+    const BATCH: usize = 100;
+    let mut i = 0;
+    while i < count {
+        let n = (count - i).min(BATCH);
+        let items: Vec<Value> = (0..n)
+            .map(|j| {
+                json!({
+                    "content": SEED_CONTENT[(i + j) % SEED_CONTENT.len()],
+                    "tags": ["seeded"],
+                    "memory_type": "reference"
+                })
+            })
+            .collect();
+        client.call_tool("memory_store_batch", json!({"items": items}));
+        i += n;
     }
 }
 
@@ -238,17 +255,21 @@ fn bench_write(c: &mut Criterion) {
 }
 
 fn bench_search(c: &mut Criterion) {
-    let tmp = TempDir::new().unwrap();
-    let mut client = McpClient::new(tmp.path());
-    // Seeding 100 memories; primes the ONNX runtime as a side effect
-    seed(&mut client, 100);
-
     let mut group = c.benchmark_group("search");
-    group.measurement_time(Duration::from_secs(20));
-    group.sample_size(30);
-    group.bench_function("n100", |b| {
-        b.iter(|| client.search(BENCH_QUERY, 10));
-    });
+    group.measurement_time(Duration::from_secs(30));
+    group.sample_size(20);
+
+    // Each corpus size gets its own isolated server process and DB.
+    // Seeding happens before the timed section; see seed() for time estimates.
+    for &n in &[100usize, 1_000, 10_000, 100_000] {
+        let tmp = TempDir::new().unwrap();
+        let mut client = McpClient::new(tmp.path());
+        seed(&mut client, n);
+        group.bench_with_input(BenchmarkId::new("n", n), &n, |b, _| {
+            b.iter(|| client.search(BENCH_QUERY, 10));
+        });
+    }
+
     group.finish();
 }
 
