@@ -1,4 +1,7 @@
-use crate::db::types::{MemorySeverity, MemoryStatus, MemoryType};
+use crate::db::types::{
+    MemoryAttrOutcome, MemoryAttrPhase, MemoryAttrPriority, MemoryAttrSeverity, MemoryAttrs,
+    MemoryStatus, MemoryType,
+};
 
 /// Holds the optional metadata fields for inserting a new memory row.
 #[derive(Default)]
@@ -15,10 +18,8 @@ pub struct InsertOptions<'a> {
     pub decay_rate: Option<f64>,
     /// Optional classification of the memory's origin or intended use.
     pub memory_type: Option<MemoryType>,
-    /// Optional lifecycle status; defaults to NULL (no status).
-    pub status: Option<MemoryStatus>,
-    /// Optional urgency or impact level; defaults to NULL.
-    pub severity: Option<MemorySeverity>,
+    /// Type-specific extra fields; None stores an empty attrs object '{}'.
+    pub attrs: Option<MemoryAttrs>,
     /// Outgoing directed links as (target id, kind) pairs; defaults to empty.
     pub relations: &'a [(i64, String)],
     /// External reference pointers; defaults to empty.
@@ -46,14 +47,8 @@ pub struct UpdateOptions<'a> {
     pub memory_type: Option<MemoryType>,
     /// When true, sets the type column to NULL regardless of `memory_type`.
     pub clear_memory_type: bool,
-    /// Replacement lifecycle status; set to NULL when `clear_status` is true.
-    pub status: Option<MemoryStatus>,
-    /// When true, sets the status column to NULL regardless of `status`.
-    pub clear_status: bool,
-    /// Replacement severity level; set to NULL when `clear_severity` is true.
-    pub severity: Option<MemorySeverity>,
-    /// When true, sets the severity column to NULL regardless of `severity`.
-    pub clear_severity: bool,
+    /// Replacement attrs; replaces the full set when Some, pass Some(MemoryAttrs::default()) to clear.
+    pub attrs: Option<MemoryAttrs>,
     /// Replacement outgoing relations as (target id, kind) pairs; replaces the full set when provided.
     pub relations: Option<&'a [(i64, String)]>,
     /// Replacement external reference pointers; replaces the full set when provided.
@@ -70,7 +65,13 @@ pub struct FilterOptions<'a> {
     /// Restricts results to the given lifecycle status.
     pub status: Option<MemoryStatus>,
     /// Restricts results to the given severity level.
-    pub severity: Option<MemorySeverity>,
+    pub severity: Option<MemoryAttrSeverity>,
+    /// Restricts results to the given priority level.
+    pub priority: Option<MemoryAttrPriority>,
+    /// Restricts results to the given decision outcome.
+    pub outcome: Option<MemoryAttrOutcome>,
+    /// Restricts results to the given plan phase.
+    pub phase: Option<MemoryAttrPhase>,
     /// Restricts results to memories whose refs array contains this substring.
     pub refs_contain: Option<&'a str>,
 }

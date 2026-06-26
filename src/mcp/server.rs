@@ -15,21 +15,31 @@ use rmcp::{
 use tokio::sync::{Notify, OnceCell};
 
 use super::params::{
-    BatchStoreParams, DeleteParams, GraphStatsParams, HubsParams, ListParams, NeighborsParams,
-    PathParams, RevalidateParams, SearchParams, StoreParams, TagsParams, TraverseParams,
-    UpdateParams,
+    BatchStoreParams, DeleteParams, EmptyParams, HubsParams, ListParams, NeighborsParams,
+    PathParams, RevalidateParams, SearchParams, StoreParams, TraverseParams, UpdateParams,
 };
 use crate::{
     config::Config,
     db::{
-        BatchInsertItem, FilterOptions, InsertOptions, MemorySeverity, MemoryStatus, MemoryStore,
-        MemoryType, TraverseDirection, UpdateOptions,
+        BatchInsertItem, FilterOptions, InsertOptions, MemoryAttrOutcome, MemoryAttrPhase,
+        MemoryAttrPriority, MemoryAttrSeverity, MemoryStatus, MemoryStore, MemoryType,
+        TraverseDirection, UpdateOptions,
     },
     embedding::EmbeddingService,
 };
 
 /// Initial instructions for the MCP client (caveman style).
 const INSTRUCTIONS: &str = include_str!("instructions.md");
+
+// Parses an Optional<String> filter field into the typed enum, returning early on error.
+macro_rules! parse_filter {
+    ($opt:expr, $ty:ty) => {
+        match $opt.as_deref().map(|s| s.parse::<$ty>()).transpose() {
+            Ok(v) => v,
+            Err(e) => return tool_err(e),
+        }
+    };
+}
 
 pub struct MemServer {
     db_path: OnceLock<PathBuf>,
@@ -147,23 +157,11 @@ impl MemServer {
         if p.content.trim().is_empty() {
             return tool_err("content must not be blank");
         }
-        let memory_type = match MemoryType::try_from(p.memory_type.as_str()) {
+        let memory_type = match p.memory_type.parse::<MemoryType>() {
             Ok(t) => t,
-            Err(msg) => return tool_err(msg),
+            Err(e) => return tool_err(e),
         };
-        let status = match p.status.as_deref().map(MemoryStatus::try_from).transpose() {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
-        };
-        let severity = match p
-            .severity
-            .as_deref()
-            .map(MemorySeverity::try_from)
-            .transpose()
-        {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
-        };
+        let attrs = p.attrs;
         let tags = p.tags.unwrap_or_default();
         let refs = p.refs.unwrap_or_default();
         let relations = match parse_relations(p.relations) {
@@ -189,8 +187,7 @@ impl MemServer {
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
                     memory_type: Some(memory_type),
-                    status,
-                    severity,
+                    attrs,
                     relations: &relations,
                     refs: &refs,
                 },
@@ -221,46 +218,24 @@ impl MemServer {
             return tool_err(format!("too many items: {} (maximum 100)", p.items.len()));
         }
 
-        // Validating memory_type, status, and severity for all items before embedding anything
+        // Validating memory_type and attrs for all items before embedding anything
         let mut parsed_types: Vec<Option<MemoryType>> = Vec::with_capacity(p.items.len());
-        let mut parsed_statuses: Vec<Option<MemoryStatus>> = Vec::with_capacity(p.items.len());
-        let mut parsed_severities: Vec<Option<MemorySeverity>> = Vec::with_capacity(p.items.len());
         let mut parsed_relations: Vec<Vec<(i64, String)>> = Vec::with_capacity(p.items.len());
         for (i, item) in p.items.iter().enumerate() {
             let mt = match item
                 .memory_type
                 .as_deref()
-                .map(MemoryType::try_from)
+                .map(|s| s.parse::<MemoryType>())
                 .transpose()
             {
                 Ok(v) => v,
-                Err(msg) => return tool_err(format!("item {i}: {msg}")),
-            };
-            let st = match item
-                .status
-                .as_deref()
-                .map(MemoryStatus::try_from)
-                .transpose()
-            {
-                Ok(v) => v,
-                Err(msg) => return tool_err(format!("item {i}: {msg}")),
-            };
-            let sev = match item
-                .severity
-                .as_deref()
-                .map(MemorySeverity::try_from)
-                .transpose()
-            {
-                Ok(v) => v,
-                Err(msg) => return tool_err(format!("item {i}: {msg}")),
+                Err(e) => return tool_err(format!("item {i}: {e}")),
             };
             let rels = match parse_relations(item.relations.clone()) {
                 Ok(r) => r,
                 Err(msg) => return tool_err(format!("item {i}: {msg}")),
             };
             parsed_types.push(mt);
-            parsed_statuses.push(st);
-            parsed_severities.push(sev);
             parsed_relations.push(rels);
         }
 
@@ -275,8 +250,6 @@ impl MemServer {
         // Assembling BatchInsertItem values; all parallel vecs have the same length as p.items
         let mut embeddings = embeddings.into_iter();
         let mut parsed_types = parsed_types.into_iter();
-        let mut parsed_statuses = parsed_statuses.into_iter();
-        let mut parsed_severities = parsed_severities.into_iter();
         let mut parsed_relations = parsed_relations.into_iter();
         let batch_items: Vec<BatchInsertItem> = p
             .items
@@ -290,8 +263,7 @@ impl MemServer {
                 confidence: item.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
                 decay_rate: item.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
                 memory_type: parsed_types.next().unwrap(),
-                status: parsed_statuses.next().unwrap(),
-                severity: parsed_severities.next().unwrap(),
+                attrs: item.attrs.unwrap_or_default(),
                 relations: parsed_relations.next().unwrap(),
                 refs: item.refs.unwrap_or_default(),
             })
@@ -325,28 +297,12 @@ impl MemServer {
         if p.query.trim().is_empty() {
             return tool_err("query must not be blank");
         }
-        let memory_type = match p
-            .memory_type
-            .as_deref()
-            .map(MemoryType::try_from)
-            .transpose()
-        {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
-        };
-        let status = match p.status.as_deref().map(MemoryStatus::try_from).transpose() {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
-        };
-        let severity = match p
-            .severity
-            .as_deref()
-            .map(MemorySeverity::try_from)
-            .transpose()
-        {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
-        };
+        let memory_type = parse_filter!(p.memory_type, MemoryType);
+        let status = parse_filter!(p.status, MemoryStatus);
+        let severity = parse_filter!(p.severity, MemoryAttrSeverity);
+        let priority = parse_filter!(p.priority, MemoryAttrPriority);
+        let outcome = parse_filter!(p.outcome, MemoryAttrOutcome);
+        let phase = parse_filter!(p.phase, MemoryAttrPhase);
         let limit = p.limit.unwrap_or(10).min(100);
         let Some(store) = self.store_if_present().await? else {
             return Ok(CallToolResult::success(vec![Content::text("[]")]));
@@ -365,6 +321,9 @@ impl MemServer {
                     memory_type,
                     status,
                     severity,
+                    priority,
+                    outcome,
+                    phase,
                     refs_contain: p.refs_contain.as_deref(),
                 },
                 limit,
@@ -387,8 +346,7 @@ impl MemServer {
                     "effective_confidence": m.effective_confidence(),
                     "age_days":             m.age_days(),
                     "memory_type":          m.memory_type,
-                    "status":               m.status,
-                    "severity":             m.severity,
+                    "attrs":                m.attrs,
                     "relations":            m.relations,
                     "refs":                 m.refs,
                     "freshness_warning":    m.freshness_warning(),
@@ -408,28 +366,12 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<ListParams>,
     ) -> Result<CallToolResult, McpError> {
-        let memory_type = match p
-            .memory_type
-            .as_deref()
-            .map(MemoryType::try_from)
-            .transpose()
-        {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
-        };
-        let status = match p.status.as_deref().map(MemoryStatus::try_from).transpose() {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
-        };
-        let severity = match p
-            .severity
-            .as_deref()
-            .map(MemorySeverity::try_from)
-            .transpose()
-        {
-            Ok(v) => v,
-            Err(msg) => return tool_err(msg),
-        };
+        let memory_type = parse_filter!(p.memory_type, MemoryType);
+        let status = parse_filter!(p.status, MemoryStatus);
+        let severity = parse_filter!(p.severity, MemoryAttrSeverity);
+        let priority = parse_filter!(p.priority, MemoryAttrPriority);
+        let outcome = parse_filter!(p.outcome, MemoryAttrOutcome);
+        let phase = parse_filter!(p.phase, MemoryAttrPhase);
         let limit = p.limit.unwrap_or(20).min(100);
         let offset = p.offset.unwrap_or(0);
         let Some(store) = self.store_if_present().await? else {
@@ -442,6 +384,9 @@ impl MemServer {
                     memory_type,
                     status,
                     severity,
+                    priority,
+                    outcome,
+                    phase,
                     refs_contain: p.refs_contain.as_deref(),
                 },
                 limit,
@@ -467,8 +412,7 @@ impl MemServer {
                     "effective_confidence": m.effective_confidence(),
                     "age_days":             m.age_days(),
                     "memory_type":          m.memory_type,
-                    "status":               m.status,
-                    "severity":             m.severity,
+                    "attrs":                m.attrs,
                     "relations":            m.relations,
                     "refs":                 m.refs,
                     "freshness_warning":    m.freshness_warning(),
@@ -486,7 +430,7 @@ impl MemServer {
     )]
     async fn memory_tags(
         &self,
-        Parameters(_p): Parameters<TagsParams>,
+        Parameters(_p): Parameters<EmptyParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.store_if_present().await? else {
             return Ok(CallToolResult::success(vec![Content::text("[]")]));
@@ -539,39 +483,22 @@ impl MemServer {
             && p.confidence.is_none()
             && p.decay_rate.is_none()
             && p.memory_type.is_none()
-            && p.status.is_none()
-            && p.severity.is_none()
+            && p.attrs.is_none()
             && p.relations.is_none()
             && p.refs.is_none()
         {
             return tool_err(
-                "at least one of content, summary, tags, context, confidence, decay_rate, memory_type, status, severity, relations, or refs must be provided",
+                "at least one of content, summary, tags, context, confidence, decay_rate, memory_type, attrs, relations, or refs must be provided",
             );
         }
 
-        // Parsing nullable enum fields: empty string clears the column
-        let (update_status, clear_status) = match p.status.as_deref() {
-            None => (None, false),
-            Some("") => (None, true),
-            Some(s) => match MemoryStatus::try_from(s) {
-                Ok(st) => (Some(st), false),
-                Err(msg) => return tool_err(msg),
-            },
-        };
-        let (update_severity, clear_severity) = match p.severity.as_deref() {
-            None => (None, false),
-            Some("") => (None, true),
-            Some(s) => match MemorySeverity::try_from(s) {
-                Ok(sev) => (Some(sev), false),
-                Err(msg) => return tool_err(msg),
-            },
-        };
+        let update_attrs = p.attrs;
         let (update_memory_type, clear_memory_type) = match p.memory_type.as_deref() {
             None => (None, false),
             Some("") => (None, true),
-            Some(s) => match MemoryType::try_from(s) {
+            Some(s) => match s.parse::<MemoryType>() {
                 Ok(mt) => (Some(mt), false),
-                Err(msg) => return tool_err(msg),
+                Err(e) => return tool_err(e),
             },
         };
         let Some(store) = self.store_if_present().await? else {
@@ -609,10 +536,7 @@ impl MemServer {
                     decay_rate: p.decay_rate,
                     memory_type: update_memory_type,
                     clear_memory_type,
-                    status: update_status,
-                    clear_status,
-                    severity: update_severity,
-                    clear_severity,
+                    attrs: update_attrs,
                     relations: update_relations.as_deref(),
                     refs: update_refs,
                 },
@@ -676,7 +600,7 @@ impl MemServer {
                     "id":                   m.id,
                     "summary":              m.summary,
                     "memory_type":          m.memory_type,
-                    "status":               m.status,
+                    "attrs":                m.attrs,
                     "effective_confidence": m.effective_confidence(),
                 })
             });
@@ -727,7 +651,7 @@ impl MemServer {
                     "via_kind":             n.via_kind,
                     "summary":              m.summary,
                     "memory_type":          m.memory_type,
-                    "status":               m.status,
+                    "attrs":                m.attrs,
                     "effective_confidence": m.effective_confidence(),
                     "tags":                 m.tags,
                 })
@@ -824,7 +748,7 @@ impl MemServer {
     )]
     async fn memory_stats(
         &self,
-        Parameters(_p): Parameters<GraphStatsParams>,
+        Parameters(_p): Parameters<EmptyParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.store_if_present().await? else {
             return Ok(CallToolResult::success(vec![Content::text(

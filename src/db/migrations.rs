@@ -70,6 +70,24 @@ const MIGRATIONS: &[&[&str]] = &[
         "drop index if exists memories_agent",
         "alter table memories drop column agent",
     ],
+    // v12 -> v13: merges status/severity columns into the free-form attrs JSON bag;
+    // filtering still works via json_extract(attrs, '$.status') etc.
+    &[
+        "alter table memories add column attrs text not null default '{}'",
+        "update memories set attrs = (
+            case
+                when status is not null and severity is not null
+                    then json_object('status', status, 'severity', severity)
+                when status is not null
+                    then json_object('status', status)
+                when severity is not null
+                    then json_object('severity', severity)
+                else '{}'
+            end
+        ) where status is not null or severity is not null",
+        "alter table memories drop column status",
+        "alter table memories drop column severity",
+    ],
 ];
 
 /// Applies all pending migrations, each wrapped in an explicit transaction.

@@ -32,6 +32,9 @@ schemars = "1"
 # Error handling
 anyhow = "1"
 
+# Enum string conversion
+strum = { version = "0.27", features = ["derive"] }
+
 # Utilities
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"

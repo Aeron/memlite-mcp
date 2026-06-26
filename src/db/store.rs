@@ -9,7 +9,7 @@ use super::helpers::{
 };
 use super::options::{FilterOptions, InsertOptions, UpdateOptions};
 use super::types::{
-    BatchInsertItem, GraphStats, HubEntry, Memory, MemoryType, NeighborInfo, Neighbors, PathStep,
+    BatchInsertItem, GraphStats, HubEntry, Memory, NeighborInfo, Neighbors, PathStep,
     TraverseDirection, TraverseNode, TraverseResult,
 };
 
@@ -80,8 +80,7 @@ impl MemoryStore {
             confidence,
             decay_rate,
             memory_type,
-            status,
-            severity,
+            attrs,
             relations,
             refs,
         } = opts;
@@ -92,14 +91,15 @@ impl MemoryStore {
         let confidence = confidence.unwrap_or(1.0).clamp(0.0, 1.0);
         let decay_rate = decay_rate.unwrap_or(0.0).clamp(0.0, 1.0);
         let refs_json = serde_json::to_string(refs)?;
+        let attrs_json = serde_json::to_string(&attrs.unwrap_or_default())?;
 
         // Inserting the main memory row
         let mut rows = conn
             .query(
                 "insert into memories (
                     content, summary, tags, embedding, created_at, updated_at, context,
-                    confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    confidence, decay_rate, last_seen_at, type, relations, refs, attrs
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 returning rowid",
                 libsql::params_from_iter([
                     Value::Text(content.to_owned()),
@@ -117,16 +117,11 @@ impl MemoryStore {
                     Value::Real(decay_rate),
                     Value::Integer(now),
                     memory_type
-                        .map(|mt| Value::Text(mt.as_str().to_owned()))
-                        .unwrap_or(Value::Null),
-                    status
-                        .map(|s| Value::Text(s.as_str().to_owned()))
-                        .unwrap_or(Value::Null),
-                    severity
-                        .map(|s| Value::Text(s.as_str().to_owned()))
+                        .map(|mt| Value::Text(mt.to_string()))
                         .unwrap_or(Value::Null),
                     Value::Text(relations_to_json(relations)?),
                     Value::Text(refs_json),
+                    Value::Text(attrs_json),
                 ]),
             )
             .await?;
@@ -173,13 +168,14 @@ impl MemoryStore {
         let now = unix_secs();
         let sql = "insert into memories (
                 content, summary, tags, embedding, created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                confidence, decay_rate, last_seen_at, type, relations, refs, attrs
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         let mut ids = Vec::with_capacity(items.len());
 
         for item in &items {
             let tags_json = serde_json::to_string(&item.tags)?;
             let item_refs_json = serde_json::to_string(&item.refs)?;
+            let item_attrs_json = serde_json::to_string(&item.attrs)?;
             let emb_blob = floats_to_blob(&item.embedding);
 
             tx.execute(
@@ -202,16 +198,11 @@ impl MemoryStore {
                     Value::Real(item.decay_rate),
                     Value::Integer(now),
                     item.memory_type
-                        .map(|mt| Value::Text(mt.as_str().to_owned()))
-                        .unwrap_or(Value::Null),
-                    item.status
-                        .map(|s| Value::Text(s.as_str().to_owned()))
-                        .unwrap_or(Value::Null),
-                    item.severity
-                        .map(|s| Value::Text(s.as_str().to_owned()))
+                        .map(|mt| Value::Text(mt.to_string()))
                         .unwrap_or(Value::Null),
                     Value::Text(relations_to_json(&item.relations)?),
                     Value::Text(item_refs_json),
+                    Value::Text(item_attrs_json),
                 ]),
             )
             .await?;
@@ -261,22 +252,15 @@ impl MemoryStore {
         let emb_blob = floats_to_blob(query_embedding);
         let candidate_limit = (limit as i64).saturating_mul(4).min(400);
         let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
-        let where_sql = build_where(
-            filter.tags,
-            filter.memory_type,
-            filter.status,
-            filter.severity,
-            filter.refs_contain,
-            &mut params,
-        )?;
+        let where_sql = build_where(&filter, &mut params)?;
         params.push(Value::Integer(candidate_limit));
 
-        // NOTE: dist is placed last so parse_memory_row can use a fixed column range (0-15)
+        // NOTE: dist is placed last so parse_memory_row can use a fixed column range (0-13)
         let sql = format!(
             "select
                 rowid, content, summary, tags,
                 created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, status, severity, relations, refs,
+                confidence, decay_rate, last_seen_at, type, relations, refs, attrs,
                 vector_distance_cos(embedding, ?) as dist
             from memories
             {where_sql}
@@ -288,7 +272,7 @@ impl MemoryStore {
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             let memory = parse_memory_row(&row)?;
-            let dist: f64 = row.get(15)?;
+            let dist: f64 = row.get(14)?;
             results.push((memory, dist));
         }
 
@@ -306,21 +290,14 @@ impl MemoryStore {
     ) -> Result<Vec<Memory>> {
         let conn = self.db.connect()?;
         let mut params: Vec<Value> = Vec::new();
-        let where_sql = build_where(
-            filter.tags,
-            filter.memory_type,
-            filter.status,
-            filter.severity,
-            filter.refs_contain,
-            &mut params,
-        )?;
+        let where_sql = build_where(&filter, &mut params)?;
         params.push(Value::Integer(limit as i64));
         params.push(Value::Integer(offset as i64));
 
         let sql = format!(
             "select
                 rowid, content, summary, tags, created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
+                confidence, decay_rate, last_seen_at, type, relations, refs, attrs
             from memories
             {where_sql}
             order by created_at desc
@@ -394,7 +371,8 @@ impl MemoryStore {
     ///
     /// - `summary = Some("")` clears the summary (sets to NULL).
     /// - `context = Some("")` clears the context (sets to NULL).
-    /// - `clear_memory_type/status/severity = true` sets the column to NULL.
+    /// - `clear_memory_type = true` sets the type column to NULL.
+    /// - `attrs = Some({})` clears all type-specific extra fields.
     /// - Supplying a new `embedding` alongside updated content keeps the index
     ///   consistent; pass None to leave the stored vector unchanged.
     /// - `confidence` and `decay_rate` are clamped to [0.0, 1.0] when provided.
@@ -413,10 +391,7 @@ impl MemoryStore {
             decay_rate,
             memory_type,
             clear_memory_type,
-            status,
-            clear_status,
-            severity,
-            clear_severity,
+            attrs,
             relations,
             refs,
         } = opts;
@@ -429,10 +404,7 @@ impl MemoryStore {
             && decay_rate.is_none()
             && memory_type.is_none()
             && !clear_memory_type
-            && status.is_none()
-            && !clear_status
-            && severity.is_none()
-            && !clear_severity
+            && attrs.is_none()
             && relations.is_none()
             && refs.is_none()
         {
@@ -484,21 +456,13 @@ impl MemoryStore {
         }
         if let Some(mt) = memory_type {
             set_clauses.push("type = ?");
-            params.push(Value::Text(mt.as_str().to_owned()));
+            params.push(Value::Text(mt.to_string()));
         } else if clear_memory_type {
             set_clauses.push("type = null");
         }
-        if let Some(st) = status {
-            set_clauses.push("status = ?");
-            params.push(Value::Text(st.as_str().to_owned()));
-        } else if clear_status {
-            set_clauses.push("status = null");
-        }
-        if let Some(sev) = severity {
-            set_clauses.push("severity = ?");
-            params.push(Value::Text(sev.as_str().to_owned()));
-        } else if clear_severity {
-            set_clauses.push("severity = null");
+        if let Some(a) = &attrs {
+            set_clauses.push("attrs = ?");
+            params.push(Value::Text(serde_json::to_string(a)?));
         }
         if let Some(rels) = relations {
             set_clauses.push("relations = ?");
@@ -956,7 +920,7 @@ impl MemoryStore {
             };
             let memory_type = match row.get_value(4)? {
                 Value::Null => None,
-                Value::Text(s) => MemoryType::from_str(&s),
+                Value::Text(s) => s.parse().ok(),
                 _ => None,
             };
             entries.push(HubEntry {
@@ -1041,8 +1005,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
-    use crate::db::MemorySeverity;
-    use crate::db::MemoryStatus;
+    use crate::db::{MemoryAttrSeverity, MemoryAttrs, MemoryStatus, MemoryType};
 
     async fn fresh() -> (MemoryStore, NamedTempFile) {
         let tmp = NamedTempFile::new().unwrap();
@@ -1686,7 +1649,10 @@ mod tests {
                 "fix login crash",
                 &V1,
                 InsertOptions {
-                    status: Some(MemoryStatus::Open),
+                    attrs: Some(MemoryAttrs {
+                        status: Some(MemoryStatus::Open),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
@@ -1695,7 +1661,7 @@ mod tests {
         let rows = store.list(FilterOptions::default(), 10, 0).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, id);
-        assert_eq!(rows[0].status, Some(MemoryStatus::Open));
+        assert_eq!(rows[0].attrs.status, Some(MemoryStatus::Open));
     }
 
     #[tokio::test]
@@ -1706,7 +1672,10 @@ mod tests {
                 "open issue",
                 &V1,
                 InsertOptions {
-                    status: Some(MemoryStatus::Open),
+                    attrs: Some(MemoryAttrs {
+                        status: Some(MemoryStatus::Open),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
@@ -1717,7 +1686,10 @@ mod tests {
                 "resolved issue",
                 &V1,
                 InsertOptions {
-                    status: Some(MemoryStatus::Resolved),
+                    attrs: Some(MemoryAttrs {
+                        status: Some(MemoryStatus::Resolved),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
@@ -1768,7 +1740,10 @@ mod tests {
                 "track this",
                 &V1,
                 InsertOptions {
-                    status: Some(MemoryStatus::Open),
+                    attrs: Some(MemoryAttrs {
+                        status: Some(MemoryStatus::Open),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
@@ -1779,7 +1754,10 @@ mod tests {
             .update(
                 id,
                 UpdateOptions {
-                    status: Some(MemoryStatus::Resolved),
+                    attrs: Some(MemoryAttrs {
+                        status: Some(MemoryStatus::Resolved),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
@@ -1788,7 +1766,7 @@ mod tests {
         assert!(updated);
 
         let rows = store.list(FilterOptions::default(), 1, 0).await.unwrap();
-        assert_eq!(rows[0].status, Some(MemoryStatus::Resolved));
+        assert_eq!(rows[0].attrs.status, Some(MemoryStatus::Resolved));
     }
 
     #[tokio::test]
@@ -1811,8 +1789,10 @@ mod tests {
                 confidence: 1.0,
                 decay_rate: 0.0,
                 memory_type: Some(MemoryType::Project),
-                status: Some(MemoryStatus::Open),
-                severity: None,
+                attrs: MemoryAttrs {
+                    status: Some(MemoryStatus::Open),
+                    ..Default::default()
+                },
                 relations: vec![],
                 refs: vec![],
             },
@@ -1825,8 +1805,10 @@ mod tests {
                 confidence: 0.8,
                 decay_rate: 0.01,
                 memory_type: None,
-                status: Some(MemoryStatus::Resolved),
-                severity: None,
+                attrs: MemoryAttrs {
+                    status: Some(MemoryStatus::Resolved),
+                    ..Default::default()
+                },
                 relations: vec![],
                 refs: vec![],
             },
@@ -1846,8 +1828,8 @@ mod tests {
         assert_eq!(first.summary.as_deref(), Some("s1"));
         assert_eq!(first.tags, ["a"]);
         assert_eq!(first.memory_type, Some(MemoryType::Project));
-        assert_eq!(first.status, Some(MemoryStatus::Open));
-        assert_eq!(second.status, Some(MemoryStatus::Resolved));
+        assert_eq!(first.attrs.status, Some(MemoryStatus::Open));
+        assert_eq!(second.attrs.status, Some(MemoryStatus::Resolved));
     }
 
     #[tokio::test]
@@ -1858,7 +1840,10 @@ mod tests {
                 "sql injection in login",
                 &V1,
                 InsertOptions {
-                    severity: Some(MemorySeverity::Critical),
+                    attrs: Some(MemoryAttrs {
+                        severity: Some(MemoryAttrSeverity::Critical),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
@@ -1866,7 +1851,7 @@ mod tests {
             .unwrap();
         let rows = store.list(FilterOptions::default(), 10, 0).await.unwrap();
         assert_eq!(rows[0].id, id);
-        assert_eq!(rows[0].severity, Some(MemorySeverity::Critical));
+        assert_eq!(rows[0].attrs.severity, Some(MemoryAttrSeverity::Critical));
     }
 
     #[tokio::test]
@@ -1877,7 +1862,10 @@ mod tests {
                 "critical bug",
                 &V1,
                 InsertOptions {
-                    severity: Some(MemorySeverity::Critical),
+                    attrs: Some(MemoryAttrs {
+                        severity: Some(MemoryAttrSeverity::Critical),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
@@ -1888,7 +1876,10 @@ mod tests {
                 "low priority",
                 &V1,
                 InsertOptions {
-                    severity: Some(MemorySeverity::Low),
+                    attrs: Some(MemoryAttrs {
+                        severity: Some(MemoryAttrSeverity::Low),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
@@ -1902,7 +1893,7 @@ mod tests {
         let critical = store
             .list(
                 FilterOptions {
-                    severity: Some(MemorySeverity::Critical),
+                    severity: Some(MemoryAttrSeverity::Critical),
                     ..Default::default()
                 },
                 10,
@@ -1925,7 +1916,10 @@ mod tests {
                 "medium issue",
                 &V1,
                 InsertOptions {
-                    severity: Some(MemorySeverity::Medium),
+                    attrs: Some(MemoryAttrs {
+                        severity: Some(MemoryAttrSeverity::Medium),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
@@ -1935,14 +1929,17 @@ mod tests {
             .update(
                 id,
                 UpdateOptions {
-                    severity: Some(MemorySeverity::High),
+                    attrs: Some(MemoryAttrs {
+                        severity: Some(MemoryAttrSeverity::High),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
             .await
             .unwrap();
         let rows = store.list(FilterOptions::default(), 1, 0).await.unwrap();
-        assert_eq!(rows[0].severity, Some(MemorySeverity::High));
+        assert_eq!(rows[0].attrs.severity, Some(MemoryAttrSeverity::High));
     }
 
     #[tokio::test]

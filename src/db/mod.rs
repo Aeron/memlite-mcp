@@ -9,5 +9,6 @@ pub use options::{FilterOptions, InsertOptions, UpdateOptions};
 pub use store::MemoryStore;
 
 pub use types::{
-    BatchInsertItem, MemorySeverity, MemoryStatus, MemoryType, NeighborInfo, TraverseDirection,
+    BatchInsertItem, MemoryAttrOutcome, MemoryAttrPhase, MemoryAttrPriority, MemoryAttrSeverity,
+    MemoryAttrs, MemoryStatus, MemoryType, NeighborInfo, TraverseDirection,
 };

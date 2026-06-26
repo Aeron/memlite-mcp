@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use strum::{Display, EnumString};
+
 use super::helpers::unix_secs;
 
 /// Represents a single stored memory row.
@@ -28,10 +30,8 @@ pub struct Memory {
     pub last_seen_at: i64,
     /// Optional classification of the memory's origin or intended use.
     pub memory_type: Option<MemoryType>,
-    /// Optional lifecycle state; most meaningful for task and issue memories.
-    pub status: Option<MemoryStatus>,
-    /// Optional urgency or impact level; most meaningful for finding, issue, and task memories.
-    pub severity: Option<MemorySeverity>,
+    /// Type-specific extra fields; serialized to the attrs JSON column.
+    pub attrs: MemoryAttrs,
     /// Outgoing directed links keyed by stringified target identifier with a free-form kind label.
     pub relations: std::collections::BTreeMap<String, String>,
     /// External reference pointers: file paths, symbol names, URLs, issue IDs, etc.
@@ -101,8 +101,9 @@ impl Memory {
 }
 
 /// Classifies a memory's intended use, enabling targeted filtering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum MemoryType {
     /// Facts about the person: preferences, identity, working style.
     User,
@@ -122,50 +123,21 @@ pub enum MemoryType {
     Plan,
 }
 
-impl MemoryType {
-    /// Returns the lowercase string representation of the variant.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            MemoryType::User => "user",
-            MemoryType::Project => "project",
-            MemoryType::Reference => "reference",
-            MemoryType::Task => "task",
-            MemoryType::Finding => "finding",
-            MemoryType::Issue => "issue",
-            MemoryType::Decision => "decision",
-            MemoryType::Plan => "plan",
-        }
-    }
-
-    /// Parses a lowercase string into the matching variant, returning None on mismatch.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "user" => Some(MemoryType::User),
-            "project" => Some(MemoryType::Project),
-            "reference" => Some(MemoryType::Reference),
-            "task" => Some(MemoryType::Task),
-            "finding" => Some(MemoryType::Finding),
-            "issue" => Some(MemoryType::Issue),
-            "decision" => Some(MemoryType::Decision),
-            "plan" => Some(MemoryType::Plan),
-            _ => None,
-        }
-    }
-}
-
-impl TryFrom<&str> for MemoryType {
-    type Error = String;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Self::from_str(s).ok_or_else(|| {
-            format!("unknown memory_type {s:?}; expected: user, project, reference, task, finding, issue, decision, or plan")
-        })
-    }
-}
-
 /// Tracks the lifecycle state of a memory; most useful for task and issue types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    Display,
+    EnumString,
+)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum MemoryStatus {
     /// Active and unresolved; the default when set without further qualification.
     Open,
@@ -177,43 +149,22 @@ pub enum MemoryStatus {
     Deferred,
 }
 
-impl MemoryStatus {
-    /// Returns the lowercase string representation of the variant.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            MemoryStatus::Open => "open",
-            MemoryStatus::Resolved => "resolved",
-            MemoryStatus::Wontfix => "wontfix",
-            MemoryStatus::Deferred => "deferred",
-        }
-    }
-
-    /// Parses a lowercase string into the matching variant, returning None on mismatch.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "open" => Some(MemoryStatus::Open),
-            "resolved" => Some(MemoryStatus::Resolved),
-            "wontfix" => Some(MemoryStatus::Wontfix),
-            "deferred" => Some(MemoryStatus::Deferred),
-            _ => None,
-        }
-    }
-}
-
-impl TryFrom<&str> for MemoryStatus {
-    type Error = String;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Self::from_str(s).ok_or_else(|| {
-            format!("unknown status {s:?}; expected: open, resolved, wontfix, or deferred")
-        })
-    }
-}
-
 /// Indicates the urgency or impact of a finding, issue, or task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    Display,
+    EnumString,
+)]
 #[serde(rename_all = "lowercase")]
-pub enum MemorySeverity {
+#[strum(serialize_all = "lowercase")]
+pub enum MemoryAttrSeverity {
     /// Requires immediate attention; may block work or cause data loss.
     Critical,
     /// Significant impact; should be addressed soon.
@@ -224,37 +175,116 @@ pub enum MemorySeverity {
     Low,
 }
 
-impl MemorySeverity {
-    /// Returns the lowercase string representation of the variant.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            MemorySeverity::Critical => "critical",
-            MemorySeverity::High => "high",
-            MemorySeverity::Medium => "medium",
-            MemorySeverity::Low => "low",
-        }
-    }
-
-    /// Parses a lowercase string into the matching variant, returning None on mismatch.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "critical" => Some(MemorySeverity::Critical),
-            "high" => Some(MemorySeverity::High),
-            "medium" => Some(MemorySeverity::Medium),
-            "low" => Some(MemorySeverity::Low),
-            _ => None,
-        }
-    }
+/// Relative priority of a task.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    Display,
+    EnumString,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum MemoryAttrPriority {
+    /// Needs immediate attention; blocks other work.
+    Urgent,
+    /// Should be addressed soon.
+    High,
+    /// Can be scheduled normally.
+    Medium,
+    /// Address when convenient.
+    Low,
 }
 
-impl TryFrom<&str> for MemorySeverity {
-    type Error = String;
+/// Outcome of an architectural or design decision.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    Display,
+    EnumString,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum MemoryAttrOutcome {
+    /// Chosen and applied.
+    Accepted,
+    /// Evaluated and discarded.
+    Rejected,
+    /// Replaced by a later decision.
+    Superseded,
+    /// Postponed; not yet resolved.
+    Deferred,
+}
 
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Self::from_str(s).ok_or_else(|| {
-            format!("unknown severity {s:?}; expected: critical, high, medium, or low")
-        })
-    }
+/// Execution phase of a plan.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    Display,
+    EnumString,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum MemoryAttrPhase {
+    /// Under construction; not yet approved.
+    Draft,
+    /// Signed off; ready to execute.
+    Approved,
+    /// Currently in progress.
+    Active,
+    /// Finished.
+    Completed,
+}
+
+/// Typed extra fields stored in the attrs column; all fields are optional.
+///
+/// Omitted fields are excluded from JSON (they do not appear as null).
+/// Suggested fields by type:
+///   task: status, priority
+///   issue/finding: status, severity
+///   decision: outcome, reversible
+///   plan: phase, target_date
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct MemoryAttrs {
+    /// Lifecycle state; most useful for task, issue, and finding memories.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<MemoryStatus>,
+    /// Urgency or impact level; most useful for issue and finding memories.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<MemoryAttrSeverity>,
+    /// Relative priority; most useful for task memories.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<MemoryAttrPriority>,
+    /// Decision record outcome; set when memory_type is decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<MemoryAttrOutcome>,
+    /// Whether the decision can be reversed; set when memory_type is decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reversible: Option<bool>,
+    /// Execution phase; set when memory_type is plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<MemoryAttrPhase>,
+    /// Target completion date (ISO format); set when memory_type is plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_date: Option<String>,
 }
 
 /// Holds owned data for a single row in a batch insert operation.
@@ -275,10 +305,8 @@ pub struct BatchInsertItem {
     pub decay_rate: f64,
     /// Optional memory type classification.
     pub memory_type: Option<MemoryType>,
-    /// Optional lifecycle status.
-    pub status: Option<MemoryStatus>,
-    /// Optional urgency or impact level.
-    pub severity: Option<MemorySeverity>,
+    /// Type-specific extra fields; serialized to the attrs JSON column.
+    pub attrs: MemoryAttrs,
     /// Outgoing directed links as (target id, kind) pairs.
     pub relations: Vec<(i64, String)>,
     /// External reference pointers.

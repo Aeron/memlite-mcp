@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use anyhow::{Result, anyhow};
 use libsql::Value;
 
-use super::types::{Memory, MemorySeverity, MemoryStatus, MemoryType};
+use super::options::FilterOptions;
+use super::types::{Memory, MemoryAttrs};
 
 /// Fetches full memory rows for a set of ids, returning a map of id -> Memory.
 /// Missing ids (deleted memories) are silently absent from the result.
@@ -18,7 +19,7 @@ pub(super) async fn fetch_memories_by_ids(
     let sql = format!(
         "select
             rowid, content, summary, tags, created_at, updated_at, context,
-            confidence, decay_rate, last_seen_at, type, status, severity, relations, refs
+            confidence, decay_rate, last_seen_at, type, relations, refs, attrs
          from memories
          where rowid in ({placeholders})"
     );
@@ -32,18 +33,10 @@ pub(super) async fn fetch_memories_by_ids(
     Ok(map)
 }
 
-// Builds a SQL WHERE clause from optional tag, type, and other filters, appending
-// the corresponding bind params in the correct placeholder order.
-pub(super) fn build_where(
-    tags: Option<&[String]>,
-    type_filter: Option<MemoryType>,
-    status_filter: Option<MemoryStatus>,
-    severity_filter: Option<MemorySeverity>,
-    refs_contain: Option<&str>,
-    params: &mut Vec<Value>,
-) -> Result<String> {
+// Builds a SQL WHERE clause from FilterOptions, appending bind params in placeholder order.
+pub(super) fn build_where(filter: &FilterOptions<'_>, params: &mut Vec<Value>) -> Result<String> {
     let mut clauses: Vec<String> = Vec::new();
-    if let Some(ts) = tags.filter(|t| !t.is_empty()) {
+    if let Some(ts) = filter.tags.filter(|t| !t.is_empty()) {
         // Using normalized memory_tags table for indexed filtering
         clauses.push(
             "rowid in (
@@ -58,19 +51,31 @@ pub(super) fn build_where(
         params.push(Value::Text(serde_json::to_string(ts)?));
         params.push(Value::Integer(ts.len() as i64));
     }
-    if let Some(mt) = type_filter {
+    if let Some(mt) = filter.memory_type {
         clauses.push("type = ?".into());
-        params.push(Value::Text(mt.as_str().to_owned()));
+        params.push(Value::Text(mt.to_string()));
     }
-    if let Some(sf) = status_filter {
-        clauses.push("status = ?".into());
-        params.push(Value::Text(sf.as_str().to_owned()));
+    if let Some(sf) = filter.status {
+        clauses.push("json_extract(attrs, '$.status') = ?".into());
+        params.push(Value::Text(sf.to_string()));
     }
-    if let Some(sev) = severity_filter {
-        clauses.push("severity = ?".into());
-        params.push(Value::Text(sev.as_str().to_owned()));
+    if let Some(sev) = filter.severity {
+        clauses.push("json_extract(attrs, '$.severity') = ?".into());
+        params.push(Value::Text(sev.to_string()));
     }
-    if let Some(rc) = refs_contain {
+    if let Some(p) = filter.priority {
+        clauses.push("json_extract(attrs, '$.priority') = ?".into());
+        params.push(Value::Text(p.to_string()));
+    }
+    if let Some(o) = filter.outcome {
+        clauses.push("json_extract(attrs, '$.outcome') = ?".into());
+        params.push(Value::Text(o.to_string()));
+    }
+    if let Some(ph) = filter.phase {
+        clauses.push("json_extract(attrs, '$.phase') = ?".into());
+        params.push(Value::Text(ph.to_string()));
+    }
+    if let Some(rc) = filter.refs_contain {
         clauses
             .push("exists (select 1 from json_each(refs) jt where instr(jt.value, ?) > 0)".into());
         params.push(Value::Text(rc.to_owned()));
@@ -87,8 +92,8 @@ pub(super) fn build_where(
 /// Expects columns in the order selected by `list` and `search`:
 /// 0=rowid, 1=content, 2=summary, 3=tags,
 /// 4=created_at, 5=updated_at, 6=context,
-/// 7=confidence, 8=decay_rate, 9=last_seen_at, 10=type, 11=status, 12=severity,
-/// 13=relations, 14=refs.
+/// 7=confidence, 8=decay_rate, 9=last_seen_at, 10=type,
+/// 11=relations, 12=refs, 13=attrs.
 pub(super) fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
@@ -110,26 +115,16 @@ pub(super) fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let last_seen_at: i64 = row.get(9)?;
     let memory_type = match row.get_value(10)? {
         Value::Null => None,
-        Value::Text(s) => MemoryType::from_str(&s),
+        Value::Text(s) => s.parse().ok(),
         other => return Err(anyhow!("unexpected value for type column: {other:?}")),
     };
-    let status = match row.get_value(11)? {
-        Value::Null => None,
-        Value::Text(s) => MemoryStatus::from_str(&s),
-        other => return Err(anyhow!("unexpected value for status column: {other:?}")),
-    };
-    let severity = match row.get_value(12)? {
-        Value::Null => None,
-        Value::Text(s) => MemorySeverity::from_str(&s),
-        other => return Err(anyhow!("unexpected value for severity column: {other:?}")),
-    };
-    let relations_json: String = row.get(13)?;
+    let relations_json: String = row.get(11)?;
     let relations: BTreeMap<String, String> = serde_json::from_str(&relations_json)?;
-
     let tags: Vec<String> = serde_json::from_str(&tags_json)?;
-
-    let refs_json: String = row.get(14)?;
+    let refs_json: String = row.get(12)?;
     let refs: Vec<String> = serde_json::from_str(&refs_json)?;
+    let attrs_json: String = row.get(13)?;
+    let attrs: MemoryAttrs = serde_json::from_str(&attrs_json)?;
 
     Ok(Memory {
         id,
@@ -143,8 +138,7 @@ pub(super) fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         decay_rate,
         last_seen_at,
         memory_type,
-        status,
-        severity,
+        attrs,
         relations,
         refs,
     })
@@ -215,11 +209,7 @@ pub(super) fn relations_to_json(relations: &[(i64, String)]) -> Result<String> {
 
 /// Packs a float slice as little-endian IEEE 754 bytes, matching libsql's `float32` vector format.
 pub(super) fn floats_to_blob(data: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len() * 4);
-    for &f in data {
-        out.extend_from_slice(&f.to_le_bytes());
-    }
-    out
+    data.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
 /// Returns the current Unix timestamp in whole seconds.
@@ -233,7 +223,7 @@ pub(super) fn unix_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{floats_to_blob, rerank_by_overlap};
-    use crate::db::types::Memory;
+    use crate::db::types::{Memory, MemoryAttrs};
 
     #[test]
     fn floats_to_blob_empty() {
@@ -270,8 +260,7 @@ mod tests {
                     decay_rate: 0.0,
                     last_seen_at: 0,
                     memory_type: None,
-                    status: None,
-                    severity: None,
+                    attrs: MemoryAttrs::default(),
                     relations: std::collections::BTreeMap::new(),
                     refs: vec![],
                 },
@@ -301,8 +290,7 @@ mod tests {
                     decay_rate: 0.0,
                     last_seen_at: 0,
                     memory_type: None,
-                    status: None,
-                    severity: None,
+                    attrs: MemoryAttrs::default(),
                     relations: std::collections::BTreeMap::new(),
                     refs: vec![],
                 },

@@ -1,6 +1,8 @@
 use rmcp::schemars;
 use serde::Deserialize;
 
+use crate::db::MemoryAttrs;
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StoreParams {
     /// The full text to embed and store.
@@ -27,12 +29,8 @@ pub struct StoreParams {
     /// Structured category; required. One of: "user", "project", "reference", "task",
     /// "finding", "issue", "decision", "plan".
     pub memory_type: String,
-    /// Lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
-    /// Set for task and issue memories. Omit for general knowledge.
-    pub status: Option<String>,
-    /// Urgency or impact level; one of: "critical", "high", "medium", "low".
-    /// Most meaningful for finding, issue, and task memories.
-    pub severity: Option<String>,
+    /// Type-specific extra fields. See MemoryAttrs for available typed fields.
+    pub attrs: Option<MemoryAttrs>,
     /// Outgoing directed links to other memory identifiers. A JSON object
     /// mapping target memory id (as a string) to a free-form relation kind,
     /// e.g. {"7": "caused_by", "12": "blocks"}. Kind is any non-empty string;
@@ -61,6 +59,12 @@ pub struct SearchParams {
     pub status: Option<String>,
     /// Restricts results to memories with the given severity.
     pub severity: Option<String>,
+    /// Restricts results to memories with the given priority.
+    pub priority: Option<String>,
+    /// Restricts results to memories with the given decision outcome.
+    pub outcome: Option<String>,
+    /// Restricts results to memories with the given plan phase.
+    pub phase: Option<String>,
     /// Restricts results to memories whose refs array contains this substring.
     /// Useful for finding all memories that mention a specific file or symbol.
     pub refs_contain: Option<String>,
@@ -81,6 +85,12 @@ pub struct ListParams {
     pub status: Option<String>,
     /// Restricts results to memories with the given severity.
     pub severity: Option<String>,
+    /// Restricts results to memories with the given priority.
+    pub priority: Option<String>,
+    /// Restricts results to memories with the given decision outcome.
+    pub outcome: Option<String>,
+    /// Restricts results to memories with the given plan phase.
+    pub phase: Option<String>,
     /// Restricts results to memories whose refs array contains this substring.
     pub refs_contain: Option<String>,
 }
@@ -105,10 +115,8 @@ pub struct BatchStoreItem {
     /// Per-day confidence decay rate in [0, 1] (default 0.0).
     #[schemars(range(min = 0.0, max = 1.0))]
     pub decay_rate: Option<f64>,
-    /// Lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
-    pub status: Option<String>,
-    /// Urgency or impact level; one of: "critical", "high", "medium", "low".
-    pub severity: Option<String>,
+    /// Type-specific extra fields; same structure as memory_store attrs.
+    pub attrs: Option<MemoryAttrs>,
     /// Outgoing directed links; same format as memory_store relations.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
     /// External reference pointers; same format as memory_store refs.
@@ -122,7 +130,7 @@ pub struct BatchStoreParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct TagsParams {}
+pub struct EmptyParams {}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DeleteParams {
@@ -177,9 +185,6 @@ pub struct HubsParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct GraphStatsParams {}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct UpdateParams {
     /// Numeric identifier of the memory to update.
     pub id: i64,
@@ -200,12 +205,9 @@ pub struct UpdateParams {
     /// Structured category: one of "user", "project", "reference", "task",
     /// "finding", "issue", "decision", "plan". Pass as empty string to clear.
     pub memory_type: Option<String>,
-    /// Replacement lifecycle status; one of: "open", "resolved", "wontfix", "deferred".
-    /// Pass to transition a task or issue through its lifecycle. Pass as empty string to clear.
-    pub status: Option<String>,
-    /// Replacement severity level; one of: "critical", "high", "medium", "low".
-    /// Pass as empty string to clear.
-    pub severity: Option<String>,
+    /// Replacement attrs; replaces the full set when provided.
+    /// Omit fields to clear them; pass an empty object to clear all.
+    pub attrs: Option<MemoryAttrs>,
     /// Replacement outgoing relations; replaces the full set when provided.
     /// Same format as memory_store: {"<id>": "<kind>"}. Pass {} to clear all links.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
