@@ -134,7 +134,7 @@ Typed extra fields stored as a JSON object. All fields are optional; omit to exc
 | `outcome` | `accepted`/`rejected`/`superseded`/`deferred` | decision |
 | `reversible` | `true`/`false` | decision |
 | `phase` | `draft`/`approved`/`active`/`completed` | plan |
-| `target_date` | ISO date string | plan |
+
 
 
 Don't delete resolved memories; set `attrs: {"status": "resolved"}` instead. Use `status` filter in search/list to narrow to e.g. open issues. Combine `status` + `severity` filters to find open critical issues.

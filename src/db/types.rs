@@ -260,7 +260,7 @@ pub enum MemoryAttrPhase {
 ///   task: status, priority
 ///   issue/finding: status, severity
 ///   decision: outcome, reversible
-///   plan: phase, target_date
+///   plan: phase
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct MemoryAttrs {
@@ -282,9 +282,6 @@ pub struct MemoryAttrs {
     /// Execution phase; set when memory_type is plan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<MemoryAttrPhase>,
-    /// Target completion date (ISO format); set when memory_type is plan.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_date: Option<String>,
 }
 
 /// Holds owned data for a single row in a batch insert operation.

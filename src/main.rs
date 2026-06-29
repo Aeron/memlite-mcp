@@ -4,6 +4,7 @@ use tracing::info;
 mod config;
 mod db;
 mod embedding;
+mod errors;
 mod mcp;
 
 use config::Config;

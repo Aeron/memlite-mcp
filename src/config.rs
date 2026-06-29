@@ -6,45 +6,12 @@ use std::{
 };
 
 use anyhow::Result;
-use tracing_subscriber::{EnvFilter, fmt};
-
-/// Error returned by [`Config::resolve_project_path`] when a valid path cannot be produced.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ResolveError {
-    /// No source (explicit arg, root URIs, or CWD) yielded a usable path.
-    NotFound,
-    /// The resolved path is the filesystem root; use `--allow-root` to opt in.
-    RootPath,
-    /// The resolved path is the home directory; use `--allow-home` to opt in.
-    HomePath,
-}
-
-impl std::fmt::Display for ResolveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound => write!(
-                f,
-                "cannot determine project path: \
-                 set --project-path or MEMLITE_PROJECT_PATH"
-            ),
-            Self::RootPath => write!(
-                f,
-                "project path '/' is the filesystem root; \
-                 use --allow-root to opt in, or set a real project directory \
-                 via --project-path or MEMLITE_PROJECT_PATH"
-            ),
-            Self::HomePath => write!(
-                f,
-                "project path is the home directory; \
-                 use --allow-home to opt in, or set a specific project directory \
-                 via --project-path or MEMLITE_PROJECT_PATH"
-            ),
-        }
-    }
-}
-
 use clap::{Parser, ValueEnum};
 use sha2::{Digest, Sha256};
+use strum::Display;
+use tracing_subscriber::{EnvFilter, fmt};
+
+use crate::errors::ResolveError;
 
 /// Local-only MCP server for persistent agent memory.
 #[derive(Parser)]
@@ -93,25 +60,14 @@ pub struct Config {
 }
 
 /// Minimum log verbosity level, used when `RUST_LOG` is not set.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum, Display)]
+#[strum(serialize_all = "lowercase")]
 pub enum LogLevel {
     Trace,
     Debug,
     Info,
     Warn,
     Error,
-}
-
-impl std::fmt::Display for LogLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            LogLevel::Trace => "trace",
-            LogLevel::Debug => "debug",
-            LogLevel::Info => "info",
-            LogLevel::Warn => "warn",
-            LogLevel::Error => "error",
-        })
-    }
 }
 
 /// Supported local embedding models.
@@ -208,7 +164,7 @@ impl Config {
                 .ok_or(ResolveError::NotFound)?
         };
 
-        if !self.allow_root && is_root_path(&path) {
+        if !self.allow_root && path == "/" {
             return Err(ResolveError::RootPath);
         }
         if !self.allow_home && is_home_path(&path) {
@@ -255,13 +211,6 @@ impl Config {
     }
 }
 
-/// Returns true when `path` is the filesystem root.
-///
-/// Treats "/" as too broad to be a useful project directory; gated by `--allow-root`.
-fn is_root_path(path: &str) -> bool {
-    path == "/"
-}
-
 /// Returns true when `path` is the current user's home directory.
 ///
 /// Treats the home directory as too broad for a project; gated by `--allow-home`.
@@ -274,6 +223,8 @@ fn is_home_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::errors::ResolveError;
 
     fn config(project_path: &str) -> Config {
         Config {
