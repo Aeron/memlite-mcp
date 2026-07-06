@@ -34,8 +34,8 @@ to remember anything about do not accumulate empty database files.
 - **Graph statistics**: `memory_stats` reports total memories, type distribution, total relation count, and all distinct relation kind labels
 - **Confidence and decay**: per-memory `confidence` score (0.0-1.0) with optional per-day `decay_rate`; `effective_confidence` computed at query time and returned with each result
 - **Revalidation**: `memory_revalidate` resets the decay clock on a list of ids without touching any other field
-- **Lifecycle tracking**: `status` (open/resolved/wontfix/deferred) and `severity` (critical/high/medium/low) fields; both independently filterable in search and list
-- **8 memory types**: user, project, reference, task, finding, issue, decision, plan
+- **Typed attrs**: `status`, `severity`, `priority`, `outcome`, `reversible`, and `phase` live in the `attrs` JSON field; searchable where applicable
+- **8 required memory types**: user, project, reference, task, finding, issue, decision, plan
 - **Tag filtering**: normalized `memory_tags` table; AND semantics; usable as a pre-filter in both `memory_search` and `memory_list`
 - **External references**: optional `refs` field (array of free-form strings) attaches file paths, symbol names, URLs, or issue IDs to a memory; `refs_contain` substring filter in search and list
 - **Batch store**: up to 100 memories in a single ONNX embedding pass; atomic insert
@@ -91,12 +91,12 @@ with `age_days` so agents can judge freshness without parsing timestamps.
 Set `confidence < 1.0` when storing uncertain or speculative information.
 Set `decay_rate > 0.0` for time-sensitive facts that naturally become stale
 (e.g. `0.01` decays ~1% per day). Calling `memory_update` on any field resets
-`last_seen_at` to now, restarting the decay clock — use this to revalidate a
-memory confirmed still accurate without changing its content.
+`last_seen_at` to now, restarting the decay clock. Use `memory_revalidate` when
+confirming one or more memories still accurate without changing their content.
 
 ## Memory types
 
-The optional `memory_type` field classifies a memory's intended use, enabling targeted filtering in `memory_list` and `memory_search`.
+The required `memory_type` field classifies a memory's intended use, enabling targeted filtering in `memory_list` and `memory_search`.
 
 | Type | Stores |
 |---|---|
@@ -111,20 +111,20 @@ The optional `memory_type` field classifies a memory's intended use, enabling ta
 
 Feedback disambiguation: personal opinions on agent approach or working style -> `user`; quality or correctness observations about the work itself -> `finding` or `issue`.
 
-## Lifecycle and severity
+## Typed attrs
 
-Tasks, issues, and findings carry an optional `status` field:
+`attrs` is an optional JSON object for type-specific fields. It replaces the old top-level `status` and `severity` fields.
 
-| Value | Meaning |
-|---|---|
-| `open` | Active and unresolved |
-| `resolved` | Completed or fixed |
-| `wontfix` | Acknowledged, will not be addressed |
-| `deferred` | Postponed for later |
+| Field | Values | Most useful for |
+|---|---|---|
+| `status` | `open`, `resolved`, `wontfix`, `deferred` | task, issue, finding |
+| `severity` | `critical`, `high`, `medium`, `low` | issue, finding |
+| `priority` | `urgent`, `high`, `medium`, `low` | task |
+| `outcome` | `accepted`, `rejected`, `superseded`, `deferred` | decision |
+| `reversible` | `true`, `false` | decision |
+| `phase` | `draft`, `approved`, `active`, `completed` | plan |
 
-Do not delete resolved memories — they are useful history. Update `status` to `resolved` instead and leave the record intact for future sessions. Both `memory_search` and `memory_list` accept `status` as a filter.
-
-The optional `severity` field (`critical` / `high` / `medium` / `low`) captures urgency for findings, issues, and tasks. Most meaningful combined with `status`; both are independently filterable.
+Do not delete resolved memories — they are useful history. Set `attrs.status` to `resolved` instead and leave the record intact for future sessions. `memory_search` and `memory_list` accept `status`, `severity`, `priority`, `outcome`, and `phase` as filters.
 
 ## Relations
 
@@ -160,13 +160,13 @@ All five tools operate on the full global graph. `memory_stats` counts are also 
 
 | Tool | Description |
 |---|---|
-| `memory_store` | Embeds and persists a memory; returns `{"id"}`. Required: `content`, `memory_type`. Optional: `summary`, `tags`, `context`, `confidence` ([0, 1], default 1.0), `decay_rate` (per-day decay, default 0.0), `status`, `severity`, `relations`, `refs` |
-| `memory_store_batch` | Stores up to 100 memories atomically in a single embedding pass; accepts `items: [{...}]` with the same fields as `memory_store`; returns `[{"id"}]` in input order |
-| `memory_search` | Two-stage semantic search (cosine + keyword re-rank), nearest-first; optional `tags`, `memory_type`, `status`, `severity`, `refs_contain` filters; returns `effective_confidence` and `age_days` per result |
-| `memory_list` | Paginated list newest-first; optional `tags`, `memory_type`, `status`, `severity`, `refs_contain` filters; returns raw `confidence`, `decay_rate`, `last_seen_at` |
+| `memory_store` | Embeds and persists a memory; returns `{"id"}`. Required: `content`, `memory_type`. Optional: `summary`, `tags`, `context`, `confidence` ([0, 1], default 1.0), `decay_rate` (per-day decay, default 0.0), `attrs`, `relations`, `refs` |
+| `memory_store_batch` | Stores up to 100 memories atomically in a single embedding pass; accepts `items: [{...}]` with the same fields as `memory_store`; each item requires `content` and `memory_type`; returns `[{"id"}]` in input order |
+| `memory_search` | Two-stage semantic search (cosine + keyword re-rank), nearest-first; optional `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; returns `effective_confidence` and `age_days` per result |
+| `memory_list` | Paginated list newest-first; optional `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; returns `confidence`, `decay_rate`, `last_seen_at`, `effective_confidence`, `age_days`, `freshness_warning` |
 | `memory_tags` | Lists all distinct tags with occurrence counts, ordered by frequency |
 | `memory_delete` | Deletes a memory by numeric id |
-| `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear `summary`, `context`, `memory_type`, `status`, or `severity`; pass `{}` to clear `relations`; pass `[]` to clear `refs` |
+| `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear `summary` or `context`; pass `{}` to clear `attrs` or `relations`; pass `[]` to clear `refs` |
 | `memory_revalidate` | Resets the decay clock on a list of memory ids without changing any other field; accepts `ids: [...]`; returns count of memories updated |
 | `memory_neighbors` | Returns immediate in-neighbors and out-neighbors of a memory; params: `id`, optional `kind` filter; returns `{outgoing: [{id, kind, memory?}], incoming: [...]}` |
 | `memory_traverse` | BFS from `start_id` up to `depth` (default 2, max 5); optional `kind` filter and `direction` (out/in/both); returns `{start_id, nodes, edges}` |

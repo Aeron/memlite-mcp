@@ -28,7 +28,7 @@ pub struct Memory {
     /// Unix timestamp (seconds) when it was last seen (or confidence validated).
     /// 0 means the created_at timestamp is used as the baseline.
     pub last_seen_at: i64,
-    /// Optional classification of the memory's origin or intended use.
+    /// Classification of the memory's origin or intended use; None only for legacy rows.
     pub memory_type: Option<MemoryType>,
     /// Type-specific extra fields; serialized to the attrs JSON column.
     pub attrs: MemoryAttrs,
@@ -81,7 +81,7 @@ impl Memory {
             let val_days = ((unix_secs() - seen_at).max(0) as u64) / 86400;
             return Some(format!(
                 "Confidence decayed to {:.0}% (from {:.0}%; {} days since last validation). \
-                 Call memory_update to revalidate and reset the decay clock.",
+                 Call memory_revalidate to reset the decay clock.",
                 eff * 100.0,
                 self.confidence.clamp(0.0, 1.0) * 100.0,
                 val_days,
@@ -101,13 +101,16 @@ impl Memory {
 }
 
 /// Classifies a memory's intended use, enabling targeted filtering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
+)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
 pub enum MemoryType {
     /// Facts about the person: preferences, identity, working style.
     User,
     /// Codebase knowledge: conventions, tech stack, architecture decisions, constraints.
+    #[default]
     Project,
     /// Domain knowledge: docs, external facts, API details, terminology.
     Reference,
@@ -300,8 +303,8 @@ pub struct BatchInsertItem {
     pub confidence: f64,
     /// Per-day confidence decay in [0.0, 1.0]; caller is responsible for clamping.
     pub decay_rate: f64,
-    /// Optional memory type classification.
-    pub memory_type: Option<MemoryType>,
+    /// Memory type classification.
+    pub memory_type: MemoryType,
     /// Type-specific extra fields; serialized to the attrs JSON column.
     pub attrs: MemoryAttrs,
     /// Outgoing directed links as (target id, kind) pairs.
@@ -382,7 +385,7 @@ pub struct HubEntry {
     pub id: i64,
     /// Short description for identification.
     pub summary: Option<String>,
-    /// Memory type classification.
+    /// Memory type classification; None only for legacy rows.
     pub memory_type: Option<MemoryType>,
     /// Number of outgoing relation edges.
     pub out_degree: u32,

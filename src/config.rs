@@ -19,7 +19,7 @@ use crate::errors::ResolveError;
 pub struct Config {
     /// Project identifier shared across agents. All agents with the same path
     /// read and write the same DB file. Defaults to the first workspace root
-    /// reported by the MCP client, or $HOME if none is available.
+    /// reported by the MCP client, or CWD if none is available.
     #[arg(long = "project-path", env = "MEMLITE_PROJECT_PATH")]
     project_path: Option<String>,
 
@@ -152,8 +152,11 @@ impl Config {
             root_uris
                 .iter()
                 .filter_map(|uri| {
-                    let p = uri.strip_prefix("file://").unwrap_or(uri.as_str());
-                    (!p.is_empty()).then_some(p.to_owned())
+                    let p = uri
+                        .strip_prefix("file://")
+                        .map(decode_percent)
+                        .unwrap_or_else(|| uri.to_owned());
+                    (!p.is_empty()).then_some(p)
                 })
                 .next()
                 .or_else(|| {
@@ -215,9 +218,45 @@ impl Config {
 ///
 /// Treats the home directory as too broad for a project; gated by `--allow-home`.
 fn is_home_path(path: &str) -> bool {
-    dirs::home_dir()
-        .and_then(|h| h.to_str().map(|s| s == path))
-        .unwrap_or(false)
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let candidate = Path::new(path);
+    if candidate == home {
+        return true;
+    }
+    match (candidate.canonicalize(), home.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn decode_percent(s: &str) -> String {
+    fn hex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
@@ -293,6 +332,16 @@ mod tests {
     }
 
     #[test]
+    fn resolve_project_path_decodes_file_uri_percent_escapes() {
+        let c = config_no_path();
+        let uris = vec!["file:///tmp/my%20project".to_string()];
+        assert_eq!(
+            c.resolve_project_path(&uris),
+            Ok("/tmp/my project".to_owned())
+        );
+    }
+
+    #[test]
     fn resolve_project_path_skips_empty_uri() {
         let c = config_no_path();
         let uris = vec!["file://".to_string(), "file:///valid".to_string()];
@@ -333,6 +382,20 @@ mod tests {
         let Some(home) = dirs::home_dir().and_then(|h| h.to_str().map(str::to_owned)) else {
             return; // skip when home dir is unavailable
         };
+        assert_eq!(
+            config(&home).resolve_project_path(&[]),
+            Err(ResolveError::HomePath)
+        );
+    }
+
+    #[test]
+    fn resolve_project_path_rejects_home_dir_with_trailing_slash() {
+        let Some(mut home) = dirs::home_dir().and_then(|h| h.to_str().map(str::to_owned)) else {
+            return;
+        };
+        if !home.ends_with('/') {
+            home.push('/');
+        }
         assert_eq!(
             config(&home).resolve_project_path(&[]),
             Err(ResolveError::HomePath)

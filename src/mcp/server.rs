@@ -186,7 +186,7 @@ impl MemServer {
                     context: p.context.as_deref(),
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
-                    memory_type: Some(memory_type),
+                    memory_type,
                     attrs,
                     relations: &relations,
                     refs: &refs,
@@ -218,16 +218,14 @@ impl MemServer {
             return tool_err(format!("too many items: {} (maximum 100)", p.items.len()));
         }
 
-        // Validating memory_type and attrs for all items before embedding anything
-        let mut parsed_types: Vec<Option<MemoryType>> = Vec::with_capacity(p.items.len());
+        // Validating cheap fields before embedding anything
+        let mut parsed_types: Vec<MemoryType> = Vec::with_capacity(p.items.len());
         let mut parsed_relations: Vec<Vec<(i64, String)>> = Vec::with_capacity(p.items.len());
         for (i, item) in p.items.iter().enumerate() {
-            let mt = match item
-                .memory_type
-                .as_deref()
-                .map(|s| s.parse::<MemoryType>())
-                .transpose()
-            {
+            if item.content.trim().is_empty() {
+                return tool_err(format!("item {i}: content must not be blank"));
+            }
+            let mt = match item.memory_type.parse::<MemoryType>() {
                 Ok(v) => v,
                 Err(e) => return tool_err(format!("item {i}: {e}")),
             };
@@ -493,11 +491,11 @@ impl MemServer {
         }
 
         let update_attrs = p.attrs;
-        let (update_memory_type, clear_memory_type) = match p.memory_type.as_deref() {
-            None => (None, false),
-            Some("") => (None, true),
+        let update_memory_type = match p.memory_type.as_deref() {
+            None => None,
+            Some("") => return tool_err("memory_type must not be blank"),
             Some(s) => match s.parse::<MemoryType>() {
-                Ok(mt) => (Some(mt), false),
+                Ok(mt) => Some(mt),
                 Err(e) => return tool_err(e),
             },
         };
@@ -535,7 +533,6 @@ impl MemServer {
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
                     memory_type: update_memory_type,
-                    clear_memory_type,
                     attrs: update_attrs,
                     relations: update_relations.as_deref(),
                     refs: update_refs,

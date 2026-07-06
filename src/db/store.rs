@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use libsql::{Builder, Database, Value};
 
 use super::helpers::{
@@ -32,7 +32,7 @@ impl MemoryStore {
         Ok(MemoryStore { db: Arc::new(db) })
     }
 
-    /// Validates that `model_name` and `dims` match what is stored in the `meta` table.
+    /// Validates that `model_name` matches what is stored in the `meta` table.
     ///
     /// On first call for a given database file, records the model so future opens can
     /// detect mismatches. Returns an error when the stored model differs, preventing
@@ -85,6 +85,7 @@ impl MemoryStore {
             refs,
         } = opts;
         let conn = self.db.connect()?;
+        let tx = conn.transaction().await?;
         let tags_json = serde_json::to_string(tags)?;
         let now = unix_secs();
         let emb_blob = floats_to_blob(embedding);
@@ -94,47 +95,38 @@ impl MemoryStore {
         let attrs_json = serde_json::to_string(&attrs.unwrap_or_default())?;
 
         // Inserting the main memory row
-        let mut rows = conn
-            .query(
-                "insert into memories (
-                    content, summary, tags, embedding, created_at, updated_at, context,
-                    confidence, decay_rate, last_seen_at, type, relations, refs, attrs
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                returning rowid",
-                libsql::params_from_iter([
-                    Value::Text(content.to_owned()),
-                    summary
-                        .map(|s| Value::Text(s.to_owned()))
-                        .unwrap_or(Value::Null),
-                    Value::Text(tags_json),
-                    Value::Blob(emb_blob),
-                    Value::Integer(now),
-                    Value::Integer(now),
-                    context
-                        .map(|c| Value::Text(c.to_owned()))
-                        .unwrap_or(Value::Null),
-                    Value::Real(confidence),
-                    Value::Real(decay_rate),
-                    Value::Integer(now),
-                    memory_type
-                        .map(|mt| Value::Text(mt.to_string()))
-                        .unwrap_or(Value::Null),
-                    Value::Text(relations_to_json(relations)?),
-                    Value::Text(refs_json),
-                    Value::Text(attrs_json),
-                ]),
-            )
-            .await?;
-
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow!("insert returning yielded no row"))?;
-        let id: i64 = row.get(0)?;
+        tx.execute(
+            "insert into memories (
+                content, summary, tags, embedding, created_at, updated_at, context,
+                confidence, decay_rate, last_seen_at, type, relations, refs, attrs
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            libsql::params_from_iter([
+                Value::Text(content.to_owned()),
+                summary
+                    .map(|s| Value::Text(s.to_owned()))
+                    .unwrap_or(Value::Null),
+                Value::Text(tags_json),
+                Value::Blob(emb_blob),
+                Value::Integer(now),
+                Value::Integer(now),
+                context
+                    .map(|c| Value::Text(c.to_owned()))
+                    .unwrap_or(Value::Null),
+                Value::Real(confidence),
+                Value::Real(decay_rate),
+                Value::Integer(now),
+                Value::Text(memory_type.to_string()),
+                Value::Text(relations_to_json(relations)?),
+                Value::Text(refs_json),
+                Value::Text(attrs_json),
+            ]),
+        )
+        .await?;
+        let id = tx.last_insert_rowid();
 
         // Syncing normalized tag table
         for tag in tags.iter().filter(|t| !t.is_empty()) {
-            conn.execute(
+            tx.execute(
                 "insert or ignore into memory_tags (memory_id, tag) values (?, ?)",
                 libsql::params![id, tag.as_str()],
             )
@@ -143,12 +135,14 @@ impl MemoryStore {
 
         // Syncing normalized relations table
         for (to_id, kind) in relations.iter() {
-            conn.execute(
+            tx.execute(
                 "insert or ignore into memory_relations (from_id, to_id, kind) values (?, ?, ?)",
                 libsql::params![id, *to_id, kind.as_str()],
             )
             .await?;
         }
+
+        tx.commit().await?;
 
         Ok(id)
     }
@@ -197,9 +191,7 @@ impl MemoryStore {
                     Value::Real(item.confidence),
                     Value::Real(item.decay_rate),
                     Value::Integer(now),
-                    item.memory_type
-                        .map(|mt| Value::Text(mt.to_string()))
-                        .unwrap_or(Value::Null),
+                    Value::Text(item.memory_type.to_string()),
                     Value::Text(relations_to_json(&item.relations)?),
                     Value::Text(item_refs_json),
                     Value::Text(item_attrs_json),
@@ -339,30 +331,33 @@ impl MemoryStore {
     /// Deletes a memory by rowid; returns true if a row was actually removed.
     pub async fn delete(&self, id: i64) -> Result<bool> {
         let conn = self.db.connect()?;
-        let affected = conn
+        let tx = conn.transaction().await?;
+        let affected = tx
             .execute("delete from memories where rowid = ?", libsql::params![id])
             .await?;
 
         // Cleaning up auxiliary rows for the deleted memory
         if affected > 0 {
-            conn.execute(
+            tx.execute(
                 "delete from memory_tags where memory_id = ?",
                 libsql::params![id],
             )
             .await?;
 
             // Removing outgoing relations from this memory and incoming relations pointing to it
-            conn.execute(
+            tx.execute(
                 "delete from memory_relations where from_id = ?",
                 libsql::params![id],
             )
             .await?;
-            conn.execute(
+            tx.execute(
                 "delete from memory_relations where to_id = ?",
                 libsql::params![id],
             )
             .await?;
         }
+
+        tx.commit().await?;
 
         Ok(affected > 0)
     }
@@ -371,7 +366,6 @@ impl MemoryStore {
     ///
     /// - `summary = Some("")` clears the summary (sets to NULL).
     /// - `context = Some("")` clears the context (sets to NULL).
-    /// - `clear_memory_type = true` sets the type column to NULL.
     /// - `attrs = Some({})` clears all type-specific extra fields.
     /// - Supplying a new `embedding` alongside updated content keeps the index
     ///   consistent; pass None to leave the stored vector unchanged.
@@ -390,7 +384,6 @@ impl MemoryStore {
             confidence,
             decay_rate,
             memory_type,
-            clear_memory_type,
             attrs,
             relations,
             refs,
@@ -403,7 +396,6 @@ impl MemoryStore {
             && confidence.is_none()
             && decay_rate.is_none()
             && memory_type.is_none()
-            && !clear_memory_type
             && attrs.is_none()
             && relations.is_none()
             && refs.is_none()
@@ -412,6 +404,7 @@ impl MemoryStore {
         }
 
         let conn = self.db.connect()?;
+        let tx = conn.transaction().await?;
         let now = unix_secs();
 
         // Building SET clauses and positional params for each provided field
@@ -457,8 +450,6 @@ impl MemoryStore {
         if let Some(mt) = memory_type {
             set_clauses.push("type = ?");
             params.push(Value::Text(mt.to_string()));
-        } else if clear_memory_type {
-            set_clauses.push("type = null");
         }
         if let Some(a) = &attrs {
             set_clauses.push("attrs = ?");
@@ -484,20 +475,20 @@ impl MemoryStore {
             set_clauses.join(", ")
         );
 
-        let affected = conn.execute(&sql, libsql::params_from_iter(params)).await?;
+        let affected = tx.execute(&sql, libsql::params_from_iter(params)).await?;
 
         // Syncing memory_tags when the tags column was updated
         if affected > 0
             && let Some(updated_tags) = tags
         {
-            conn.execute(
+            tx.execute(
                 "delete from memory_tags where memory_id = ?",
                 libsql::params![id],
             )
             .await?;
 
             for tag in updated_tags.iter().filter(|t| !t.is_empty()) {
-                conn.execute(
+                tx.execute(
                     "insert or ignore into memory_tags (memory_id, tag) values (?, ?)",
                     libsql::params![id, tag.as_str()],
                 )
@@ -509,19 +500,21 @@ impl MemoryStore {
         if affected > 0
             && let Some(updated_rels) = relations
         {
-            conn.execute(
+            tx.execute(
                 "delete from memory_relations where from_id = ?",
                 libsql::params![id],
             )
             .await?;
             for (to_id, kind) in updated_rels.iter() {
-                conn.execute(
+                tx.execute(
                     "insert or ignore into memory_relations (from_id, to_id, kind) values (?, ?, ?)",
                     libsql::params![id, *to_id, kind.as_str()],
                 )
                 .await?;
             }
         }
+
+        tx.commit().await?;
 
         Ok(affected > 0)
     }
@@ -1559,7 +1552,7 @@ mod tests {
                 "architectural choice",
                 &V1,
                 InsertOptions {
-                    memory_type: Some(MemoryType::Decision),
+                    memory_type: MemoryType::Decision,
                     ..Default::default()
                 },
             )
@@ -1570,7 +1563,7 @@ mod tests {
                 "known defect",
                 &V1,
                 InsertOptions {
-                    memory_type: Some(MemoryType::Issue),
+                    memory_type: MemoryType::Issue,
                     ..Default::default()
                 },
             )
@@ -1621,7 +1614,7 @@ mod tests {
                 "general note",
                 &V1,
                 InsertOptions {
-                    memory_type: Some(MemoryType::Reference),
+                    memory_type: MemoryType::Reference,
                     ..Default::default()
                 },
             )
@@ -1788,7 +1781,7 @@ mod tests {
                 context: None,
                 confidence: 1.0,
                 decay_rate: 0.0,
-                memory_type: Some(MemoryType::Project),
+                memory_type: MemoryType::Project,
                 attrs: MemoryAttrs {
                     status: Some(MemoryStatus::Open),
                     ..Default::default()
@@ -1804,7 +1797,7 @@ mod tests {
                 context: None,
                 confidence: 0.8,
                 decay_rate: 0.01,
-                memory_type: None,
+                memory_type: MemoryType::Task,
                 attrs: MemoryAttrs {
                     status: Some(MemoryStatus::Resolved),
                     ..Default::default()

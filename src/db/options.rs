@@ -16,8 +16,8 @@ pub struct InsertOptions<'a> {
     pub confidence: Option<f64>,
     /// Per-day confidence decay in [0.0, 1.0]; defaults to 0.0.
     pub decay_rate: Option<f64>,
-    /// Optional classification of the memory's origin or intended use.
-    pub memory_type: Option<MemoryType>,
+    /// Classification of the memory's origin or intended use.
+    pub memory_type: MemoryType,
     /// Type-specific extra fields; None stores an empty attrs object '{}'.
     pub attrs: Option<MemoryAttrs>,
     /// Outgoing directed links as (target id, kind) pairs; defaults to empty.
@@ -43,10 +43,8 @@ pub struct UpdateOptions<'a> {
     pub confidence: Option<f64>,
     /// Replacement per-day decay rate.
     pub decay_rate: Option<f64>,
-    /// Replacement memory type; set to NULL when `clear_memory_type` is true.
+    /// Replacement memory type.
     pub memory_type: Option<MemoryType>,
-    /// When true, sets the type column to NULL regardless of `memory_type`.
-    pub clear_memory_type: bool,
     /// Replacement attrs; replaces the full set when Some, pass Some(MemoryAttrs::default()) to clear.
     pub attrs: Option<MemoryAttrs>,
     /// Replacement outgoing relations as (target id, kind) pairs; replaces the full set when provided.

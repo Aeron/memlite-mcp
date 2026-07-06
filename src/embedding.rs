@@ -62,12 +62,21 @@ impl EmbeddingService {
     ///
     /// Offloads blocking ONNX inference to a Tokio blocking thread. Loads the model on first call.
     pub async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        let expected = texts.len();
         let model = self.model().await?;
         tokio::task::spawn_blocking(move || {
             let mut guard = model.lock().expect("embedding mutex poisoned");
-            guard
+            let embeddings = guard
                 .embed(texts, None)
-                .map_err(|e| anyhow!("embedding: {e}"))
+                .map_err(|e| anyhow!("embedding: {e}"))?;
+            if embeddings.len() != expected {
+                return Err(anyhow!(
+                    "embedding returned {} vectors for {} inputs",
+                    embeddings.len(),
+                    expected
+                ));
+            }
+            Ok(embeddings)
         })
         .await
         .map_err(|e| anyhow!("embedding join: {e}"))?
@@ -78,7 +87,8 @@ impl EmbeddingService {
     /// Delegates to [`embed_batch`] with a one-element vec.
     pub async fn embed(&self, text: String) -> Result<Vec<f32>> {
         self.embed_batch(vec![text])
-            .await
-            .map(|mut v| v.pop().unwrap_or_default())
+            .await?
+            .pop()
+            .ok_or_else(|| anyhow!("embedding returned no vector"))
     }
 }

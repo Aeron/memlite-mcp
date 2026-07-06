@@ -2,12 +2,12 @@ Local agent memory store. Server-side embeddings from plain text.
 
 ## Tools
 
-- `memory_store`: embed + persist; returns id. Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`), `attrs` (JSON object with type-specific fields; see attrs section), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`), `refs` (array of strings: file paths, symbol names, URLs)
-- `memory_store_batch`: batch store; `items: [...]` (max 100), same fields as `memory_store` including `attrs`; single-pass embed, atomic insert; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` for 3+ memories
+- `memory_store`: embed + persist; returns id. Required: `content`, `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`). Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `attrs` (JSON object with type-specific fields; see attrs section), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`), `refs` (array of strings: file paths, symbol names, URLs)
+- `memory_store_batch`: batch store; `items: [...]` (max 100), same fields as `memory_store`; each item requires `content` and `memory_type`; single-pass embed, atomic insert; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` for 3+ memories
 - `memory_search`: cosine + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Pre-filter: `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain`
-- `memory_list`: newest-first with pagination. Filter: same fields as `memory_search`; returns raw `confidence`, `decay_rate`, `last_seen_at`
+- `memory_list`: newest-first with pagination. Filter: same fields as `memory_search`; returns `confidence`, `decay_rate`, `last_seen_at`, `effective_confidence`, `age_days`, `freshness_warning`
 - `memory_tags`: all tags with occurrence counts, frequency-ordered
-- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/attrs/relations/refs in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context/memory_type; pass `{}` to clear attrs or relations; pass `[]` to clear refs
+- `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/attrs/relations/refs in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context; pass `{}` to clear attrs or relations; pass `[]` to clear refs
 - `memory_delete`: remove by id
 - `memory_revalidate`: resets decay clock (`last_seen_at` = now) on a list of ids without changing any other field; returns count updated. Use when confirming one or more memories accurate in same session
 - `memory_neighbors`: immediate in/out neighbors; optional `kind` filter; `direction` ("out"/"in"/"both")
@@ -62,6 +62,7 @@ Two stages: cosine selects candidate pool (~4x return count), keyword overlap re
 - 0.0: identical vector
 - < 0.15: very close (likely same concept)
 - < 0.40: related (same domain)
+- 0.40-0.70: weak or tangential
 - > 0.70: unrelated
 
 ### `effective_confidence` and `age_days`
@@ -118,7 +119,7 @@ Both `memory_search` and `memory_list` accept optional `tags`. All must match (h
 | `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
 | `plan` | High-level plan or phased roadmap; use `relations` to link to spawned tasks and decisions; apply moderate `decay_rate` (0.01-0.02) |
 
-Set when memory fits one category; skip if multi-category or unclear. Pass `""` to `memory_update` to clear. Both tools accept `memory_type` as filter; combine with `tags`, `status`, and `severity` (attrs key filters) for precise retrieval.
+Required for every stored memory. Pick closest category; use `project` for general codebase facts when unclear. Both tools accept `memory_type` as filter; combine with `tags`, `status`, and `severity` (attrs key filters) for precise retrieval.
 
 Feedback disambiguation: personal opinions on agent approach or working style -> `user`; quality or correctness observations about the work itself -> `finding` or `issue`.
 
@@ -134,8 +135,6 @@ Typed extra fields stored as a JSON object. All fields are optional; omit to exc
 | `outcome` | `accepted`/`rejected`/`superseded`/`deferred` | decision |
 | `reversible` | `true`/`false` | decision |
 | `phase` | `draft`/`approved`/`active`/`completed` | plan |
-
-
 
 Don't delete resolved memories; set `attrs: {"status": "resolved"}` instead. Use `status` filter in search/list to narrow to e.g. open issues. Combine `status` + `severity` filters to find open critical issues.
 

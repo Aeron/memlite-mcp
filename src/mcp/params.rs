@@ -98,6 +98,7 @@ pub struct ListParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct BatchStoreItem {
     /// Full text to embed and store.
+    #[schemars(length(min = 1))]
     pub content: String,
     /// One-sentence description for quick recall without reading the full
     /// content. Provide when content is long, complex, or not self-describing.
@@ -106,9 +107,9 @@ pub struct BatchStoreItem {
     pub tags: Option<Vec<String>>,
     /// Background rationale for this memory.
     pub context: Option<String>,
-    /// Structured category: one of "user", "project", "reference", "task",
+    /// Structured category; required. One of: "user", "project", "reference", "task",
     /// "finding", "issue", "decision", "plan".
-    pub memory_type: Option<String>,
+    pub memory_type: String,
     /// Initial confidence score in [0, 1] (default 1.0).
     #[schemars(range(min = 0.0, max = 1.0))]
     pub confidence: Option<f64>,
@@ -202,8 +203,8 @@ pub struct UpdateParams {
     /// Replacement per-day confidence decay rate; clamped to [0, 1].
     #[schemars(range(min = 0.0, max = 1.0))]
     pub decay_rate: Option<f64>,
-    /// Structured category: one of "user", "project", "reference", "task",
-    /// "finding", "issue", "decision", "plan". Pass as empty string to clear.
+    /// Replacement structured category. One of: "user", "project", "reference", "task",
+    /// "finding", "issue", "decision", "plan". Empty string is rejected.
     pub memory_type: Option<String>,
     /// Replacement attrs; replaces the full set when provided.
     /// Omit fields to clear them; pass an empty object to clear all.
