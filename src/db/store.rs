@@ -1,7 +1,8 @@
-use std::{path::Path, sync::Arc};
+use std::{path::Path, time::Duration};
 
 use anyhow::Result;
-use libsql::{Builder, Database, Value};
+use libsql::{Builder, Connection, Value};
+use tokio::sync::Mutex;
 
 use super::helpers::{
     build_where, fetch_memories_by_ids, floats_to_blob, parse_memory_row, relations_to_json,
@@ -13,11 +14,12 @@ use super::types::{
     TraverseDirection, TraverseNode, TraverseResult,
 };
 
-/// Wraps the [`libsql::Database`]; each operation opens a fresh [`libsql::Connection`] so this
-/// type is cheaply [`Clone`] without any mutex contention.
-#[derive(Clone)]
+const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Provides persistent memory operations over explicit query and mutation connections.
 pub struct MemoryStore {
-    db: Arc<Database>,
+    read_conn: Connection,
+    write_conn: Mutex<Connection>,
 }
 
 impl MemoryStore {
@@ -27,9 +29,21 @@ impl MemoryStore {
             tokio::fs::create_dir_all(parent).await?;
         }
         let db = Builder::new_local(path).build().await?;
-        let conn = db.connect()?;
-        super::migrations::run(&conn).await?;
-        Ok(MemoryStore { db: Arc::new(db) })
+        let write_conn = db.connect()?;
+        write_conn.busy_timeout(BUSY_TIMEOUT)?;
+        write_conn.query("pragma journal_mode = wal", ()).await?;
+        write_conn
+            .execute("pragma synchronous = normal", ())
+            .await?;
+        super::migrations::run(&write_conn).await?;
+
+        let read_conn = db.connect()?;
+        read_conn.busy_timeout(BUSY_TIMEOUT)?;
+
+        Ok(MemoryStore {
+            read_conn,
+            write_conn: Mutex::new(write_conn),
+        })
     }
 
     /// Validates that `model_name` matches what is stored in the `meta` table.
@@ -38,7 +52,7 @@ impl MemoryStore {
     /// detect mismatches. Returns an error when the stored model differs, preventing
     /// mixed-dimension vectors from corrupting cosine-distance results.
     pub async fn check_embedding_model(&self, model_name: &str) -> Result<()> {
-        let conn = self.db.connect()?;
+        let conn = self.write_conn.lock().await;
         let mut rows = conn
             .query("select value from meta where key = 'embedding_model'", ())
             .await?;
@@ -84,8 +98,10 @@ impl MemoryStore {
             relations,
             refs,
         } = opts;
-        let conn = self.db.connect()?;
-        let tx = conn.transaction().await?;
+        let conn = self.write_conn.lock().await;
+        let tx = conn
+            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+            .await?;
         let tags_json = serde_json::to_string(tags)?;
         let now = unix_secs();
         let emb_blob = floats_to_blob(embedding);
@@ -157,8 +173,10 @@ impl MemoryStore {
             return Ok(Vec::new());
         }
 
-        let conn = self.db.connect()?;
-        let tx = conn.transaction().await?;
+        let conn = self.write_conn.lock().await;
+        let tx = conn
+            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+            .await?;
         let now = unix_secs();
         let sql = "insert into memories (
                 content, summary, tags, embedding, created_at, updated_at, context,
@@ -240,7 +258,6 @@ impl MemoryStore {
         filter: FilterOptions<'_>,
         limit: u32,
     ) -> Result<Vec<(Memory, f64)>> {
-        let conn = self.db.connect()?;
         let emb_blob = floats_to_blob(query_embedding);
         let candidate_limit = (limit as i64).saturating_mul(4).min(400);
         let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
@@ -259,7 +276,10 @@ impl MemoryStore {
             order by dist asc
             limit ?"
         );
-        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+        let mut rows = self
+            .read_conn
+            .query(&sql, libsql::params_from_iter(params))
+            .await?;
 
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -280,7 +300,6 @@ impl MemoryStore {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Memory>> {
-        let conn = self.db.connect()?;
         let mut params: Vec<Value> = Vec::new();
         let where_sql = build_where(&filter, &mut params)?;
         params.push(Value::Integer(limit as i64));
@@ -295,7 +314,10 @@ impl MemoryStore {
             order by created_at desc
             limit ? offset ?"
         );
-        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+        let mut rows = self
+            .read_conn
+            .query(&sql, libsql::params_from_iter(params))
+            .await?;
 
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -309,8 +331,8 @@ impl MemoryStore {
     ///
     /// Reads from the normalized `memory_tags` table (indexed).
     pub async fn tags(&self) -> Result<Vec<(String, u32)>> {
-        let conn = self.db.connect()?;
-        let mut rows = conn
+        let mut rows = self
+            .read_conn
             .query(
                 "select tag, count(*) as cnt
                 from memory_tags
@@ -330,8 +352,10 @@ impl MemoryStore {
 
     /// Deletes a memory by rowid; returns true if a row was actually removed.
     pub async fn delete(&self, id: i64) -> Result<bool> {
-        let conn = self.db.connect()?;
-        let tx = conn.transaction().await?;
+        let conn = self.write_conn.lock().await;
+        let tx = conn
+            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+            .await?;
         let affected = tx
             .execute("delete from memories where rowid = ?", libsql::params![id])
             .await?;
@@ -403,8 +427,10 @@ impl MemoryStore {
             return Ok(false);
         }
 
-        let conn = self.db.connect()?;
-        let tx = conn.transaction().await?;
+        let conn = self.write_conn.lock().await;
+        let tx = conn
+            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+            .await?;
         let now = unix_secs();
 
         // Building SET clauses and positional params for each provided field
@@ -528,7 +554,7 @@ impl MemoryStore {
         if ids.is_empty() {
             return Ok(0);
         }
-        let conn = self.db.connect()?;
+        let conn = self.write_conn.lock().await;
         let now = unix_secs();
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
         let sql = format!(
@@ -549,7 +575,7 @@ impl MemoryStore {
     /// Both outgoing (this node -> others) and incoming (others -> this node) edges are
     /// returned. When `kind_filter` is supplied, only edges with that exact kind are included.
     pub async fn neighbors(&self, id: i64, kind_filter: Option<&str>) -> Result<Neighbors> {
-        let conn = self.db.connect()?;
+        let conn = &self.read_conn;
 
         // Outgoing: this memory -> others
         let (out_sql, out_params): (String, Vec<Value>) = if let Some(kf) = kind_filter {
@@ -605,7 +631,7 @@ impl MemoryStore {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        let memory_map = fetch_memories_by_ids(&conn, &all_other_ids).await?;
+        let memory_map = fetch_memories_by_ids(conn, &all_other_ids).await?;
 
         let outgoing = out_pairs
             .into_iter()
@@ -639,7 +665,7 @@ impl MemoryStore {
         kind_filter: Option<&str>,
         direction: TraverseDirection,
     ) -> Result<TraverseResult> {
-        let conn = self.db.connect()?;
+        let conn = &self.read_conn;
         let max_depth = max_depth.min(5);
 
         // visited: id -> (depth, via_kind used to first reach this node)
@@ -734,7 +760,7 @@ impl MemoryStore {
 
         // Fetch memories for all discovered nodes
         let all_ids: Vec<i64> = visited.keys().copied().collect();
-        let memory_map = fetch_memories_by_ids(&conn, &all_ids).await?;
+        let memory_map = fetch_memories_by_ids(conn, &all_ids).await?;
 
         let mut nodes: Vec<TraverseNode> = visited
             .into_iter()
@@ -770,8 +796,7 @@ impl MemoryStore {
         max_hops: u32,
     ) -> Result<Option<Vec<PathStep>>> {
         if from_id == to_id {
-            let conn = self.db.connect()?;
-            let map = fetch_memories_by_ids(&conn, &[from_id]).await?;
+            let map = fetch_memories_by_ids(&self.read_conn, &[from_id]).await?;
             return Ok(map.get(&from_id).map(|m| {
                 vec![PathStep {
                     memory: m.clone(),
@@ -780,7 +805,7 @@ impl MemoryStore {
             }));
         }
 
-        let conn = self.db.connect()?;
+        let conn = &self.read_conn;
         let max_hops = max_hops.min(10);
 
         // BFS with parent tracking: child_id -> (parent_id, edge_kind)
@@ -846,7 +871,7 @@ impl MemoryStore {
 
         // Fetch memories for all path nodes
         let ids: Vec<i64> = path_ids.iter().map(|(id, _)| *id).collect();
-        let memory_map = fetch_memories_by_ids(&conn, &ids).await?;
+        let memory_map = fetch_memories_by_ids(conn, &ids).await?;
 
         let steps = path_ids
             .into_iter()
@@ -866,7 +891,6 @@ impl MemoryStore {
     /// Degree is computed globally across all agents. Memories without any relations
     /// are not included. The result is ordered by total degree descending.
     pub async fn hubs(&self, top_n: u32) -> Result<Vec<HubEntry>> {
-        let conn = self.db.connect()?;
         let top_n = top_n.min(50) as i64;
 
         // Using a CTE to union out-degree and in-degree aggregates, then join with memories
@@ -900,7 +924,7 @@ impl MemoryStore {
             limit ?
         ";
 
-        let mut rows = conn.query(sql, libsql::params![top_n]).await?;
+        let mut rows = self.read_conn.query(sql, libsql::params![top_n]).await?;
         let mut entries = Vec::new();
         while let Some(row) = rows.next().await? {
             let id: i64 = row.get(0)?;
@@ -934,7 +958,7 @@ impl MemoryStore {
     /// (`neighbors`, `traverse`, `path`, `hubs`): the relation graph is a single shared
     /// structure with no agent column, and edges may legitimately cross agent boundaries.
     pub async fn graph_stats(&self) -> Result<GraphStats> {
-        let conn = self.db.connect()?;
+        let conn = &self.read_conn;
 
         // Total memories
         let mut rows = conn.query("select count(*) from memories", ()).await?;
@@ -1004,6 +1028,30 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let store = MemoryStore::open(tmp.path()).await.unwrap();
         (store, tmp)
+    }
+
+    #[tokio::test]
+    async fn read_connection_excludes_uncommitted_writes() {
+        let (store, _tmp) = fresh().await;
+        let conn = store.write_conn.lock().await;
+        let tx = conn
+            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+            .await
+            .unwrap();
+        tx.execute(
+            "insert into meta (key, value) values (?, ?)",
+            libsql::params!["test", "pending"],
+        )
+        .await
+        .unwrap();
+
+        let mut rows = store
+            .read_conn
+            .query("select value from meta where key = 'test'", ())
+            .await
+            .unwrap();
+        assert!(rows.next().await.unwrap().is_none());
+        tx.rollback().await.unwrap();
     }
 
     // 2-D unit vectors used throughout: cheap, no model download needed
@@ -1463,7 +1511,7 @@ mod tests {
             .unwrap();
         // Forcing last_seen_at to 30 days ago via a direct update
         let thirty_days_ago = unix_secs() - 30 * 86400;
-        let conn = store.db.connect().unwrap();
+        let conn = store.write_conn.lock().await;
         conn.execute(
             "update memories set last_seen_at = ? where rowid = ?",
             libsql::params![thirty_days_ago, id],
