@@ -8,7 +8,9 @@ use super::helpers::{
     build_where, fetch_memories_by_ids, floats_to_blob, parse_memory_row, relations_to_json,
     rerank_by_overlap, unix_secs,
 };
-use super::options::{FilterOptions, InsertOptions, UpdateOptions};
+#[cfg(test)]
+use super::options::InsertOptions;
+use super::options::{FilterOptions, UpdateOptions};
 use super::types::{
     BatchInsertItem, GraphStats, HubEntry, Memory, NeighborInfo, Neighbors, PathStep,
     TraverseDirection, TraverseNode, TraverseResult,
@@ -81,6 +83,7 @@ impl MemoryStore {
     ///
     /// `confidence` defaults to 1.0 and `decay_rate` defaults to 0.0 when None.
     /// Both are clamped to [0.0, 1.0].
+    #[cfg(test)]
     pub async fn insert(
         &self,
         content: &str,
@@ -1141,6 +1144,68 @@ mod tests {
         let ids0: Vec<i64> = page0.iter().map(|m| m.id).collect();
         let ids1: Vec<i64> = page1.iter().map(|m| m.id).collect();
         assert!(ids0.iter().all(|id| !ids1.contains(id)));
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_ids() {
+        let (store, _tmp) = fresh().await;
+        let tagged_id = store
+            .insert(
+                "tagged",
+                &V1,
+                InsertOptions {
+                    tags: &["bug".into()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let other_id = store
+            .insert("other", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+
+        let exact = store
+            .list(
+                FilterOptions {
+                    ids: Some(&[tagged_id, 999]),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].id, tagged_id);
+
+        let composed = store
+            .list(
+                FilterOptions {
+                    ids: Some(&[tagged_id, other_id]),
+                    tags: Some(&["bug".into()]),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(composed.len(), 1);
+        assert_eq!(composed[0].id, tagged_id);
+
+        let empty = store
+            .list(
+                FilterOptions {
+                    ids: Some(&[]),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
     }
 
     #[tokio::test]

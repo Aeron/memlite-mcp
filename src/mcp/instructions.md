@@ -2,10 +2,9 @@ Local agent memory store. Server-side embeddings from plain text.
 
 ## Tools
 
-- `memory_store`: embed + persist; returns id. Required: `content`, `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`). Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `attrs` (JSON object with type-specific fields; see attrs section), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`), `refs` (array of strings: file paths, symbol names, URLs)
-- `memory_store_batch`: batch store; `items: [...]` (max 100), same fields as `memory_store`; each item requires `content` and `memory_type`; single-pass embed, atomic insert; returns `[{"id": ...}]` in input order. Prefer over repeated `memory_store` for 3+ memories
+- `memory_store`: atomically embed + persist `items: [...]` (1-100) in one pass; each item requires `content`, `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`). Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `attrs` (JSON object with type-specific fields; see attrs section), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`), `refs` (array of strings: file paths, symbol names, URLs). Returns `[{"id": ...}]` in input order
 - `memory_search`: cosine + keyword re-rank; nearest-first with `effective_confidence` and `age_days`. Pre-filter: `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain`
-- `memory_list`: newest-first with pagination. Filter: same fields as `memory_search`; returns `confidence`, `decay_rate`, `last_seen_at`, `effective_confidence`, `age_days`, `freshness_warning`
+- `memory_list`: newest-first with pagination. Filter: `ids` (exact, max 100) plus same fields as `memory_search`; returns `confidence`, `decay_rate`, `last_seen_at`, `effective_confidence`, `age_days`, `freshness_warning`
 - `memory_tags`: all tags with occurrence counts, frequency-ordered
 - `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/attrs/relations/refs in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context; pass `{}` to clear attrs or relations; pass `[]` to clear refs
 - `memory_delete`: remove by id

@@ -36,6 +36,15 @@ pub(super) async fn fetch_memories_by_ids(
 // Builds a SQL WHERE clause from FilterOptions, appending bind params in placeholder order.
 pub(super) fn build_where(filter: &FilterOptions<'_>, params: &mut Vec<Value>) -> Result<String> {
     let mut clauses: Vec<String> = Vec::new();
+    if let Some(ids) = filter.ids {
+        if ids.is_empty() {
+            clauses.push("0".into());
+        } else {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            clauses.push(format!("rowid in ({placeholders})"));
+            params.extend(ids.iter().copied().map(Value::Integer));
+        }
+    }
     if let Some(ts) = filter.tags.filter(|t| !t.is_empty()) {
         // Using normalized memory_tags table for indexed filtering
         clauses.push(

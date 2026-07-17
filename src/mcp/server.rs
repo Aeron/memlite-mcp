@@ -15,15 +15,15 @@ use rmcp::{
 use tokio::sync::{Notify, OnceCell};
 
 use super::params::{
-    BatchStoreParams, DeleteParams, EmptyParams, HubsParams, ListParams, NeighborsParams,
-    PathParams, RevalidateParams, SearchParams, StoreParams, TraverseParams, UpdateParams,
+    DeleteParams, EmptyParams, HubsParams, ListParams, NeighborsParams, PathParams,
+    RevalidateParams, SearchParams, StoreParams, TraverseParams, UpdateParams,
 };
 use crate::{
     config::Config,
     db::{
-        BatchInsertItem, FilterOptions, InsertOptions, MemoryAttrOutcome, MemoryAttrPhase,
-        MemoryAttrPriority, MemoryAttrSeverity, MemoryStatus, MemoryStore, MemoryType,
-        TraverseDirection, UpdateOptions,
+        BatchInsertItem, FilterOptions, MemoryAttrOutcome, MemoryAttrPhase, MemoryAttrPriority,
+        MemoryAttrSeverity, MemoryStatus, MemoryStore, MemoryType, TraverseDirection,
+        UpdateOptions,
     },
     embedding::EmbeddingService,
 };
@@ -145,71 +145,17 @@ impl MemServer {
         ))
     }
 
-    /// Embeds `content` and inserts a new memory row, returning its row identifier.
-    #[tool(
-        description = "Store a new memory. Embeds the content locally and persists it. Returns the assigned numeric id. Provide summary when content is long or not self-describing. Provide tags when the topic is clear (e.g. architecture, auth, bug)."
-    )]
-    async fn memory_store(
-        &self,
-        Parameters(p): Parameters<StoreParams>,
-    ) -> Result<CallToolResult, McpError> {
-        // Validating all cheap fields before triggering model load/inference
-        if p.content.trim().is_empty() {
-            return tool_err("content must not be blank");
-        }
-        let memory_type = match p.memory_type.parse::<MemoryType>() {
-            Ok(t) => t,
-            Err(e) => return tool_err(e),
-        };
-        let attrs = p.attrs;
-        let tags = p.tags.unwrap_or_default();
-        let refs = p.refs.unwrap_or_default();
-        let relations = match parse_relations(p.relations) {
-            Ok(r) => r,
-            Err(msg) => return tool_err(msg),
-        };
-
-        // Embedding content and persisting the new memory row
-        let embedding = self
-            .embedding
-            .embed(p.content.clone())
-            .await
-            .map_err(ServerError::Embed)?;
-        let store = self.open_store().await?;
-        let id = store
-            .insert(
-                &p.content,
-                &embedding,
-                InsertOptions {
-                    summary: p.summary.as_deref(),
-                    tags: &tags,
-                    context: p.context.as_deref(),
-                    confidence: p.confidence,
-                    decay_rate: p.decay_rate,
-                    memory_type,
-                    attrs,
-                    relations: &relations,
-                    refs: &refs,
-                },
-            )
-            .await
-            .map_err(ServerError::StoreOp)?;
-
-        let body = serde_json::json!({ "id": id }).to_string();
-        Ok(CallToolResult::success(vec![Content::text(body)]))
-    }
-
     /// Embeds each item and inserts all rows in a single transaction.
     ///
     /// All items are embedded in one ONNX inference pass. Returns an array of `{"id"}` objects
     /// in the same order as the input. Fails atomically: if any item is invalid or any insert
     /// fails, nothing is written.
     #[tool(
-        description = "Store multiple memories in one call. Embeds all items in a single ONNX pass and inserts them atomically. Returns [{\"id\": ...}] in input order. All succeed or all fail. Maximum 100 items."
+        description = "Store one or more memories in one call. Embeds all items in a single ONNX pass and inserts them atomically. Returns [{\"id\": ...}] in input order. All succeed or all fail. Maximum 100 items."
     )]
-    async fn memory_store_batch(
+    async fn memory_store(
         &self,
-        Parameters(p): Parameters<BatchStoreParams>,
+        Parameters(p): Parameters<StoreParams>,
     ) -> Result<CallToolResult, McpError> {
         if p.items.is_empty() {
             return tool_err("items must not be empty");
@@ -315,6 +261,7 @@ impl MemServer {
                 &p.query,
                 &embedding,
                 FilterOptions {
+                    ids: None,
                     tags: p.tags.as_deref(),
                     memory_type,
                     status,
@@ -364,13 +311,19 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<ListParams>,
     ) -> Result<CallToolResult, McpError> {
+        if p.ids.as_ref().is_some_and(|ids| ids.len() > 100) {
+            return tool_err("too many ids (maximum 100)");
+        }
         let memory_type = parse_filter!(p.memory_type, MemoryType);
         let status = parse_filter!(p.status, MemoryStatus);
         let severity = parse_filter!(p.severity, MemoryAttrSeverity);
         let priority = parse_filter!(p.priority, MemoryAttrPriority);
         let outcome = parse_filter!(p.outcome, MemoryAttrOutcome);
         let phase = parse_filter!(p.phase, MemoryAttrPhase);
-        let limit = p.limit.unwrap_or(20).min(100);
+        let limit = p
+            .limit
+            .unwrap_or_else(|| p.ids.as_ref().map_or(20, |ids| ids.len() as u32))
+            .min(100);
         let offset = p.offset.unwrap_or(0);
         let Some(store) = self.store_if_present().await? else {
             return Ok(CallToolResult::success(vec![Content::text("[]")]));
@@ -378,6 +331,7 @@ impl MemServer {
         let memories = store
             .list(
                 FilterOptions {
+                    ids: p.ids.as_deref(),
                     tags: p.tags.as_deref(),
                     memory_type,
                     status,

@@ -150,7 +150,7 @@ Both `memory_search` and `memory_list` accept an optional `refs_contain` string 
 
 ## Graph traversal
 
-Relations are stored in a normalized `memory_relations(from_id, to_id, kind)` table with an index on `to_id` for efficient reverse lookups. All write operations (`memory_store`, `memory_store_batch`, `memory_update`, `memory_delete`) keep this table in sync with the `relations` JSON column.
+Relations are stored in a normalized `memory_relations(from_id, to_id, kind)` table with an index on `to_id` for efficient reverse lookups. All write operations (`memory_store`, `memory_update`, `memory_delete`) keep this table in sync with the `relations` JSON column.
 
 Five tools operate on this table: `memory_neighbors`, `memory_traverse`, `memory_path`, `memory_hubs`, and `memory_stats`. See the Tools table below for parameters and return shapes.
 
@@ -160,10 +160,9 @@ All five tools operate on the full global graph. `memory_stats` counts are also 
 
 | Tool | Description |
 |---|---|
-| `memory_store` | Embeds and persists a memory; returns `{"id"}`. Required: `content`, `memory_type`. Optional: `summary`, `tags`, `context`, `confidence` ([0, 1], default 1.0), `decay_rate` (per-day decay, default 0.0), `attrs`, `relations`, `refs` |
-| `memory_store_batch` | Stores up to 100 memories atomically in a single embedding pass; accepts `items: [{...}]` with the same fields as `memory_store`; each item requires `content` and `memory_type`; returns `[{"id"}]` in input order |
+| `memory_store` | Stores 1-100 memories atomically in a single embedding pass; accepts `items: [{...}]`; each item requires `content` and `memory_type` and optionally accepts `summary`, `tags`, `context`, `confidence`, `decay_rate`, `attrs`, `relations`, and `refs`; returns `[{"id"}]` in input order |
 | `memory_search` | Two-stage semantic search (cosine + keyword re-rank), nearest-first; optional `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; returns `effective_confidence` and `age_days` per result |
-| `memory_list` | Paginated list newest-first; optional `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; returns `confidence`, `decay_rate`, `last_seen_at`, `effective_confidence`, `age_days`, `freshness_warning` |
+| `memory_list` | Paginated list newest-first; optional exact `ids` (max 100), `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; returns `confidence`, `decay_rate`, `last_seen_at`, `effective_confidence`, `age_days`, `freshness_warning` |
 | `memory_tags` | Lists all distinct tags with occurrence counts, ordered by frequency |
 | `memory_delete` | Deletes a memory by numeric id |
 | `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear `summary` or `context`; pass `{}` to clear `attrs` or `relations`; pass `[]` to clear `refs` |

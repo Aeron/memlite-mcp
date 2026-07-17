@@ -181,10 +181,10 @@ impl McpClient {
     fn store(&mut self, content: &str, tags: &[&str]) -> i64 {
         let result = self.call_tool(
             "memory_store",
-            json!({"content": content, "tags": tags, "memory_type": "reference"}),
+            json!({"items": [{"content": content, "tags": tags, "memory_type": "reference"}]}),
         );
         let text = result["content"][0]["text"].as_str().unwrap();
-        serde_json::from_str::<Value>(text).unwrap()["id"]
+        serde_json::from_str::<Value>(text).unwrap()[0]["id"]
             .as_i64()
             .unwrap()
     }
@@ -211,7 +211,7 @@ impl Drop for McpClient {
     }
 }
 
-/// Seeds `count` memories via `memory_store_batch` (100 items per call), cycling through `SEED_CONTENT`.
+/// Seeds `count` memories via `memory_store` (100 items per call), cycling through `SEED_CONTENT`.
 ///
 /// Batching keeps seeding time manageable for large corpora: ONNX runs one
 /// inference pass per batch instead of per item. Also warms the ONNX runtime
@@ -233,7 +233,7 @@ fn seed(client: &mut McpClient, count: usize) {
                 })
             })
             .collect();
-        client.call_tool("memory_store_batch", json!({"items": items}));
+        client.call_tool("memory_store", json!({"items": items}));
         i += n;
     }
 }

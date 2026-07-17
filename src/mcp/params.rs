@@ -4,46 +4,6 @@ use serde::Deserialize;
 use crate::db::MemoryAttrs;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct StoreParams {
-    /// The full text to embed and store.
-    #[schemars(length(min = 1))]
-    pub content: String,
-    /// One-sentence description for quick recall without reading the full
-    /// content. Provide when content is long, complex, or not self-describing.
-    pub summary: Option<String>,
-    /// Category labels for grouping (e.g. ["architecture", "auth", "bug"]).
-    /// Provide when the content clearly belongs to a named topic or domain.
-    pub tags: Option<Vec<String>>,
-    /// Background rationale for this memory: why the decision was made, why it
-    /// matters, how it fits the bigger picture, or anything that gives meaning
-    /// beyond what the content itself conveys.
-    pub context: Option<String>,
-    /// Initial confidence score in [0, 1] (default 1.0); lower values indicate
-    /// uncertain or potentially outdated information.
-    #[schemars(range(min = 0.0, max = 1.0))]
-    pub confidence: Option<f64>,
-    /// Per-day confidence decay rate in [0, 1] (default 0.0); 0.01 reduces
-    /// confidence by 1% per day since the last validation.
-    #[schemars(range(min = 0.0, max = 1.0))]
-    pub decay_rate: Option<f64>,
-    /// Structured category; required. One of: "user", "project", "reference", "task",
-    /// "finding", "issue", "decision", "plan".
-    pub memory_type: String,
-    /// Type-specific extra fields. See MemoryAttrs for available typed fields.
-    pub attrs: Option<MemoryAttrs>,
-    /// Outgoing directed links to other memory identifiers. A JSON object
-    /// mapping target memory id (as a string) to a free-form relation kind,
-    /// e.g. {"7": "caused_by", "12": "blocks"}. Kind is any non-empty string;
-    /// use consistent snake_case labels across the project (e.g. caused_by,
-    /// blocks, depends_on, supersedes, related_to). Omit or pass null for none.
-    pub relations: Option<std::collections::BTreeMap<String, String>>,
-    /// External reference pointers for this memory. Free-form strings: project-relative
-    /// file paths (e.g. "src/db/store.rs"), symbol names (e.g. "MemoryStore::insert"),
-    /// URLs, or issue IDs. Prefer short paths over absolute paths.
-    pub refs: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchParams {
     /// Natural-language query; results are ranked by cosine similarity.
     #[schemars(length(min = 1))]
@@ -77,6 +37,10 @@ pub struct ListParams {
     pub limit: Option<u32>,
     /// Zero-based offset for pagination (default: 0).
     pub offset: Option<u32>,
+    /// Exact numeric identifiers to fetch; maximum 100. Missing identifiers are omitted.
+    /// Results remain ordered newest first, not in input order.
+    #[schemars(length(max = 100))]
+    pub ids: Option<Vec<i64>>,
     /// Restricts results to memories that carry all of the given tags.
     pub tags: Option<Vec<String>>,
     /// Restricts results to memories of the given type.
@@ -96,7 +60,7 @@ pub struct ListParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct BatchStoreItem {
+pub struct StoreItem {
     /// Full text to embed and store.
     #[schemars(length(min = 1))]
     pub content: String,
@@ -125,9 +89,10 @@ pub struct BatchStoreItem {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct BatchStoreParams {
+pub struct StoreParams {
     /// Items to store; maximum 100 per call.
-    pub items: Vec<BatchStoreItem>,
+    #[schemars(length(min = 1, max = 100))]
+    pub items: Vec<StoreItem>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

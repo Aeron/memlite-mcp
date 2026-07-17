@@ -4,7 +4,7 @@ pub(crate) mod options;
 pub(crate) mod store;
 pub(crate) mod types;
 
-pub use options::{FilterOptions, InsertOptions, UpdateOptions};
+pub use options::{FilterOptions, UpdateOptions};
 
 pub use store::MemoryStore;
 

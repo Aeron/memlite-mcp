@@ -4,6 +4,7 @@ use crate::db::types::{
 };
 
 /// Holds the optional metadata fields for inserting a new memory row.
+#[cfg(test)]
 #[derive(Default)]
 pub struct InsertOptions<'a> {
     /// Short label for list views.
@@ -56,6 +57,8 @@ pub struct UpdateOptions<'a> {
 /// Shared pre-filter options for search and list queries.
 #[derive(Default)]
 pub struct FilterOptions<'a> {
+    /// Restricts results to the given row identifiers.
+    pub ids: Option<&'a [i64]>,
     /// Restricts results to those carrying all of the given tags (hard AND).
     pub tags: Option<&'a [String]>,
     /// Restricts results to the given memory type.
