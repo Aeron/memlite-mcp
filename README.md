@@ -160,15 +160,15 @@ All five tools operate on the full global graph. `memory_stats` counts are also 
 
 | Tool | Description |
 |---|---|
-| `memory_store` | Stores 1-100 memories atomically in a single embedding pass; accepts `items: [{...}]`; each item requires `content` and `memory_type` and optionally accepts `summary`, `tags`, `context`, `confidence`, `decay_rate`, `attrs`, `relations`, and `refs`; returns `[{"id"}]` in input order |
-| `memory_search` | Two-stage semantic search (cosine + keyword re-rank), nearest-first; optional `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; returns `effective_confidence` and `age_days` per result |
-| `memory_list` | Paginated list newest-first; optional exact `ids` (max 100), `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; returns `confidence`, `decay_rate`, `last_seen_at`, `effective_confidence`, `age_days`, `freshness_warning` |
-| `memory_tags` | Lists all distinct tags with occurrence counts, ordered by frequency |
+| `memory_store` | Stores 1-100 memories atomically in a single embedding pass; accepts `items: [{...}]`; each item requires `content` and `memory_type` and optionally accepts `summary`, `tags`, `context`, `confidence`, `decay_rate`, `attrs`, `relations`, and `refs`; returns `{"ids":[...]}` in input order |
+| `memory_search` | Two-stage semantic search (cosine + keyword re-rank), nearest-first; optional `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; omits null and empty fields; rounds scores; returns `effective_confidence`, `age_days`, and optional compact `freshness` per result |
+| `memory_list` | Paginated list newest-first; optional exact `ids` (max 100), `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; omits null and empty fields; returns decay details only when decay is active, plus `effective_confidence`, `age_days`, and optional compact `freshness` |
+| `memory_tags` | Returns a tag-to-count object |
 | `memory_delete` | Deletes a memory by numeric id |
 | `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear `summary` or `context`; pass `{}` to clear `attrs` or `relations`; pass `[]` to clear `refs` |
 | `memory_revalidate` | Resets the decay clock on a list of memory ids without changing any other field; accepts `ids: [...]`; returns count of memories updated |
 | `memory_neighbors` | Returns immediate in-neighbors and out-neighbors of a memory; params: `id`, optional `kind` filter; returns `{outgoing: [{id, kind, memory?}], incoming: [...]}` |
 | `memory_traverse` | BFS from `start_id` up to `depth` (default 2, max 5); optional `kind` filter and `direction` (out/in/both); returns `{start_id, nodes, edges}` |
 | `memory_path` | Shortest directed path between two memories; params: `from_id`, `to_id`, optional `max_hops` (default 6); returns `{found, path}` |
-| `memory_hubs` | Top-N memories by total degree (in + out); optional `top_n` (default 10); returns `[{id, summary, memory_type, out_degree, in_degree, total_degree}]` |
-| `memory_stats` | Graph-level statistics; returns `{total_memories, by_type, total_relations, relation_kinds}` |
+| `memory_hubs` | Top-N memories by total degree (in + out); optional `top_n` (default 10); returns `[{id, summary, memory_type, out_degree, in_degree}]` |
+| `memory_stats` | Graph-level statistics; returns `{total_memories, by_type: {type: count}, total_relations, relation_kinds}` |

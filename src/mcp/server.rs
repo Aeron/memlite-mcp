@@ -41,6 +41,23 @@ macro_rules! parse_filter {
     };
 }
 
+fn compact_object(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(fields) = value.as_object_mut() {
+        fields.retain(|_, value| match value {
+            serde_json::Value::Null => false,
+            serde_json::Value::Array(items) => !items.is_empty(),
+            serde_json::Value::Object(fields) => !fields.is_empty(),
+            _ => true,
+        });
+    }
+    value
+}
+
+fn round_to(value: f64, decimal_places: i32) -> f64 {
+    let scale = 10_f64.powi(decimal_places);
+    (value * scale).round() / scale
+}
+
 pub struct MemServer {
     db_path: OnceLock<PathBuf>,
     store: OnceCell<MemoryStore>,
@@ -147,11 +164,10 @@ impl MemServer {
 
     /// Embeds each item and inserts all rows in a single transaction.
     ///
-    /// All items are embedded in one ONNX inference pass. Returns an array of `{"id"}` objects
-    /// in the same order as the input. Fails atomically: if any item is invalid or any insert
-    /// fails, nothing is written.
+    /// All items are embedded in one ONNX inference pass. Returns identifiers in the same order
+    /// as the input. Fails atomically: if any item is invalid or any insert fails, nothing is written.
     #[tool(
-        description = "Store one or more memories in one call. Embeds all items in a single ONNX pass and inserts them atomically. Returns [{\"id\": ...}] in input order. All succeed or all fail. Maximum 100 items."
+        description = "Store one or more memories in one call. Embeds all items in a single ONNX pass and inserts them atomically. Returns {\"ids\":[...]} in input order. All succeed or all fail. Maximum 100 items."
     )]
     async fn memory_store(
         &self,
@@ -219,12 +235,9 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        let body: Vec<_> = ids
-            .iter()
-            .map(|id| serde_json::json!({ "id": id }))
-            .collect();
+        let body = serde_json::json!({ "ids": ids });
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string(&body).unwrap(),
+            body.to_string(),
         )]))
     }
 
@@ -279,7 +292,7 @@ impl MemServer {
         let body: Vec<_> = results
             .into_iter()
             .map(|(m, dist)| {
-                serde_json::json!({
+                compact_object(serde_json::json!({
                     "id":                   m.id,
                     "content":              m.content,
                     "summary":              m.summary,
@@ -287,15 +300,15 @@ impl MemServer {
                     "created_at":           m.created_at,
                     "updated_at":           m.updated_at,
                     "context":              m.context,
-                    "distance":             dist,
-                    "effective_confidence": m.effective_confidence(),
+                    "distance":             round_to(dist, 4),
+                    "effective_confidence": round_to(m.effective_confidence(), 3),
                     "age_days":             m.age_days(),
                     "memory_type":          m.memory_type,
                     "attrs":                m.attrs,
                     "relations":            m.relations,
                     "refs":                 m.refs,
-                    "freshness_warning":    m.freshness_warning(),
-                })
+                    "freshness":            m.freshness_warning(),
+                }))
             })
             .collect();
         Ok(CallToolResult::success(vec![Content::text(
@@ -350,7 +363,8 @@ impl MemServer {
         let body: Vec<_> = memories
             .into_iter()
             .map(|m| {
-                serde_json::json!({
+                let decays = m.decay_rate > 0.0;
+                compact_object(serde_json::json!({
                     "id":                   m.id,
                     "content":              m.content,
                     "summary":              m.summary,
@@ -358,17 +372,17 @@ impl MemServer {
                     "created_at":           m.created_at,
                     "updated_at":           m.updated_at,
                     "context":              m.context,
-                    "confidence":           m.confidence,
-                    "decay_rate":           m.decay_rate,
-                    "last_seen_at":         m.last_seen_at,
-                    "effective_confidence": m.effective_confidence(),
+                    "confidence":           decays.then_some(m.confidence),
+                    "decay_rate":           decays.then_some(m.decay_rate),
+                    "last_seen_at":         decays.then_some(m.last_seen_at),
+                    "effective_confidence": round_to(m.effective_confidence(), 3),
                     "age_days":             m.age_days(),
                     "memory_type":          m.memory_type,
                     "attrs":                m.attrs,
                     "relations":            m.relations,
                     "refs":                 m.refs,
-                    "freshness_warning":    m.freshness_warning(),
-                })
+                    "freshness":            m.freshness_warning(),
+                }))
             })
             .collect();
         Ok(CallToolResult::success(vec![Content::text(
@@ -378,23 +392,24 @@ impl MemServer {
 
     /// Returns each distinct tag with its occurrence count, ordered by frequency.
     #[tool(
-        description = "List all tags currently in use, with occurrence counts ordered highest first. Call this before memory_store to reuse existing tags and keep the taxonomy consistent."
+        description = "Return all tags as a compact tag-to-count object. Call this before memory_store to reuse existing tags and keep the taxonomy consistent."
     )]
     async fn memory_tags(
         &self,
         Parameters(_p): Parameters<EmptyParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text("[]")]));
+            return Ok(CallToolResult::success(vec![Content::text("{}")]));
         };
         let tags = store.tags().await.map_err(ServerError::StoreOp)?;
 
-        let body: Vec<_> = tags
-            .into_iter()
-            .map(|(tag, count)| serde_json::json!({ "tag": tag, "count": count }))
-            .collect();
+        let body = serde_json::Value::Object(
+            tags.into_iter()
+                .map(|(tag, count)| (tag, serde_json::Value::from(count)))
+                .collect(),
+        );
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string(&body).unwrap(),
+            body.to_string(),
         )]))
     }
 
@@ -684,7 +699,7 @@ impl MemServer {
                     "memory_type":  e.memory_type,
                     "out_degree":   e.out_degree,
                     "in_degree":    e.in_degree,
-                    "total_degree": e.total_degree,
+
                 })
             })
             .collect();
@@ -705,7 +720,7 @@ impl MemServer {
             return Ok(CallToolResult::success(vec![Content::text(
                 serde_json::json!({
                     "total_memories": 0,
-                    "by_type": [],
+                    "by_type": {},
                     "total_relations": 0,
                     "relation_kinds": [],
                 })
@@ -713,11 +728,18 @@ impl MemServer {
             )]));
         };
         let stats = store.graph_stats().await.map_err(ServerError::StoreOp)?;
-        let by_type: Vec<_> = stats
-            .by_type
-            .into_iter()
-            .map(|(k, v)| serde_json::json!({"type": k, "count": v}))
-            .collect();
+        let by_type = serde_json::Value::Object(
+            stats
+                .by_type
+                .into_iter()
+                .map(|(memory_type, count)| {
+                    (
+                        memory_type.unwrap_or_else(|| "untyped".to_owned()),
+                        serde_json::Value::from(count),
+                    )
+                })
+                .collect(),
+        );
         let body = serde_json::json!({
             "total_memories":  stats.total_memories,
             "by_type":         by_type,

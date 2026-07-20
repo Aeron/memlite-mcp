@@ -64,11 +64,10 @@ impl Memory {
         ((now - self.updated_at).max(0) as u64) / 86400
     }
 
-    /// Returns a plain-English warning when this memory may be unreliable.
+    /// Returns a compact signal when this memory may be unreliable.
     ///
-    /// Triggers when decay is active and effective confidence has fallen below
-    /// the initial value, or when the memory has not been updated in more than
-    /// 30 days.
+    /// Reports decay when effective confidence has fallen below the initial value,
+    /// or staleness when the memory has not been updated in more than 30 days.
     pub fn freshness_warning(&self) -> Option<String> {
         let eff = self.effective_confidence();
 
@@ -80,8 +79,7 @@ impl Memory {
             };
             let val_days = ((unix_secs() - seen_at).max(0) as u64) / 86400;
             return Some(format!(
-                "Confidence decayed to {:.0}% (from {:.0}%; {} days since last validation). \
-                 Call memory_revalidate to reset the decay clock.",
+                "decayed:{:.0}%<-{:.0}%,{}d",
                 eff * 100.0,
                 self.confidence.clamp(0.0, 1.0) * 100.0,
                 val_days,
@@ -90,10 +88,7 @@ impl Memory {
 
         let days = self.age_days();
         if days > 30 {
-            return Some(format!(
-                "Memory is {} days old; verify it is still current before acting on it.",
-                days,
-            ));
+            return Some(format!("stale:{days}d"));
         }
 
         None
@@ -391,8 +386,6 @@ pub struct HubEntry {
     pub out_degree: u32,
     /// Number of incoming relation edges.
     pub in_degree: u32,
-    /// Sum of out_degree and in_degree.
-    pub total_degree: u32,
 }
 
 /// Graph-level aggregate statistics.
