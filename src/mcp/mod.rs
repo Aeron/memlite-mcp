@@ -1,3 +1,4 @@
+mod output;
 mod params;
 mod server;
 

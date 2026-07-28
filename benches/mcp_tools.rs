@@ -184,7 +184,7 @@ impl McpClient {
             json!({"items": [{"content": content, "tags": tags, "memory_type": "reference"}]}),
         );
         let text = result["content"][0]["text"].as_str().unwrap();
-        serde_json::from_str::<Value>(text).unwrap()["ids"][0]
+        serde_toon::from_str::<Value>(text).unwrap()["ids"][0]
             .as_i64()
             .unwrap()
     }

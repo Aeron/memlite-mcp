@@ -1,10 +1,11 @@
 Local agent memory store. Server-side embeddings from plain text.
+List/search outputs use literal block text; other structured outputs use TOON v3.0. Inputs remain JSON. Errors remain plain text.
 
 ## Tools
 
 - `memory_store`: atomically embed + persist `items: [...]` (1-100) in one pass; each item requires `content`, `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`). Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `attrs` (JSON object with type-specific fields; see attrs section), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`), `refs` (array of strings: file paths, symbol names, URLs). Returns `{"ids":[...]}` in input order
-- `memory_search`: cosine + keyword re-rank; nearest-first with rounded `effective_confidence`, `distance`, `age_days`, optional compact `freshness`; null/empty fields omitted. Pre-filter: `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain`
-- `memory_list`: newest-first with pagination. Filter: `ids` (exact, max 100) plus same fields as `memory_search`; null/empty fields omitted; decay details present only when active
+- `memory_search`: cosine + keyword re-rank; nearest-first block text with literal prose, RFC 3339 timestamps, folded `target_id:kind` relations, rounded `effective_confidence`/`distance`, optional compact `freshness`; null/empty fields omitted. Pre-filter: `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain`
+- `memory_list`: newest-first block text with pagination and same readable fields as search. Filter: `ids` (exact, max 100) plus same fields as `memory_search`; null/empty fields omitted; decay details present only when active
 - `memory_tags`: tag-to-count object
 - `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/attrs/relations/refs in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context; pass `{}` to clear attrs or relations; pass `[]` to clear refs
 - `memory_delete`: remove by id
@@ -64,9 +65,9 @@ Two stages: cosine selects candidate pool (~4x return count), keyword overlap re
 - 0.40-0.70: weak or tangential
 - > 0.70: unrelated
 
-### `effective_confidence` and `age_days`
+### `effective_confidence` and freshness
 
-`effective_confidence` = base confidence - accumulated decay since last validation, clamped [0,1].
+`effective_confidence` = base confidence - accumulated decay since last validation, clamped [0,1]. List/search return readable timestamps instead of raw Unix seconds; optional `freshness` summarizes meaningful decay or staleness.
 
 - >= 0.8: reliable
 - 0.5-0.8: mild caution; re-verify if decision significant

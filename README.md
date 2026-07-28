@@ -39,6 +39,7 @@ to remember anything about do not accumulate empty database files.
 - **Tag filtering**: normalized `memory_tags` table; AND semantics; usable as a pre-filter in both `memory_search` and `memory_list`
 - **External references**: optional `refs` field (array of free-form strings) attaches file paths, symbol names, URLs, or issue IDs to a memory; `refs_contain` substring filter in search and list
 - **Batch store**: up to 100 memories in a single ONNX embedding pass; atomic insert
+- **Shape-aware output**: prose-heavy `memory_list` and `memory_search` results use readable block text; other successful structured tool content uses TOON v3.0; MCP transport and tool inputs remain JSON
 - **Per-project isolation**: one DB per project path; all agents on the same project share the same DB
 - **Three embedding models**: bge-small-en-v1.5 (384d, ~67 MB), bge-base-en-v1.5 (768d, ~210 MB), bge-large-en-v1.5 (1024d, ~620 MB)
 
@@ -52,6 +53,18 @@ The embedding model is downloaded on the first `memory_store` or
 `memory_search` call, not at server start. So, the very first tool call can be
 slower. It is cached in the OS cache directory (`~/Library/Caches/memlite-mcp`
 on macOS, `~/.cache/memlite-mcp` on Linux). Subsequent calls are fully offline.
+
+### Output format benchmark
+
+`memory_list` and `memory_search` use deterministic block text so multiline prose stays literal and empty fields disappear. Relations fold onto one line as `target_id:kind`, and Unix timestamps render as RFC 3339 UTC. Other successful structured outputs use TOON, which saves the most space on uniform object arrays.
+
+The project benchmark compares byte/character size and encode latency for representative store, search, hubs, traversal, and tags payloads. TOON cases also assert lossless round trips; the search case additionally compares the block renderer:
+
+```sh
+cargo bench --bench toon_format -- --noplot
+```
+
+A reported `toon_ratio` or `block_ratio` below 1.0 means that format is smaller than compact JSON for the case.
 
 ## Configuration
 
@@ -86,7 +99,7 @@ Each memory carries a `confidence` score (base trust, 0.0–1.0) and an optional
 `decay_rate` (per-day reduction, 0.0–1.0). At query time the server computes
 `effective_confidence = confidence - decay_rate * days_since_last_seen`,
 clamped to [0, 1]. `memory_search` results include this derived value together
-with `age_days` so agents can judge freshness without parsing timestamps.
+with readable RFC 3339 timestamps and an optional compact `freshness` warning.
 
 Set `confidence < 1.0` when storing uncertain or speculative information.
 Set `decay_rate > 0.0` for time-sensitive facts that naturally become stale
@@ -158,11 +171,13 @@ All five tools operate on the full global graph. `memory_stats` counts are also 
 
 ## Tools
 
+MCP requests and tool arguments use JSON. `memory_list` and `memory_search` return deterministic block text with literal prose; other successful structured tool content uses [TOON v3.0](https://toonformat.dev). Tool errors remain plain text. All output formats omit null and empty collection fields.
+
 | Tool | Description |
 |---|---|
 | `memory_store` | Stores 1-100 memories atomically in a single embedding pass; accepts `items: [{...}]`; each item requires `content` and `memory_type` and optionally accepts `summary`, `tags`, `context`, `confidence`, `decay_rate`, `attrs`, `relations`, and `refs`; returns `{"ids":[...]}` in input order |
-| `memory_search` | Two-stage semantic search (cosine + keyword re-rank), nearest-first; optional `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; omits null and empty fields; rounds scores; returns `effective_confidence`, `age_days`, and optional compact `freshness` per result |
-| `memory_list` | Paginated list newest-first; optional exact `ids` (max 100), `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; omits null and empty fields; returns decay details only when decay is active, plus `effective_confidence`, `age_days`, and optional compact `freshness` |
+| `memory_search` | Two-stage semantic search (cosine + keyword re-rank), nearest-first; optional `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; returns block text with literal prose, RFC 3339 timestamps, folded relations, rounded `distance`/`effective_confidence`, and optional compact `freshness` per result |
+| `memory_list` | Paginated list newest-first; optional exact `ids` (max 100), `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain` filters; returns block text with literal prose, RFC 3339 timestamps, folded relations, decay details only when active, rounded `effective_confidence`, and optional compact `freshness` |
 | `memory_tags` | Returns a tag-to-count object |
 | `memory_delete` | Deletes a memory by numeric id |
 | `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear `summary` or `context`; pass `{}` to clear `attrs` or `relations`; pass `[]` to clear `refs` |

@@ -14,9 +14,12 @@ use rmcp::{
 };
 use tokio::sync::{Notify, OnceCell};
 
-use super::params::{
-    DeleteParams, EmptyParams, HubsParams, ListParams, NeighborsParams, PathParams,
-    RevalidateParams, SearchParams, StoreParams, TraverseParams, UpdateParams,
+use super::{
+    output::{render_list_results, render_search_results},
+    params::{
+        DeleteParams, EmptyParams, HubsParams, ListParams, NeighborsParams, PathParams,
+        RevalidateParams, SearchParams, StoreParams, TraverseParams, UpdateParams,
+    },
 };
 use crate::{
     config::Config,
@@ -41,21 +44,27 @@ macro_rules! parse_filter {
     };
 }
 
-fn compact_object(mut value: serde_json::Value) -> serde_json::Value {
-    if let Some(fields) = value.as_object_mut() {
-        fields.retain(|_, value| match value {
-            serde_json::Value::Null => false,
-            serde_json::Value::Array(items) => !items.is_empty(),
-            serde_json::Value::Object(fields) => !fields.is_empty(),
-            _ => true,
-        });
+/// Removes null and empty collection fields recursively while preserving array positions.
+fn compact_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                compact_value(item);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            // Compacting descendants before checking whether fields became empty
+            for value in fields.values_mut() {
+                compact_value(value);
+            }
+            fields.retain(|_, value| {
+                !matches!(value, serde_json::Value::Null)
+                    && !matches!(value, serde_json::Value::Array(items) if items.is_empty())
+                    && !matches!(value, serde_json::Value::Object(fields) if fields.is_empty())
+            });
+        }
+        _ => {}
     }
-    value
-}
-
-fn round_to(value: f64, decimal_places: i32) -> f64 {
-    let scale = 10_f64.powi(decimal_places);
-    (value * scale).round() / scale
 }
 
 pub struct MemServer {
@@ -235,10 +244,7 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        let body = serde_json::json!({ "ids": ids });
-        Ok(CallToolResult::success(vec![Content::text(
-            body.to_string(),
-        )]))
+        tool_ok(serde_json::json!({ "ids": ids }))
     }
 
     /// Embeds `query` and returns the closest stored memories ordered by cosine distance.
@@ -262,7 +268,7 @@ impl MemServer {
         let phase = parse_filter!(p.phase, MemoryAttrPhase);
         let limit = p.limit.unwrap_or(10).min(100);
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text("[]")]));
+            return tool_text("memories: 0".to_owned());
         };
         let embedding = self
             .embedding
@@ -289,31 +295,7 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        let body: Vec<_> = results
-            .into_iter()
-            .map(|(m, dist)| {
-                compact_object(serde_json::json!({
-                    "id":                   m.id,
-                    "content":              m.content,
-                    "summary":              m.summary,
-                    "tags":                 m.tags,
-                    "created_at":           m.created_at,
-                    "updated_at":           m.updated_at,
-                    "context":              m.context,
-                    "distance":             round_to(dist, 4),
-                    "effective_confidence": round_to(m.effective_confidence(), 3),
-                    "age_days":             m.age_days(),
-                    "memory_type":          m.memory_type,
-                    "attrs":                m.attrs,
-                    "relations":            m.relations,
-                    "refs":                 m.refs,
-                    "freshness":            m.freshness_warning(),
-                }))
-            })
-            .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string(&body).unwrap(),
-        )]))
+        tool_text(render_search_results(&results))
     }
 
     /// Returns memories ordered newest-first with optional tag filtering and pagination.
@@ -339,7 +321,7 @@ impl MemServer {
             .min(100);
         let offset = p.offset.unwrap_or(0);
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text("[]")]));
+            return tool_text("memories: 0".to_owned());
         };
         let memories = store
             .list(
@@ -360,34 +342,7 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        let body: Vec<_> = memories
-            .into_iter()
-            .map(|m| {
-                let decays = m.decay_rate > 0.0;
-                compact_object(serde_json::json!({
-                    "id":                   m.id,
-                    "content":              m.content,
-                    "summary":              m.summary,
-                    "tags":                 m.tags,
-                    "created_at":           m.created_at,
-                    "updated_at":           m.updated_at,
-                    "context":              m.context,
-                    "confidence":           decays.then_some(m.confidence),
-                    "decay_rate":           decays.then_some(m.decay_rate),
-                    "last_seen_at":         decays.then_some(m.last_seen_at),
-                    "effective_confidence": round_to(m.effective_confidence(), 3),
-                    "age_days":             m.age_days(),
-                    "memory_type":          m.memory_type,
-                    "attrs":                m.attrs,
-                    "relations":            m.relations,
-                    "refs":                 m.refs,
-                    "freshness":            m.freshness_warning(),
-                }))
-            })
-            .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string(&body).unwrap(),
-        )]))
+        tool_text(render_list_results(&memories))
     }
 
     /// Returns each distinct tag with its occurrence count, ordered by frequency.
@@ -399,7 +354,7 @@ impl MemServer {
         Parameters(_p): Parameters<EmptyParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text("{}")]));
+            return tool_ok(serde_json::json!({}));
         };
         let tags = store.tags().await.map_err(ServerError::StoreOp)?;
 
@@ -408,9 +363,7 @@ impl MemServer {
                 .map(|(tag, count)| (tag, serde_json::Value::from(count)))
                 .collect(),
         );
-        Ok(CallToolResult::success(vec![Content::text(
-            body.to_string(),
-        )]))
+        tool_ok(body)
     }
 
     /// Removes the memory with the given row identifier; returns whether a row was deleted.
@@ -426,8 +379,7 @@ impl MemServer {
         };
         let deleted = store.delete(p.id).await.map_err(ServerError::StoreOp)?;
         if deleted {
-            let body = serde_json::json!({ "deleted": true, "id": p.id }).to_string();
-            Ok(CallToolResult::success(vec![Content::text(body)]))
+            tool_ok(serde_json::json!({ "deleted": true, "id": p.id }))
         } else {
             tool_err(format!("no memory found with id {}", p.id))
         }
@@ -511,8 +463,7 @@ impl MemServer {
             .map_err(ServerError::StoreOp)?;
 
         if updated {
-            let body = serde_json::json!({ "updated": true, "id": p.id }).to_string();
-            Ok(CallToolResult::success(vec![Content::text(body)]))
+            tool_ok(serde_json::json!({ "updated": true, "id": p.id }))
         } else {
             tool_err(format!("no memory found with id {}", p.id))
         }
@@ -530,16 +481,13 @@ impl MemServer {
             return tool_err("ids must not be empty");
         }
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::json!({ "revalidated": 0 }).to_string(),
-            )]));
+            return tool_ok(serde_json::json!({ "revalidated": 0 }));
         };
         let count = store
             .revalidate_batch(&p.ids)
             .await
             .map_err(ServerError::StoreOp)?;
-        let body = serde_json::json!({ "revalidated": count }).to_string();
-        Ok(CallToolResult::success(vec![Content::text(body)]))
+        tool_ok(serde_json::json!({ "revalidated": count }))
     }
 
     /// Returns the direct neighbors of a memory: nodes it links to and nodes that link to it.
@@ -551,9 +499,7 @@ impl MemServer {
         Parameters(p): Parameters<NeighborsParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "{\"outgoing\":[],\"incoming\":[]}",
-            )]));
+            return tool_ok(serde_json::json!({"outgoing": [], "incoming": []}));
         };
         let neighbors = store
             .neighbors(p.id, p.kind.as_deref())
@@ -581,9 +527,7 @@ impl MemServer {
             "outgoing": neighbors.outgoing.into_iter().map(format_neighbor).collect::<Vec<_>>(),
             "incoming": neighbors.incoming.into_iter().map(format_neighbor).collect::<Vec<_>>(),
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            body.to_string(),
-        )]))
+        tool_ok(body)
     }
 
     /// BFS traversal from a starting memory node.
@@ -595,9 +539,7 @@ impl MemServer {
         Parameters(p): Parameters<TraverseParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::json!({"start_id": p.start_id, "nodes": [], "edges": []}).to_string(),
-            )]));
+            return tool_ok(serde_json::json!({"start_id": p.start_id, "nodes": [], "edges": []}));
         };
         let direction = TraverseDirection::from(p.direction.as_deref());
         let depth = p.depth.unwrap_or(2);
@@ -629,9 +571,7 @@ impl MemServer {
             .map(|(f, t, k)| serde_json::json!({"from_id": f, "to_id": t, "kind": k}))
             .collect();
         let body = serde_json::json!({"start_id": result.start_id, "nodes": nodes, "edges": edges});
-        Ok(CallToolResult::success(vec![Content::text(
-            body.to_string(),
-        )]))
+        tool_ok(body)
     }
 
     /// Finds the shortest directed path between two memory nodes.
@@ -643,9 +583,7 @@ impl MemServer {
         Parameters(p): Parameters<PathParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::json!({"found": false, "path": []}).to_string(),
-            )]));
+            return tool_ok(serde_json::json!({"found": false, "path": []}));
         };
         let max_hops = p.max_hops.unwrap_or(6);
         let result = store
@@ -672,9 +610,7 @@ impl MemServer {
                 serde_json::json!({"found": true, "path": path})
             }
         };
-        Ok(CallToolResult::success(vec![Content::text(
-            body.to_string(),
-        )]))
+        tool_ok(body)
     }
 
     /// Returns the most-connected memories ranked by total relation degree.
@@ -686,7 +622,7 @@ impl MemServer {
         Parameters(p): Parameters<HubsParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text("[]")]));
+            return tool_ok(serde_json::json!([]));
         };
         let top_n = p.top_n.unwrap_or(10);
         let entries = store.hubs(top_n).await.map_err(ServerError::StoreOp)?;
@@ -695,17 +631,14 @@ impl MemServer {
             .map(|e| {
                 serde_json::json!({
                     "id":           e.id,
-                    "summary":      e.summary,
-                    "memory_type":  e.memory_type,
+                    "summary":      e.summary.unwrap_or_default(),
+                    "memory_type":  e.memory_type.map_or_else(|| "untyped".to_owned(), |value| value.to_string()),
                     "out_degree":   e.out_degree,
                     "in_degree":    e.in_degree,
-
                 })
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string(&body).unwrap(),
-        )]))
+        tool_ok(serde_json::Value::Array(body))
     }
 
     /// Returns graph-level aggregate statistics.
@@ -717,15 +650,12 @@ impl MemServer {
         Parameters(_p): Parameters<EmptyParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.store_if_present().await? else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::json!({
-                    "total_memories": 0,
-                    "by_type": {},
-                    "total_relations": 0,
-                    "relation_kinds": [],
-                })
-                .to_string(),
-            )]));
+            return tool_ok(serde_json::json!({
+                "total_memories": 0,
+                "by_type": {},
+                "total_relations": 0,
+                "relation_kinds": [],
+            }));
         };
         let stats = store.graph_stats().await.map_err(ServerError::StoreOp)?;
         let by_type = serde_json::Value::Object(
@@ -746,9 +676,7 @@ impl MemServer {
             "total_relations": stats.total_relations,
             "relation_kinds":  stats.relation_kinds,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            body.to_string(),
-        )]))
+        tool_ok(body)
     }
 }
 
@@ -825,6 +753,18 @@ impl ServerHandler for MemServer {
     }
 }
 
+/// Encodes compact structured output as TOON text.
+fn tool_ok(mut value: serde_json::Value) -> Result<CallToolResult, McpError> {
+    compact_value(&mut value);
+    let body = serde_toon::to_string(&value).map_err(ServerError::ToonEncode)?;
+    tool_text(body)
+}
+
+/// Wraps already-formatted successful tool text.
+fn tool_text(body: String) -> Result<CallToolResult, McpError> {
+    Ok(CallToolResult::success(vec![Content::text(body)]))
+}
+
 /// Wraps a message as a tool-level error result (distinct from an MCP protocol error).
 fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
     let mut result = CallToolResult::success(vec![Content::text(msg.to_string())]);
@@ -864,6 +804,8 @@ enum ServerError {
     StoreOp(anyhow::Error),
     /// The embedding model failed to produce a vector for the given text.
     Embed(anyhow::Error),
+    /// TOON output encoding failure.
+    ToonEncode(serde_toon::Error),
 }
 
 impl From<ServerError> for McpError {
@@ -874,8 +816,43 @@ impl From<ServerError> for McpError {
                 ServerError::StoreOpen(e) => format!("failed to open database: {e}"),
                 ServerError::StoreOp(e) => format!("database operation failed: {e}"),
                 ServerError::Embed(e) => format!("embedding failed: {e}"),
+                ServerError::ToonEncode(e) => format!("TOON encoding failed: {e}"),
             },
             None,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structured_tool_output_compacts_and_round_trips_as_toon() {
+        for (input, expected) in [
+            (serde_json::json!({}), serde_json::json!({})),
+            (serde_json::json!([]), serde_json::json!([])),
+            (
+                serde_json::json!({"ids": [1, 2]}),
+                serde_json::json!({"ids": [1, 2]}),
+            ),
+            (
+                serde_json::json!({
+                    "rows": [{"id": 1, "attrs": {}, "summary": null}],
+                    "empty": [],
+                    "nested": {"empty": {}, "missing": null},
+                    "zero": 0,
+                    "blank": "",
+                }),
+                serde_json::json!({"rows": [{"id": 1}], "zero": 0, "blank": ""}),
+            ),
+        ] {
+            let result = tool_ok(input).unwrap();
+            let RawContent::Text(content) = &result.content[0].raw else {
+                panic!("expected text tool content")
+            };
+            let actual: serde_json::Value = serde_toon::from_str(&content.text).unwrap();
+            assert_eq!(actual, expected);
+        }
     }
 }
