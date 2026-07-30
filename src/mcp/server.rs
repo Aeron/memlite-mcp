@@ -492,7 +492,7 @@ impl MemServer {
 
     /// Returns the direct neighbors of a memory: nodes it links to and nodes that link to it.
     #[tool(
-        description = "Returns immediate in-neighbors and out-neighbors of a memory node. Useful for exploring what a memory directly references and what references it. Optional kind filter restricts to one edge type."
+        description = "Returns immediate in-neighbors and out-neighbors as compact selection rows with id, kind, memory_type, and summary. Optional kind filter restricts to one edge type. Fetch selected full memories with memory_list(ids=[...])."
     )]
     async fn memory_neighbors(
         &self,
@@ -507,19 +507,21 @@ impl MemServer {
             .map_err(ServerError::StoreOp)?;
 
         fn format_neighbor(n: crate::db::NeighborInfo) -> serde_json::Value {
-            let mem = n.memory.map(|m| {
-                serde_json::json!({
-                    "id":                   m.id,
-                    "summary":              m.summary,
-                    "memory_type":          m.memory_type,
-                    "attrs":                m.attrs,
-                    "effective_confidence": m.effective_confidence(),
-                })
-            });
+            let (memory_type, summary) = n.memory.map_or_else(
+                || ("untyped".to_owned(), String::new()),
+                |m| {
+                    (
+                        m.memory_type
+                            .map_or_else(|| "untyped".to_owned(), |value| value.to_string()),
+                        m.summary.unwrap_or_default(),
+                    )
+                },
+            );
             serde_json::json!({
-                "id":     n.other_id,
-                "kind":   n.kind,
-                "memory": mem,
+                "id":          n.other_id,
+                "kind":        n.kind,
+                "memory_type": memory_type,
+                "summary":     summary,
             })
         }
 
@@ -532,7 +534,7 @@ impl MemServer {
 
     /// BFS traversal from a starting memory node.
     #[tool(
-        description = "BFS traversal from a memory node up to a given depth. Returns all reachable nodes and traversed edges. direction: 'out' (default) follows outgoing edges, 'in' follows incoming, 'both' follows all. Optional kind filter restricts which edges are traversed."
+        description = "BFS traversal from a memory node up to a given depth. Returns compact node selection rows and traversed edges. direction: 'out' (default) follows outgoing relations, 'in' follows incoming, 'both' follows all. Optional kind filter restricts which edges are traversed. Fetch selected full memories with memory_list(ids=[...])."
     )]
     async fn memory_traverse(
         &self,
@@ -554,14 +556,14 @@ impl MemServer {
             .map(|n| {
                 let m = n.memory;
                 serde_json::json!({
-                    "id":                   m.id,
-                    "depth":                n.depth,
-                    "via_kind":             n.via_kind,
-                    "summary":              m.summary,
-                    "memory_type":          m.memory_type,
-                    "attrs":                m.attrs,
-                    "effective_confidence": m.effective_confidence(),
-                    "tags":                 m.tags,
+                    "id":          m.id,
+                    "depth":       n.depth,
+                    "via_kind":    n.via_kind.unwrap_or_default(),
+                    "memory_type": m.memory_type.map_or_else(
+                        || "untyped".to_owned(),
+                        |value| value.to_string(),
+                    ),
+                    "summary":     m.summary.unwrap_or_default(),
                 })
             })
             .collect();
@@ -576,7 +578,7 @@ impl MemServer {
 
     /// Finds the shortest directed path between two memory nodes.
     #[tool(
-        description = "Finds the shortest directed path between two memory nodes via outgoing relations. Returns the sequence of memories and relation kinds. Use to understand how one concept connects to another through the relation graph."
+        description = "Finds the shortest directed path between two memory nodes via outgoing relations. Returns compact memory selection rows and relation kinds. Use to understand how one concept connects to another, then fetch selected full memories with memory_list(ids=[...])."
     )]
     async fn memory_path(
         &self,
@@ -599,11 +601,13 @@ impl MemServer {
                     .map(|s| {
                         let m = s.memory;
                         serde_json::json!({
-                            "id":        m.id,
-                            "via_kind":  s.via_kind,
-                            "summary":   m.summary,
-                            "memory_type": m.memory_type,
-                            "effective_confidence": m.effective_confidence(),
+                            "id":          m.id,
+                            "via_kind":    s.via_kind.unwrap_or_default(),
+                            "memory_type": m.memory_type.map_or_else(
+                                || "untyped".to_owned(),
+                                |value| value.to_string(),
+                            ),
+                            "summary":     m.summary.unwrap_or_default(),
                         })
                     })
                     .collect();

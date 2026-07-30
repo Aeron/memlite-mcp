@@ -1,5 +1,4 @@
 Local agent memory store. Server-side embeddings from plain text.
-List/search outputs use literal block text; other structured outputs use TOON v3.0. Inputs remain JSON. Errors remain plain text.
 
 ## Tools
 
@@ -10,11 +9,13 @@ List/search outputs use literal block text; other structured outputs use TOON v3
 - `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/attrs/relations/refs in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context; pass `{}` to clear attrs or relations; pass `[]` to clear refs
 - `memory_delete`: remove by id
 - `memory_revalidate`: resets decay clock (`last_seen_at` = now) on a list of ids without changing any other field; returns count updated. Use when confirming one or more memories accurate in same session
-- `memory_neighbors`: immediate in/out neighbors; optional `kind` filter; `direction` ("out"/"in"/"both")
-- `memory_traverse`: BFS from `start_id`; `depth` (default 2, max 5), optional `kind`, `direction`
-- `memory_path`: shortest directed path; `from_id`, `to_id`, optional `max_hops` (default 6)
+- `memory_neighbors`: immediate in/out neighbors; optional `kind` filter; returns uniform `{id, kind, memory_type, summary}` selection rows
+- `memory_traverse`: BFS from `start_id`; `depth` (default 2, max 5), optional `kind`, `direction`; returns uniform `{id, depth, via_kind, memory_type, summary}` node rows plus edges
+- `memory_path`: shortest directed path; `from_id`, `to_id`, optional `max_hops` (default 6); returns uniform `{id, via_kind, memory_type, summary}` selection rows
 - `memory_hubs`: top-N by total degree; optional `top_n` (default 10)
 - `memory_stats`: graph counts; type distribution, relation kinds
+
+List/search outputs use literal block text; other structured outputs use TOON v3.0. Inputs remain JSON. Errors remain plain text.
 
 ## Workflow
 
@@ -52,6 +53,8 @@ Use when you have ids and want to explore connections, not discover from scratch
 - `memory_path`: how two nodes connect; trace cause/decision chains
 - `memory_hubs`: most-connected nodes; good orientation on unfamiliar project
 - `memory_stats`: graph shape overview
+
+Graph rows carry identifiers and one-line selection signals, not full memories. Fetch chosen records with `memory_list(ids=[...])`.
 
 ### How `memory_search` ranks
 

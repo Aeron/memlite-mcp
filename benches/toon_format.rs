@@ -144,18 +144,35 @@ fn hubs_payload() -> Value {
     )
 }
 
+fn graph_summary(i: usize) -> String {
+    format!("Graph memory node {i}: compact selection row for deferred retrieval")
+}
+
+fn neighbors_payload() -> Value {
+    let rows = |start: usize| {
+        (start..start + 10)
+            .map(|i| {
+                json!({
+                    "id": i + 1,
+                    "kind": "related_to",
+                    "memory_type": "project",
+                    "summary": graph_summary(i),
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    json!({"outgoing": rows(0), "incoming": rows(10)})
+}
+
 fn traverse_payload() -> Value {
     let nodes: Vec<_> = (0..20)
         .map(|i| {
             json!({
                 "id": i + 1,
                 "depth": i % 4,
-                "via_kind": "related_to",
-                "summary": format!("Graph memory node {i}"),
+                "via_kind": if i == 0 { "" } else { "related_to" },
                 "memory_type": "project",
-                "attrs": {"status": "open"},
-                "effective_confidence": 0.98,
-                "tags": ["memlite-mcp", "graph"]
+                "summary": graph_summary(i),
             })
         })
         .collect();
@@ -165,12 +182,28 @@ fn traverse_payload() -> Value {
     json!({"start_id": 1, "nodes": nodes, "edges": edges})
 }
 
+fn path_payload() -> Value {
+    let path: Vec<_> = (0..10)
+        .map(|i| {
+            json!({
+                "id": i + 1,
+                "via_kind": if i == 0 { "" } else { "related_to" },
+                "memory_type": "project",
+                "summary": graph_summary(i),
+            })
+        })
+        .collect();
+    json!({"found": true, "path": path})
+}
+
 fn payloads() -> Vec<(&'static str, Value)> {
     vec![
         ("store_100", json!({"ids": (1..=100).collect::<Vec<_>>()})),
         ("search_20_mixed_prose", search_payload()),
         ("hubs_20_uniform", hubs_payload()),
-        ("traverse_20", traverse_payload()),
+        ("neighbors_20_uniform", neighbors_payload()),
+        ("traverse_20_uniform", traverse_payload()),
+        ("path_10_uniform", path_payload()),
         (
             "tags_20",
             json!({

@@ -58,7 +58,7 @@ on macOS, `~/.cache/memlite-mcp` on Linux). Subsequent calls are fully offline.
 
 `memory_list` and `memory_search` use deterministic block text so multiline prose stays literal and empty fields disappear. Relations fold onto one line as `target_id:kind`, and Unix timestamps render as RFC 3339 UTC. Other successful structured outputs use TOON, which saves the most space on uniform object arrays.
 
-The project benchmark compares byte/character size and encode latency for representative store, search, hubs, traversal, and tags payloads. TOON cases also assert lossless round trips; the search case additionally compares the block renderer:
+The project benchmark compares byte/character size and encode latency for representative store, search, hubs, neighbors, traversal, path, and tags payloads. TOON cases also assert lossless round trips; the search case additionally compares the block renderer:
 
 ```sh
 cargo bench --bench toon_format -- --noplot
@@ -182,8 +182,8 @@ MCP requests and tool arguments use JSON. `memory_list` and `memory_search` retu
 | `memory_delete` | Deletes a memory by numeric id |
 | `memory_update` | Updates any field in-place; re-embeds on content change; resets decay clock; pass `""` to clear `summary` or `context`; pass `{}` to clear `attrs` or `relations`; pass `[]` to clear `refs` |
 | `memory_revalidate` | Resets the decay clock on a list of memory ids without changing any other field; accepts `ids: [...]`; returns count of memories updated |
-| `memory_neighbors` | Returns immediate in-neighbors and out-neighbors of a memory; params: `id`, optional `kind` filter; returns `{outgoing: [{id, kind, memory?}], incoming: [...]}` |
-| `memory_traverse` | BFS from `start_id` up to `depth` (default 2, max 5); optional `kind` filter and `direction` (out/in/both); returns `{start_id, nodes, edges}` |
-| `memory_path` | Shortest directed path between two memories; params: `from_id`, `to_id`, optional `max_hops` (default 6); returns `{found, path}` |
+| `memory_neighbors` | Returns immediate in-neighbors and out-neighbors of a memory; params: `id`, optional `kind` filter; returns uniform `{outgoing: [{id, kind, memory_type, summary}], incoming: [...]}` selection rows |
+| `memory_traverse` | BFS from `start_id` up to `depth` (default 2, max 5); optional `kind` filter and `direction` (out/in/both); returns `{start_id, nodes: [{id, depth, via_kind, memory_type, summary}], edges}` |
+| `memory_path` | Shortest directed path between two memories; params: `from_id`, `to_id`, optional `max_hops` (default 6); returns `{found, path: [{id, via_kind, memory_type, summary}]}`; use `memory_list(ids=[...])` to retrieve selected full memories |
 | `memory_hubs` | Top-N memories by total degree (in + out); optional `top_n` (default 10); returns `[{id, summary, memory_type, out_degree, in_degree}]` |
 | `memory_stats` | Graph-level statistics; returns `{total_memories, by_type: {type: count}, total_relations, relation_kinds}` |
