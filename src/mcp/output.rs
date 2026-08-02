@@ -2,8 +2,10 @@ use std::fmt::Write;
 
 use crate::db::types::Memory;
 
+const CONTENT_PREVIEW_CHARS: usize = 120;
+
 /// Renders semantic search results as compact blocks with literal prose.
-pub(super) fn render_search_results(results: &[(Memory, f64)]) -> String {
+pub(super) fn render_search_results(results: &[(Memory, f64)], include_content: bool) -> String {
     if results.is_empty() {
         return "memories: 0".to_owned();
     }
@@ -13,13 +15,13 @@ pub(super) fn render_search_results(results: &[(Memory, f64)]) -> String {
         if index > 0 {
             output.push('\n');
         }
-        render_memory(&mut output, memory, Some(*distance), false);
+        render_memory(&mut output, memory, Some(*distance), false, include_content);
     }
     output
 }
 
 /// Renders chronological memory results as compact blocks with literal prose.
-pub(super) fn render_list_results(memories: &[Memory]) -> String {
+pub(super) fn render_list_results(memories: &[Memory], include_content: bool) -> String {
     if memories.is_empty() {
         return "memories: 0".to_owned();
     }
@@ -29,12 +31,18 @@ pub(super) fn render_list_results(memories: &[Memory]) -> String {
         if index > 0 {
             output.push('\n');
         }
-        render_memory(&mut output, memory, None, true);
+        render_memory(&mut output, memory, None, true, include_content);
     }
     output
 }
 
-fn render_memory(output: &mut String, memory: &Memory, distance: Option<f64>, include_decay: bool) {
+fn render_memory(
+    output: &mut String,
+    memory: &Memory,
+    distance: Option<f64>,
+    include_decay: bool,
+    include_content: bool,
+) {
     // Writing identity and scoring fields in the header
     let memory_type = memory
         .memory_type
@@ -55,9 +63,13 @@ fn render_memory(output: &mut String, memory: &Memory, distance: Option<f64>, in
     )
     .unwrap();
 
-    // Writing compact metadata before literal prose blocks
-    if let Some(summary) = memory.summary.as_deref().filter(|value| !value.is_empty()) {
-        write_scalar(output, "summary", summary);
+    // Writing compact metadata before selection or full prose
+    if !include_content {
+        if let Some(summary) = memory.summary.as_deref().filter(|value| !value.is_empty()) {
+            write_scalar(output, "summary", summary);
+        } else {
+            write_scalar(output, "content_preview", &content_preview(&memory.content));
+        }
     }
     writeln!(
         output,
@@ -100,11 +112,27 @@ fn render_memory(output: &mut String, memory: &Memory, distance: Option<f64>, in
         writeln!(output, "refs: {}", memory.refs.join(", ")).unwrap();
     }
 
-    // Writing prose last so multiline values remain contiguous
-    if let Some(context) = memory.context.as_deref().filter(|value| !value.is_empty()) {
-        write_scalar(output, "context", context);
+    // Writing full prose last so multiline values remain contiguous
+    if include_content {
+        if let Some(context) = memory.context.as_deref().filter(|value| !value.is_empty()) {
+            write_scalar(output, "context", context);
+        }
+        write_block(output, "content", &memory.content);
     }
-    write_block(output, "content", &memory.content);
+}
+
+fn content_preview(content: &str) -> String {
+    let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= CONTENT_PREVIEW_CHARS {
+        return normalized;
+    }
+
+    let mut preview = normalized
+        .chars()
+        .take(CONTENT_PREVIEW_CHARS - 3)
+        .collect::<String>();
+    preview.push_str("...");
+    preview
 }
 
 fn format_attrs(memory: &Memory) -> Vec<String> {
@@ -224,9 +252,9 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
         let timestamp = format_unix_timestamp(now);
-        let actual = render_list_results(&[sample_memory(now)]);
+        let actual = render_list_results(&[sample_memory(now)], true);
         let expected = format!(
-            "# 49 plan (phase=draft) effective_confidence=0.9\nsummary: Output plan\nupdated_at: {timestamp} (created_at {timestamp})\ntags: mcp, performance\nrelations: 50:supported_by\nrefs: src/mcp/server.rs\ncontent:\n  line one\n  \n  line two\n"
+            "# 49 plan (phase=draft) effective_confidence=0.9\nupdated_at: {timestamp} (created_at {timestamp})\ntags: mcp, performance\nrelations: 50:supported_by\nrefs: src/mcp/server.rs\ncontent:\n  line one\n  \n  line two\n"
         );
 
         assert_eq!(actual, expected);
@@ -236,8 +264,44 @@ mod tests {
     }
 
     #[test]
+    fn renders_compact_results_with_summary_without_full_prose() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let mut memory = sample_memory(now);
+        memory.context = Some("Decision rationale".to_owned());
+
+        let actual = render_search_results(&[(memory, 0.12345)], false);
+
+        assert!(actual.contains("summary: Output plan\n"));
+        assert!(!actual.contains("context:"));
+        assert!(!actual.contains("content:"));
+        assert!(!actual.contains("content_preview:"));
+    }
+
+    #[test]
+    fn renders_bounded_content_preview_when_summary_is_missing() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let mut memory = sample_memory(now);
+        memory.summary = None;
+        memory.content = "alpha\n beta\tgamma".to_owned();
+
+        let actual = render_search_results(&[(memory, 0.12345)], false);
+
+        assert!(actual.contains("content_preview: alpha beta gamma\n"));
+        assert_eq!(
+            content_preview(&"x".repeat(121)),
+            format!("{}...", "x".repeat(117))
+        );
+    }
+
+    #[test]
     fn renders_empty_results_explicitly() {
-        assert_eq!(render_list_results(&[]), "memories: 0");
-        assert_eq!(render_search_results(&[]), "memories: 0");
+        assert_eq!(render_list_results(&[], true), "memories: 0");
+        assert_eq!(render_search_results(&[], false), "memories: 0");
     }
 }

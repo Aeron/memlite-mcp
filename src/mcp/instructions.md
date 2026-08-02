@@ -2,9 +2,9 @@ Local agent memory store. Server-side embeddings from plain text.
 
 ## Tools
 
-- `memory_store`: atomically embed + persist `items: [...]` (1-100) in one pass; each item requires `content`, `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`). Optional: `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `attrs` (JSON object with type-specific fields; see attrs section), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`), `refs` (array of strings: file paths, symbol names, URLs). Returns `{"ids":[...]}` in input order
-- `memory_search`: cosine + keyword re-rank; nearest-first block text with literal prose, RFC 3339 timestamps, folded `target_id:kind` relations, rounded `effective_confidence`/`distance`, optional compact `freshness`; null/empty fields omitted. Pre-filter: `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain`
-- `memory_list`: newest-first block text with pagination and same readable fields as search. Filter: `ids` (exact, max 100) plus same fields as `memory_search`; null/empty fields omitted; decay details present only when active
+- `memory_store`: atomically embed + persist `items: [...]` (1-100) in one pass; each item requires `content`, `memory_type` (`user`/`project`/`reference`/`task`/`finding`/`issue`/`decision`/`plan`). Optional: `summary` (one-line recall aid), `tags`, `context` (rationale), `confidence` ([0,1], default 1.0), `decay_rate` (per-day, default 0.0), `attrs` (JSON object with type-specific fields; see attrs section), `relations` (JSON object `{"<id>": "<kind>"}`, e.g. `{"7": "caused_by"}`), `refs` (array of strings: file paths, symbol names, URLs). Returns `{"ids":[...]}` in input order
+- `memory_search`: cosine + keyword re-rank; nearest-first. Compact block text by default: summary, else bounded one-line content preview. Pass `include_content: true` for full context/content; full results omit redundant summary. Includes RFC 3339 timestamps, folded `target_id:kind` relations, rounded `effective_confidence`/`distance`, optional compact `freshness`; null/empty fields omitted. `limit` default 10, max 100. Pre-filter: `tags`, `memory_type`, `status`, `severity`, `priority`, `outcome`, `phase`, `refs_contain`
+- `memory_list`: newest-first block text; same readable fields as search. `include_content` default true; full results omit redundant summary. Pass `false` for compact selection output. Pagination: `limit` (default 20, max 100), `offset`. Filter: `ids` (exact, max 100) plus same fields as `memory_search`; null/empty fields omitted; decay details only when active
 - `memory_tags`: tag-to-count object
 - `memory_update`: update content/summary/tags/context/confidence/decay_rate/memory_type/attrs/relations/refs in-place; re-embeds on content change; resets decay clock; pass `""` to clear summary/context; pass `{}` to clear attrs or relations; pass `[]` to clear refs
 - `memory_delete`: remove by id
@@ -42,7 +42,7 @@ Call `memory_tags` to reuse existing tags; inventing synonyms fragments taxonomy
 
 ### Searching vs listing
 
-`memory_search` for concept/topic; semantic, age-agnostic. `memory_list` only for chronological review (e.g., "what stored recently?").
+`memory_search` for concept/topic; semantic, age-agnostic, compact by default. Select identifiers from results, then fetch full records with `memory_list(ids=[...])`. `memory_list` without `ids` for chronological review (e.g., "what stored recently?"); pass `include_content: false` when only selection signals needed.
 
 ### Graph navigation
 
@@ -58,7 +58,7 @@ Graph rows carry identifiers and one-line selection signals, not full memories. 
 
 ### How `memory_search` ranks
 
-Two stages: cosine selects candidate pool (~4x return count), keyword overlap re-ranks within it. Pre-filters (`tags`, `memory_type`, and all attrs fields) exclude before both stages; attrs filters match via `json_extract`. Result missing: drop filters first; still absent, rephrase with different vocabulary (semantic = embedding-based, not keyword-based).
+Two stages: cosine selects candidate pool (~4x return count), keyword overlap re-ranks within it. Pre-filters (`tags`, `memory_type`, `refs_contain`, and all attrs fields) exclude before both stages; attrs filters match via `json_extract`. Result missing: drop filters first; still absent, rephrase with different vocabulary (semantic = embedding-based, not keyword-based).
 
 ### Distance scores
 
@@ -82,7 +82,7 @@ Confirmed accurate? Call `memory_revalidate([id])`. Multiple: pass all ids in on
 
 ### `summary`
 
-Provide when content > 2-3 sentences, uses jargon, or is structured data. Shown in list views; helps decide whether to read full content. Skip for short, self-describing facts. Pass `""` to clear.
+Provide when content > 2-3 sentences, uses jargon, or is structured data. Shown in compact search/list output; helps decide whether to fetch full content. Compact output falls back to bounded one-line content preview when summary absent. Full output omits summary; content already present. Skip for short, self-describing facts. Pass `""` to clear.
 
 ### `context`
 

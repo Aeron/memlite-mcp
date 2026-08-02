@@ -11,6 +11,9 @@ pub struct SearchParams {
     /// Maximum number of results to return (default: 10, max: 100).
     #[schemars(range(max = 100))]
     pub limit: Option<u32>,
+    /// Full context and content in each result (default: false).
+    /// Compact selection output when false: summary, or bounded content preview as fallback.
+    pub include_content: Option<bool>,
     /// Restricts results to memories that carry all of the given tags.
     pub tags: Option<Vec<String>>,
     /// Restricts results to memories of the given type.
@@ -41,6 +44,9 @@ pub struct ListParams {
     /// Results remain ordered newest first, not in input order.
     #[schemars(length(max = 100))]
     pub ids: Option<Vec<i64>>,
+    /// Full context and content in each result (default: true).
+    /// Full output omits redundant summary.
+    pub include_content: Option<bool>,
     /// Restricts results to memories that carry all of the given tags.
     pub tags: Option<Vec<String>>,
     /// Restricts results to memories of the given type.

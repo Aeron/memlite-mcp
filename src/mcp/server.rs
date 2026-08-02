@@ -251,7 +251,7 @@ impl MemServer {
     ///
     /// Skips embedding entirely when no DB file exists yet.
     #[tool(
-        description = "Search memories by semantic similarity. Returns the closest matches for the given query, ordered by cosine distance (lower = more similar)."
+        description = "Search memories by semantic similarity. Returns the closest matches ordered by cosine distance (lower = more similar). Content is omitted by default; compact results include summary or a bounded content preview. Pass include_content=true for full context and content; full results omit redundant summary."
     )]
     async fn memory_search(
         &self,
@@ -295,12 +295,15 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        tool_text(render_search_results(&results))
+        tool_text(render_search_results(
+            &results,
+            p.include_content.unwrap_or(false),
+        ))
     }
 
     /// Returns memories ordered newest-first with optional tag filtering and pagination.
     #[tool(
-        description = "List stored memories, newest first. Supports pagination via limit and offset."
+        description = "List stored memories, newest first. Supports pagination via limit and offset. include_content defaults to true and full results omit redundant summary. Pass false for compact selection output; fetch selected full memories with memory_list(ids=[...])."
     )]
     async fn memory_list(
         &self,
@@ -342,7 +345,10 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        tool_text(render_list_results(&memories))
+        tool_text(render_list_results(
+            &memories,
+            p.include_content.unwrap_or(true),
+        ))
     }
 
     /// Returns each distinct tag with its occurrence count, ordered by frequency.
