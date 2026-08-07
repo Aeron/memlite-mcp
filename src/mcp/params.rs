@@ -73,24 +73,42 @@ pub struct StoreItem {
     /// One-sentence description for quick recall without reading the full
     /// content. Provide when content is long, complex, or not self-describing.
     pub summary: Option<String>,
-    /// Category labels for grouping (e.g. ["architecture", "auth", "bug"]).
+    /// Grouping labels; reuse existing tags, lowercase, singular where natural
+    /// (e.g. ["architecture", "auth", "bug"]).
     pub tags: Option<Vec<String>>,
     /// Background rationale for this memory.
     pub context: Option<String>,
-    /// Structured category; required. One of: "user", "project", "reference", "task",
-    /// "finding", "issue", "decision", "plan".
+    /// Structured category; required. One of: "user" (preferences, working
+    /// style, opinions on agent approach), "project" (conventions,
+    /// architecture, constraints), "reference" (external or domain facts),
+    /// "task" (follow-ups to complete), "finding" (observation, evaluation,
+    /// or feedback on work quality), "issue" (defect or bug), "decision"
+    /// (what was chosen, what rejected, why), "plan" (phased roadmap).
+    /// Feedback is not a type: opinions on approach go to "user";
+    /// work-quality observations go to "finding" or "issue". Unclear:
+    /// use "project" for general codebase facts.
     pub memory_type: String,
-    /// Initial confidence score in [0, 1] (default 1.0).
+    /// Initial confidence score in [0, 1] (default 1.0): 0.5-0.7 for
+    /// speculative or inferred information, 0.8-0.9 for believed but
+    /// unverified information, 1.0 for confirmed information.
     #[schemars(range(min = 0.0, max = 1.0))]
     pub confidence: Option<f64>,
-    /// Per-day confidence decay rate in [0, 1] (default 0.0).
+    /// Per-day confidence decay rate in [0, 1] (default 0.0): 0.0 for stable
+    /// facts and decisions, 0.005-0.01 for slowly drifting details,
+    /// 0.02-0.05 for environment state or workarounds, 0.1+ for
+    /// time-sensitive information.
     #[schemars(range(min = 0.0, max = 1.0))]
     pub decay_rate: Option<f64>,
-    /// Type-specific extra fields; same structure as memory_store attrs.
+    /// Typed metadata: status for tasks, findings, or issues; severity for
+    /// findings or issues; priority for tasks; outcome and reversible for
+    /// decisions; phase for plans.
     pub attrs: Option<MemoryAttrs>,
-    /// Outgoing directed links; same format as memory_store relations.
+    /// Outgoing one-way links as {"<target_id>": "<kind>"}; common kinds:
+    /// caused_by, causes, blocks, depends_on, supersedes, related_to,
+    /// duplicate_of.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
-    /// External reference pointers; same format as memory_store refs.
+    /// External pointers such as file paths, symbols, URLs, or issue
+    /// identifiers; file paths should be short and project-relative.
     pub refs: Option<Vec<String>>,
 }
 
@@ -164,26 +182,43 @@ pub struct UpdateParams {
     pub content: Option<String>,
     /// Replacement summary; pass empty string to clear the field.
     pub summary: Option<String>,
-    /// Replacement tags.
+    /// Replacement grouping labels; reuse existing tags, lowercase, singular
+    /// where natural.
     pub tags: Option<Vec<String>>,
     /// Replacement context; pass empty string to clear the field.
     pub context: Option<String>,
-    /// Replacement confidence score; clamped to [0, 1].
+    /// Replacement confidence score in [0, 1]: 0.5-0.7 for speculative or
+    /// inferred information, 0.8-0.9 for believed but unverified information,
+    /// 1.0 for confirmed information.
     #[schemars(range(min = 0.0, max = 1.0))]
     pub confidence: Option<f64>,
-    /// Replacement per-day confidence decay rate; clamped to [0, 1].
+    /// Replacement per-day confidence decay rate in [0, 1]: 0.0 for stable
+    /// facts and decisions, 0.005-0.01 for slowly drifting details,
+    /// 0.02-0.05 for environment state or workarounds, 0.1+ for
+    /// time-sensitive information.
     #[schemars(range(min = 0.0, max = 1.0))]
     pub decay_rate: Option<f64>,
-    /// Replacement structured category. One of: "user", "project", "reference", "task",
-    /// "finding", "issue", "decision", "plan". Empty string is rejected.
+    /// Replacement structured category. One of: "user" (preferences, working
+    /// style, opinions on agent approach), "project" (conventions,
+    /// architecture, constraints), "reference" (external or domain facts),
+    /// "task" (follow-ups to complete), "finding" (observation, evaluation,
+    /// or feedback on work quality), "issue" (defect or bug), "decision"
+    /// (what was chosen, what rejected, why), "plan" (phased roadmap).
+    /// Feedback is not a type: opinions on approach go to "user";
+    /// work-quality observations go to "finding" or "issue". Empty string is
+    /// rejected.
     pub memory_type: Option<String>,
-    /// Replacement attrs; replaces the full set when provided.
-    /// Omit fields to clear them; pass an empty object to clear all.
+    /// Replacement typed metadata; replaces the full set when provided.
+    /// Status applies to tasks, findings, or issues; severity to findings or
+    /// issues; priority to tasks; outcome and reversible to decisions; phase
+    /// to plans. An empty object clears all metadata.
     pub attrs: Option<MemoryAttrs>,
-    /// Replacement outgoing relations; replaces the full set when provided.
-    /// Same format as memory_store: {"<id>": "<kind>"}. Pass {} to clear all links.
+    /// Replacement outgoing one-way links as {"<target_id>": "<kind>"};
+    /// common kinds: caused_by, causes, blocks, depends_on, supersedes,
+    /// related_to, duplicate_of. An empty object clears all links.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
-    /// Replacement external reference pointers; replaces the full set when provided.
-    /// Pass [] to clear all refs.
+    /// Replacement external pointers such as file paths, symbols, URLs, or
+    /// issue identifiers; file paths should be short and project-relative.
+    /// An empty array clears all refs.
     pub refs: Option<Vec<String>>,
 }

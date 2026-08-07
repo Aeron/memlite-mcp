@@ -176,7 +176,7 @@ impl MemServer {
     /// All items are embedded in one ONNX inference pass. Returns identifiers in the same order
     /// as the input. Fails atomically: if any item is invalid or any insert fails, nothing is written.
     #[tool(
-        description = "Store one or more memories in one call. Embeds all items in a single ONNX pass and inserts them atomically. Returns {\"ids\":[...]} in input order. All succeed or all fail. Maximum 100 items."
+        description = "Store one or more memories in one call. Before storing, call memory_tags to reuse the taxonomy, then memory_search for the same concept; if distance < 0.15, update the existing memory instead. Store only information that will save meaningful future effort. Embeds all items in one ONNX pass and inserts them atomically. Returns {\"ids\":[...]} in input order. All succeed or all fail. Maximum 100 items."
     )]
     async fn memory_store(
         &self,
@@ -251,7 +251,7 @@ impl MemServer {
     ///
     /// Skips embedding entirely when no DB file exists yet.
     #[tool(
-        description = "Search memories by semantic similarity. Returns the closest matches ordered by cosine distance (lower = more similar). Content is omitted by default; compact results include summary or a bounded content preview. Pass include_content=true for full context and content; full results omit redundant summary."
+        description = "Search memories by semantic similarity before investigating, debugging, or implementing. Returns closest matches ordered by cosine distance: <0.15 likely same concept, <0.40 related, 0.40-0.70 weak, >0.70 unrelated. effective_confidence >=0.8 is reliable, 0.5-0.8 warrants caution, <0.5 is potentially stale. Content is omitted by default; compact results include summary or a bounded content preview. Pass include_content=true for full context and content; full results omit redundant summary."
     )]
     async fn memory_search(
         &self,
@@ -303,7 +303,7 @@ impl MemServer {
 
     /// Returns memories ordered newest-first with optional tag filtering and pagination.
     #[tool(
-        description = "List stored memories, newest first. Supports pagination via limit and offset. include_content defaults to true and full results omit redundant summary. Pass false for compact selection output; fetch selected full memories with memory_list(ids=[...])."
+        description = "List stored memories, newest first. effective_confidence >=0.8 is reliable, 0.5-0.8 warrants caution, <0.5 is potentially stale. Supports pagination via limit and offset. include_content defaults to true and full results omit redundant summary. Pass false for compact selection output; fetch selected full memories with memory_list(ids=[...])."
     )]
     async fn memory_list(
         &self,
@@ -374,7 +374,7 @@ impl MemServer {
 
     /// Removes the memory with the given row identifier; returns whether a row was deleted.
     #[tool(
-        description = "Delete a memory by its numeric id. Returns whether a memory was actually removed."
+        description = "Delete a memory by its numeric id only when it is fully obsolete or factually wrong. Preserve completed history by using memory_update with attrs.status=resolved for resolved tasks, findings, and issues. Returns whether a memory was actually removed."
     )]
     async fn memory_delete(
         &self,
