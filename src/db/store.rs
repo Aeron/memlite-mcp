@@ -187,7 +187,7 @@ impl MemoryStore {
             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         let mut ids = Vec::with_capacity(items.len());
 
-        for item in &items {
+        for item in items {
             let tags_json = serde_json::to_string(&item.tags)?;
             let item_refs_json = serde_json::to_string(&item.refs)?;
             let item_attrs_json = serde_json::to_string(&item.attrs)?;
@@ -196,19 +196,13 @@ impl MemoryStore {
             tx.execute(
                 sql,
                 libsql::params_from_iter([
-                    Value::Text(item.content.clone()),
-                    item.summary
-                        .as_deref()
-                        .map(|s| Value::Text(s.to_owned()))
-                        .unwrap_or(Value::Null),
+                    Value::Text(item.content),
+                    item.summary.map(Value::Text).unwrap_or(Value::Null),
                     Value::Text(tags_json),
                     Value::Blob(emb_blob),
                     Value::Integer(now),
                     Value::Integer(now),
-                    item.context
-                        .as_deref()
-                        .map(|c| Value::Text(c.to_owned()))
-                        .unwrap_or(Value::Null),
+                    item.context.map(Value::Text).unwrap_or(Value::Null),
                     Value::Real(item.confidence),
                     Value::Real(item.decay_rate),
                     Value::Integer(now),
@@ -581,46 +575,42 @@ impl MemoryStore {
         let conn = &self.read_conn;
 
         // Outgoing: this memory -> others
-        let (out_sql, out_params): (String, Vec<Value>) = if let Some(kf) = kind_filter {
+        let (out_sql, out_params): (&str, Vec<Value>) = if let Some(kf) = kind_filter {
             (
-                "select to_id, kind from memory_relations where from_id = ? and kind = ? order by kind"
-                    .to_owned(),
+                "select to_id, kind from memory_relations where from_id = ? and kind = ? order by kind",
                 vec![Value::Integer(id), Value::Text(kf.to_owned())],
             )
         } else {
             (
-                "select to_id, kind from memory_relations where from_id = ? order by kind"
-                    .to_owned(),
+                "select to_id, kind from memory_relations where from_id = ? order by kind",
                 vec![Value::Integer(id)],
             )
         };
         let mut out_pairs: Vec<(i64, String)> = Vec::new();
 
         let mut rows = conn
-            .query(&out_sql, libsql::params_from_iter(out_params))
+            .query(out_sql, libsql::params_from_iter(out_params))
             .await?;
         while let Some(row) = rows.next().await? {
             out_pairs.push((row.get(0)?, row.get(1)?));
         }
 
         // Incoming: others -> this memory
-        let (in_sql, in_params): (String, Vec<Value>) = if let Some(kf) = kind_filter {
+        let (in_sql, in_params): (&str, Vec<Value>) = if let Some(kf) = kind_filter {
             (
-                "select from_id, kind from memory_relations where to_id = ? and kind = ? order by kind"
-                    .to_owned(),
+                "select from_id, kind from memory_relations where to_id = ? and kind = ? order by kind",
                 vec![Value::Integer(id), Value::Text(kf.to_owned())],
             )
         } else {
             (
-                "select from_id, kind from memory_relations where to_id = ? order by kind"
-                    .to_owned(),
+                "select from_id, kind from memory_relations where to_id = ? order by kind",
                 vec![Value::Integer(id)],
             )
         };
         let mut in_pairs: Vec<(i64, String)> = Vec::new();
 
         let mut rows = conn
-            .query(&in_sql, libsql::params_from_iter(in_params))
+            .query(in_sql, libsql::params_from_iter(in_params))
             .await?;
         while let Some(row) = rows.next().await? {
             in_pairs.push((row.get(0)?, row.get(1)?));

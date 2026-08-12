@@ -180,7 +180,7 @@ impl MemServer {
     )]
     async fn memory_store(
         &self,
-        Parameters(p): Parameters<StoreParams>,
+        Parameters(mut p): Parameters<StoreParams>,
     ) -> Result<CallToolResult, McpError> {
         if p.items.is_empty() {
             return tool_err("items must not be empty");
@@ -192,7 +192,7 @@ impl MemServer {
         // Validating cheap fields before embedding anything
         let mut parsed_types: Vec<MemoryType> = Vec::with_capacity(p.items.len());
         let mut parsed_relations: Vec<Vec<(i64, String)>> = Vec::with_capacity(p.items.len());
-        for (i, item) in p.items.iter().enumerate() {
+        for (i, item) in p.items.iter_mut().enumerate() {
             if item.content.trim().is_empty() {
                 return tool_err(format!("item {i}: content must not be blank"));
             }
@@ -200,7 +200,7 @@ impl MemServer {
                 Ok(v) => v,
                 Err(e) => return tool_err(format!("item {i}: {e}")),
             };
-            let rels = match parse_relations(item.relations.clone()) {
+            let rels = match parse_relations(item.relations.take()) {
                 Ok(r) => r,
                 Err(msg) => return tool_err(format!("item {i}: {msg}")),
             };
