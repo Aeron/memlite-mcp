@@ -100,12 +100,12 @@ fn render_memory(
         writeln!(output, "freshness: {freshness}").unwrap();
     }
     if !memory.relations.is_empty() {
-        let relations = memory
+        let relations: Vec<String> = memory
             .relations
             .iter()
             .map(|(id, kind)| format!("{id}:{kind}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+            .collect();
+        let relations = relations.join(", ");
         writeln!(output, "relations: {relations}").unwrap();
     }
     if !memory.refs.is_empty() {
@@ -127,10 +127,7 @@ fn content_preview(content: &str) -> String {
         return normalized;
     }
 
-    let mut preview = normalized
-        .chars()
-        .take(CONTENT_PREVIEW_CHARS - 3)
-        .collect::<String>();
+    let mut preview: String = normalized.chars().take(CONTENT_PREVIEW_CHARS - 3).collect();
     preview.push_str("...");
     preview
 }

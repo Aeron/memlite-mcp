@@ -23,7 +23,7 @@ impl EmbeddingService {
     /// Creates a service configured to load `model` from `cache_dir` on first use.
     ///
     /// Does not download or initialize anything; the model loads on the first call to
-    /// [`embed`] or [`embed_batch`].
+    /// [`embed_owned`] or [`embed_batch_owned`].
     pub fn new(model: EmbeddingModel, cache_dir: PathBuf) -> Self {
         EmbeddingService {
             model_kind: model,
@@ -58,16 +58,20 @@ impl EmbeddingService {
             .map(Arc::clone)
     }
 
-    /// Embeds a slice of strings in one ONNX inference pass, returning one vector per input.
+    /// Embeds owned strings in one ONNX inference pass and returns them with their vectors.
     ///
-    /// Offloads blocking ONNX inference to a Tokio blocking thread. Loads the model on first call.
-    pub async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    /// Keeping ownership in the blocking task lets callers retain stored content without
+    /// cloning every string before inference.
+    pub async fn embed_batch_owned(
+        &self,
+        texts: Vec<String>,
+    ) -> Result<(Vec<String>, Vec<Vec<f32>>)> {
         let expected = texts.len();
         let model = self.model().await?;
         tokio::task::spawn_blocking(move || {
             let mut guard = model.lock().expect("embedding mutex poisoned");
             let embeddings = guard
-                .embed(texts, None)
+                .embed(&texts, None)
                 .map_err(|e| anyhow!("embedding: {e}"))?;
             if embeddings.len() != expected {
                 return Err(anyhow!(
@@ -76,19 +80,21 @@ impl EmbeddingService {
                     expected
                 ));
             }
-            Ok(embeddings)
+            Ok((texts, embeddings))
         })
         .await
         .map_err(|e| anyhow!("embedding join: {e}"))?
     }
 
-    /// Embeds a single string and returns the raw float vector.
-    ///
-    /// Delegates to [`embed_batch`] with a one-element vec.
-    pub async fn embed(&self, text: String) -> Result<Vec<f32>> {
-        self.embed_batch(vec![text])
-            .await?
+    /// Embeds one owned string and returns it with the raw float vector.
+    pub async fn embed_owned(&self, text: String) -> Result<(String, Vec<f32>)> {
+        let (mut texts, mut embeddings) = self.embed_batch_owned(vec![text]).await?;
+        let text = texts
             .pop()
-            .ok_or_else(|| anyhow!("embedding returned no vector"))
+            .ok_or_else(|| anyhow!("embedding returned no input text"))?;
+        let embedding = embeddings
+            .pop()
+            .ok_or_else(|| anyhow!("embedding returned no vector"))?;
+        Ok((text, embedding))
     }
 }

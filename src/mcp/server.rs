@@ -136,14 +136,14 @@ impl MemServer {
             .get_or_try_init(|| {
                 let path = db_path.clone();
                 async move {
-                    let store = MemoryStore::open(&path)
+                    // Reading vector width from fastembed's model registry
+                    let fastembed_model = model.into();
+                    let dimensions = fastembed::TextEmbedding::get_model_info(&fastembed_model)
+                        .expect("configured embedding model must be supported")
+                        .dim;
+                    MemoryStore::open(&path, &model.to_string(), dimensions)
                         .await
-                        .map_err(|e| McpError::from(ServerError::StoreOpen(e)))?;
-                    store
-                        .check_embedding_model(&model.to_string())
-                        .await
-                        .map_err(|e| McpError::from(ServerError::StoreOpen(e)))?;
-                    Ok(store)
+                        .map_err(|e| McpError::from(ServerError::StoreOpen(e)))
                 }
             })
             .await
@@ -208,15 +208,20 @@ impl MemServer {
             parsed_relations.push(rels);
         }
 
-        // Embedding all items in one inference pass
-        let contents: Vec<String> = p.items.iter().map(|item| item.content.clone()).collect();
-        let embeddings = self
+        // Moving content through inference to avoid cloning every stored string
+        let contents = p
+            .items
+            .iter_mut()
+            .map(|item| std::mem::take(&mut item.content))
+            .collect();
+        let (contents, embeddings) = self
             .embedding
-            .embed_batch(contents)
+            .embed_batch_owned(contents)
             .await
             .map_err(ServerError::Embed)?;
 
-        // Assembling BatchInsertItem values; all parallel vecs have the same length as p.items
+        // Assembling values from vectors whose lengths were checked during embedding
+        let mut contents = contents.into_iter();
         let mut embeddings = embeddings.into_iter();
         let mut parsed_types = parsed_types.into_iter();
         let mut parsed_relations = parsed_relations.into_iter();
@@ -224,7 +229,7 @@ impl MemServer {
             .items
             .into_iter()
             .map(|item| BatchInsertItem {
-                content: item.content,
+                content: contents.next().unwrap(),
                 embedding: embeddings.next().unwrap(),
                 summary: item.summary,
                 tags: item.tags.unwrap_or_default(),
@@ -270,14 +275,14 @@ impl MemServer {
         let Some(store) = self.store_if_present().await? else {
             return tool_text("memories: 0".to_owned());
         };
-        let embedding = self
+        let (query, embedding) = self
             .embedding
-            .embed(p.query.clone())
+            .embed_owned(p.query)
             .await
             .map_err(ServerError::Embed)?;
         let results = store
             .search(
-                &p.query,
+                &query,
                 &embedding,
                 FilterOptions {
                     ids: None,
@@ -399,7 +404,7 @@ impl MemServer {
     )]
     async fn memory_update(
         &self,
-        Parameters(p): Parameters<UpdateParams>,
+        Parameters(mut p): Parameters<UpdateParams>,
     ) -> Result<CallToolResult, McpError> {
         if p.content.is_none()
             && p.summary.is_none()
@@ -417,6 +422,13 @@ impl MemServer {
             );
         }
 
+        if p.content
+            .as_ref()
+            .is_some_and(|content| content.trim().is_empty())
+        {
+            return tool_err("content must not be blank");
+        }
+
         let update_attrs = p.attrs;
         let update_memory_type = match p.memory_type.as_deref() {
             None => None,
@@ -426,26 +438,29 @@ impl MemServer {
                 Err(e) => return tool_err(e),
             },
         };
+        let update_relations = match p.relations.take().map(|m| parse_relations(Some(m))) {
+            None => None,
+            Some(Ok(relations)) => Some(relations),
+            Some(Err(message)) => return tool_err(message),
+        };
         let Some(store) = self.store_if_present().await? else {
             return tool_err(format!("no memory found with id {}", p.id));
         };
+        if !store.contains(p.id).await.map_err(ServerError::StoreOp)? {
+            return tool_err(format!("no memory found with id {}", p.id));
+        }
 
-        // Re-embedding only when content changes
-        let new_embedding = if let Some(ref c) = p.content {
-            Some(
-                self.embedding
-                    .embed(c.clone())
-                    .await
-                    .map_err(ServerError::Embed)?,
-            )
+        // Moving changed content through inference without an extra allocation
+        let new_embedding = if let Some(content) = p.content.take() {
+            let (content, embedding) = self
+                .embedding
+                .embed_owned(content)
+                .await
+                .map_err(ServerError::Embed)?;
+            p.content = Some(content);
+            Some(embedding)
         } else {
             None
-        };
-
-        let update_relations = match p.relations.map(|m| parse_relations(Some(m))) {
-            None => None,
-            Some(Ok(r)) => Some(r),
-            Some(Err(msg)) => return tool_err(msg),
         };
         let update_refs = p.refs.as_deref();
         let updated = store
@@ -485,6 +500,9 @@ impl MemServer {
     ) -> Result<CallToolResult, McpError> {
         if p.ids.is_empty() {
             return tool_err("ids must not be empty");
+        }
+        if p.ids.len() > 100 {
+            return tool_err("too many ids (maximum 100)");
         }
         let Some(store) = self.store_if_present().await? else {
             return tool_ok(serde_json::json!({ "revalidated": 0 }));
@@ -716,9 +734,9 @@ impl ServerHandler for MemServer {
 
         const LIST_ROOTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-        let root_uris = if supports_roots {
+        let root_uris: Vec<String> = if supports_roots {
             match tokio::time::timeout(LIST_ROOTS_TIMEOUT, context.peer.list_roots()).await {
-                Ok(Ok(result)) => result.roots.into_iter().map(|r| r.uri).collect::<Vec<_>>(),
+                Ok(Ok(result)) => result.roots.into_iter().map(|r| r.uri).collect(),
                 Ok(Err(e)) => {
                     tracing::warn!("list_roots failed: {e}");
                     vec![]
@@ -796,6 +814,11 @@ fn parse_relations(
         let id = key.parse::<i64>().map_err(|_| {
             format!("relations key {key} is not a valid memory id; expected a numeric id")
         })?;
+        if id <= 0 {
+            return Err(format!(
+                "relations key {key} is not a valid memory id; expected a positive numeric id"
+            ));
+        }
         if kind.trim().is_empty() {
             return Err(format!("relations[{key}]: kind must be a non-empty string"));
         }
@@ -835,7 +858,28 @@ impl From<ServerError> for McpError {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
     use super::*;
+
+    fn test_server() -> MemServer {
+        let config = Config::try_parse_from([
+            "memlite-mcp",
+            "--project-path",
+            "/tmp/memlite-mcp-server-test",
+        ])
+        .unwrap();
+        let model = config.embedding_model.into();
+        let embedding = EmbeddingService::new(model, std::env::temp_dir());
+        MemServer::new(config, embedding)
+    }
+
+    fn result_text(result: &CallToolResult) -> &str {
+        let RawContent::Text(content) = &result.content[0].raw else {
+            panic!("expected text tool content")
+        };
+        &content.text
+    }
 
     #[test]
     fn structured_tool_output_compacts_and_round_trips_as_toon() {
@@ -858,11 +902,50 @@ mod tests {
             ),
         ] {
             let result = tool_ok(input).unwrap();
-            let RawContent::Text(content) = &result.content[0].raw else {
-                panic!("expected text tool content")
-            };
-            let actual: serde_json::Value = serde_toon::from_str(&content.text).unwrap();
+            let actual: serde_json::Value = serde_toon::from_str(result_text(&result)).unwrap();
             assert_eq!(actual, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn memory_update_rejects_blank_content_before_opening_store() {
+        let result = test_server()
+            .memory_update(Parameters(UpdateParams {
+                id: 1,
+                content: Some("  ".to_owned()),
+                summary: None,
+                tags: None,
+                context: None,
+                confidence: None,
+                decay_rate: None,
+                memory_type: None,
+                attrs: None,
+                relations: None,
+                refs: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result_text(&result), "content must not be blank");
+    }
+
+    #[tokio::test]
+    async fn memory_revalidate_rejects_more_than_one_hundred_ids() {
+        let result = test_server()
+            .memory_revalidate(Parameters(RevalidateParams { ids: vec![1; 101] }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result_text(&result), "too many ids (maximum 100)");
+    }
+
+    #[test]
+    fn parse_relations_rejects_nonpositive_target() {
+        let error = parse_relations(Some(std::collections::BTreeMap::from([(
+            "0".to_owned(),
+            "related_to".to_owned(),
+        )])))
+        .unwrap_err();
+        assert!(error.contains("positive numeric id"));
     }
 }

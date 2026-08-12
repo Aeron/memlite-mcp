@@ -60,7 +60,7 @@ fn search_block_text(payload: &Value) -> String {
         )
         .unwrap();
         if let Some(attrs) = row.get("attrs").and_then(Value::as_object) {
-            let values = [
+            let values: Vec<String> = [
                 "status",
                 "severity",
                 "priority",
@@ -77,7 +77,7 @@ fn search_block_text(payload: &Value) -> String {
                     format!("{key}={value}")
                 })
             })
-            .collect::<Vec<_>>();
+            .collect();
             if !values.is_empty() {
                 write!(output, " ({})", values.join(", ")).unwrap();
             }
@@ -100,24 +100,18 @@ fn search_block_text(payload: &Value) -> String {
         )
         .unwrap();
         if let Some(tags) = row.get("tags").and_then(Value::as_array) {
-            let tags = tags
-                .iter()
-                .map(|value| value.as_str().unwrap())
-                .collect::<Vec<_>>();
+            let tags: Vec<&str> = tags.iter().map(|value| value.as_str().unwrap()).collect();
             writeln!(output, "tags: {}", tags.join(", ")).unwrap();
         }
         if let Some(relations) = row.get("relations").and_then(Value::as_array) {
-            let relations = relations
+            let relations: Vec<&str> = relations
                 .iter()
                 .map(|value| value.as_str().unwrap())
-                .collect::<Vec<_>>();
+                .collect();
             writeln!(output, "relations: {}", relations.join(", ")).unwrap();
         }
         if let Some(refs) = row.get("refs").and_then(Value::as_array) {
-            let refs = refs
-                .iter()
-                .map(|value| value.as_str().unwrap())
-                .collect::<Vec<_>>();
+            let refs: Vec<&str> = refs.iter().map(|value| value.as_str().unwrap()).collect();
             writeln!(output, "refs: {}", refs.join(", ")).unwrap();
         }
         writeln!(output, "content:").unwrap();
@@ -149,7 +143,7 @@ fn graph_summary(i: usize) -> String {
 }
 
 fn neighbors_payload() -> Value {
-    let rows = |start: usize| {
+    let rows = |start: usize| -> Vec<Value> {
         (start..start + 10)
             .map(|i| {
                 json!({
@@ -159,7 +153,7 @@ fn neighbors_payload() -> Value {
                     "summary": graph_summary(i),
                 })
             })
-            .collect::<Vec<_>>()
+            .collect()
     };
     json!({"outgoing": rows(0), "incoming": rows(10)})
 }

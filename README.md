@@ -28,7 +28,7 @@ to remember anything about do not accumulate empty database files.
 ## Features
 
 - **Local-only, no API keys**: one SQLite file per project, on-device ONNX embeddings; nothing leaves the machine
-- **Semantic search**: two-stage retrieval — cosine vector search plus keyword re-rank
+- **Semantic search**: DiskANN vector retrieval plus keyword re-rank; exact cosine scan when filters are present
 - **Knowledge graph**: directed relations between memories, with traversal, shortest path, neighbor, hub, and statistics tools
 - **Confidence and decay**: per-memory trust score with optional time decay and revalidation
 - **Structured records**: eight memory types, typed status/severity/priority attrs, tags, and external references — all filterable

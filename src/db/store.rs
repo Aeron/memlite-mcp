@@ -1,12 +1,12 @@
 use std::{path::Path, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use libsql::{Builder, Connection, Value};
 use tokio::sync::Mutex;
 
 use super::helpers::{
     build_where, fetch_memories_by_ids, floats_to_blob, parse_memory_row, relations_to_json,
-    rerank_by_overlap, unix_secs,
+    rerank_by_overlap, tags_to_json, unix_secs,
 };
 #[cfg(test)]
 use super::options::InsertOptions;
@@ -17,6 +17,32 @@ use super::types::{
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
+const VECTOR_INDEX_NAME: &str = "memories_embedding_idx";
+
+async fn validate_relation_targets(tx: &libsql::Transaction, ids: &[i64]) -> Result<()> {
+    // Finding missing identifiers with one native JSON table query
+    let mut rows = tx
+        .query(
+            "select coalesce(group_concat(id, ', '), '')
+            from (select distinct cast(value as integer) as id
+            from json_each(?)
+            where not exists (select 1 from memories where rowid = cast(value as integer))
+            order by id)",
+            libsql::params![serde_json::to_string(ids)?],
+        )
+        .await?;
+    let missing: String = rows
+        .next()
+        .await?
+        .expect("aggregate query returns one row")
+        .get(0)?;
+    match missing.as_str() {
+        "" => Ok(()),
+        ids => Err(anyhow!(
+            "relations reference missing memory identifiers: {ids}"
+        )),
+    }
+}
 
 /// Provides persistent memory operations over explicit query and mutation connections.
 pub struct MemoryStore {
@@ -26,7 +52,7 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     /// Opens (or creates) a local SQLite DB at `path`.
-    pub async fn open(path: &Path) -> Result<Self> {
+    pub async fn open(path: &Path, model_name: &str, embedding_dimensions: usize) -> Result<Self> {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -37,7 +63,7 @@ impl MemoryStore {
         write_conn
             .execute("pragma synchronous = normal", ())
             .await?;
-        super::migrations::run(&write_conn).await?;
+        super::migrations::run(&write_conn, model_name, embedding_dimensions).await?;
 
         let read_conn = db.connect()?;
         read_conn.busy_timeout(BUSY_TIMEOUT)?;
@@ -46,37 +72,6 @@ impl MemoryStore {
             read_conn,
             write_conn: Mutex::new(write_conn),
         })
-    }
-
-    /// Validates that `model_name` matches what is stored in the `meta` table.
-    ///
-    /// On first call for a given database file, records the model so future opens can
-    /// detect mismatches. Returns an error when the stored model differs, preventing
-    /// mixed-dimension vectors from corrupting cosine-distance results.
-    pub async fn check_embedding_model(&self, model_name: &str) -> Result<()> {
-        let conn = self.write_conn.lock().await;
-        let mut rows = conn
-            .query("select value from meta where key = 'embedding_model'", ())
-            .await?;
-        if let Some(row) = rows.next().await? {
-            let stored: String = row.get(0)?;
-            if stored != model_name {
-                return Err(anyhow::anyhow!(
-                    "embedding model mismatch: DB was created with '{}' \
-                     but '{}' was requested; \
-                     use the original model or delete the database to start fresh",
-                    stored,
-                    model_name,
-                ));
-            }
-        } else {
-            conn.execute(
-                "insert into meta (key, value) values ('embedding_model', ?)",
-                libsql::params![model_name],
-            )
-            .await?;
-        }
-        Ok(())
     }
 
     /// Inserts a new memory and returns its rowid.
@@ -90,80 +85,23 @@ impl MemoryStore {
         embedding: &[f32],
         opts: InsertOptions<'_>,
     ) -> Result<i64> {
-        let InsertOptions {
-            summary,
-            tags,
-            context,
-            confidence,
-            decay_rate,
-            memory_type,
-            attrs,
-            relations,
-            refs,
-        } = opts;
-        let conn = self.write_conn.lock().await;
-        let tx = conn
-            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
-            .await?;
-        let tags_json = serde_json::to_string(tags)?;
-        let now = unix_secs();
-        let emb_blob = floats_to_blob(embedding);
-        let confidence = confidence.unwrap_or(1.0).clamp(0.0, 1.0);
-        let decay_rate = decay_rate.unwrap_or(0.0).clamp(0.0, 1.0);
-        let refs_json = serde_json::to_string(refs)?;
-        let attrs_json = serde_json::to_string(&attrs.unwrap_or_default())?;
-
-        // Inserting the main memory row
-        tx.execute(
-            "insert into memories (
-                content, summary, tags, embedding, created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, relations, refs, attrs
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            libsql::params_from_iter([
-                Value::Text(content.to_owned()),
-                summary
-                    .map(|s| Value::Text(s.to_owned()))
-                    .unwrap_or(Value::Null),
-                Value::Text(tags_json),
-                Value::Blob(emb_blob),
-                Value::Integer(now),
-                Value::Integer(now),
-                context
-                    .map(|c| Value::Text(c.to_owned()))
-                    .unwrap_or(Value::Null),
-                Value::Real(confidence),
-                Value::Real(decay_rate),
-                Value::Integer(now),
-                Value::Text(memory_type.to_string()),
-                Value::Text(relations_to_json(relations)?),
-                Value::Text(refs_json),
-                Value::Text(attrs_json),
-            ]),
-        )
-        .await?;
-        let id = tx.last_insert_rowid();
-
-        // Syncing normalized tag table
-        for tag in tags.iter().filter(|t| !t.is_empty()) {
-            tx.execute(
-                "insert or ignore into memory_tags (memory_id, tag) values (?, ?)",
-                libsql::params![id, tag.as_str()],
-            )
-            .await?;
-        }
-
-        // Syncing normalized relations table
-        for (to_id, kind) in relations.iter() {
-            tx.execute(
-                "insert or ignore into memory_relations (from_id, to_id, kind) values (?, ?, ?)",
-                libsql::params![id, *to_id, kind.as_str()],
-            )
-            .await?;
-        }
-
-        tx.commit().await?;
-
-        Ok(id)
+        let item = BatchInsertItem {
+            content: content.to_owned(),
+            embedding: embedding.to_vec(),
+            summary: opts.summary.map(str::to_owned),
+            tags: opts.tags.to_vec(),
+            context: opts.context.map(str::to_owned),
+            confidence: opts.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
+            decay_rate: opts.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
+            memory_type: opts.memory_type,
+            attrs: opts.attrs.unwrap_or_default(),
+            relations: opts.relations.to_vec(),
+            refs: opts.refs.to_vec(),
+        };
+        self.insert_batch(vec![item])
+            .await?
+            .pop()
+            .ok_or_else(|| anyhow!("single-item insert returned no identifier"))
     }
 
     /// Inserts multiple memories in a single transaction, returning their rowids in input order.
@@ -180,6 +118,12 @@ impl MemoryStore {
         let tx = conn
             .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
             .await?;
+        let relation_ids: Vec<i64> = items
+            .iter()
+            .flat_map(|item| item.relations.iter().map(|(id, _)| *id))
+            .collect();
+        validate_relation_targets(&tx, &relation_ids).await?;
+
         let now = unix_secs();
         let sql = "insert into memories (
                 content, summary, tags, embedding, created_at, updated_at, context,
@@ -188,7 +132,8 @@ impl MemoryStore {
         let mut ids = Vec::with_capacity(items.len());
 
         for item in items {
-            let tags_json = serde_json::to_string(&item.tags)?;
+            let tags_json = tags_to_json(&item.tags)?;
+            let relations_json = relations_to_json(&item.relations)?;
             let item_refs_json = serde_json::to_string(&item.refs)?;
             let item_attrs_json = serde_json::to_string(&item.attrs)?;
             let emb_blob = floats_to_blob(&item.embedding);
@@ -198,7 +143,7 @@ impl MemoryStore {
                 libsql::params_from_iter([
                     Value::Text(item.content),
                     item.summary.map(Value::Text).unwrap_or(Value::Null),
-                    Value::Text(tags_json),
+                    Value::Text(tags_json.clone()),
                     Value::Blob(emb_blob),
                     Value::Integer(now),
                     Value::Integer(now),
@@ -207,7 +152,7 @@ impl MemoryStore {
                     Value::Real(item.decay_rate),
                     Value::Integer(now),
                     Value::Text(item.memory_type.to_string()),
-                    Value::Text(relations_to_json(&item.relations)?),
+                    Value::Text(relations_json.clone()),
                     Value::Text(item_refs_json),
                     Value::Text(item_attrs_json),
                 ]),
@@ -217,23 +162,19 @@ impl MemoryStore {
             let id = tx.last_insert_rowid();
             ids.push(id);
 
-            // Syncing normalized tag table within the same transaction
-            for tag in item.tags.iter().filter(|t| !t.is_empty()) {
-                tx.execute(
-                    "insert or ignore into memory_tags (memory_id, tag) values (?, ?)",
-                    libsql::params![id, tag.as_str()],
-                )
-                .await?;
-            }
-
-            // Syncing normalized relations table within the same transaction
-            for (to_id, kind) in item.relations.iter() {
-                tx.execute(
-                    "insert or ignore into memory_relations (from_id, to_id, kind) values (?, ?, ?)",
-                    libsql::params![id, *to_id, kind.as_str()],
-                )
-                .await?;
-            }
+            // Populating normalized tables from the same canonical JSON values
+            tx.execute(
+                "insert or ignore into memory_tags (memory_id, tag)
+                 select ?, value from json_each(?) where trim(value) != ''",
+                libsql::params![id, tags_json],
+            )
+            .await?;
+            tx.execute(
+                "insert or ignore into memory_relations (from_id, to_id, kind)
+                 select ?, cast(key as integer), value from json_each(?)",
+                libsql::params![id, relations_json],
+            )
+            .await?;
         }
 
         tx.commit().await?;
@@ -245,9 +186,8 @@ impl MemoryStore {
     ///
     /// Fetches up to `limit * 4` candidates from the database (capped at 400),
     /// then re-ranks by word-overlap between `query_text` and each memory's content.
-    /// Tie-breaks on cosine distance (ascending). Returns the top `limit` results.
-    ///
-    /// Optionally pre-filters by `agent_id` and/or `tags` (all supplied tags must match).
+    /// Unfiltered searches use the vector index; filtered searches retain exact
+    /// pre-filter semantics with a cosine scan. Returns the top `limit` results.
     pub async fn search(
         &self,
         query_text: &str,
@@ -255,24 +195,46 @@ impl MemoryStore {
         filter: FilterOptions<'_>,
         limit: u32,
     ) -> Result<Vec<(Memory, f64)>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let emb_blob = floats_to_blob(query_embedding);
         let candidate_limit = (limit as i64).saturating_mul(4).min(400);
-        let mut params: Vec<Value> = vec![Value::Blob(emb_blob)];
-        let where_sql = build_where(&filter, &mut params)?;
-        params.push(Value::Integer(candidate_limit));
-
-        // NOTE: dist is placed last so parse_memory_row can use a fixed column range (0-13)
-        let sql = format!(
-            "select
-                rowid, content, summary, tags,
-                created_at, updated_at, context,
-                confidence, decay_rate, last_seen_at, type, relations, refs, attrs,
-                vector_distance_cos(embedding, ?) as dist
-            from memories
-            {where_sql}
-            order by dist asc
-            limit ?"
-        );
+        let (sql, params) = if filter.is_empty() {
+            (
+                format!(
+                    "select
+                        m.rowid, m.content, m.summary, m.tags,
+                        m.created_at, m.updated_at, m.context,
+                        m.confidence, m.decay_rate, m.last_seen_at, m.type,
+                        m.relations, m.refs, m.attrs,
+                        vector_distance_cos(m.embedding, ?1) as dist
+                    from vector_top_k('{VECTOR_INDEX_NAME}', ?1, ?2) as v
+                    join memories m on m.rowid = v.id
+                    order by dist asc"
+                ),
+                vec![Value::Blob(emb_blob), Value::Integer(candidate_limit)],
+            )
+        } else {
+            let mut params = vec![Value::Blob(emb_blob)];
+            let where_sql = build_where(&filter, &mut params)?;
+            params.push(Value::Integer(candidate_limit));
+            (
+                format!(
+                    "select
+                        rowid, content, summary, tags,
+                        created_at, updated_at, context,
+                        confidence, decay_rate, last_seen_at, type, relations, refs, attrs,
+                        vector_distance_cos(embedding, ?) as dist
+                    from memories
+                    {where_sql}
+                    order by dist asc
+                    limit ?"
+                ),
+                params,
+            )
+        };
         let mut rows = self
             .read_conn
             .query(&sql, libsql::params_from_iter(params))
@@ -290,7 +252,7 @@ impl MemoryStore {
 
     /// Returns memories ordered by creation time, newest first.
     ///
-    /// Optionally pre-filters by `agent_id` and/or `tags` (all supplied tags must match).
+    /// Optionally pre-filters by identifiers, tags, type, attrs, or refs.
     pub async fn list(
         &self,
         filter: FilterOptions<'_>,
@@ -347,6 +309,18 @@ impl MemoryStore {
         Ok(results)
     }
 
+    /// Returns whether a memory with the given row identifier exists.
+    pub async fn contains(&self, id: i64) -> Result<bool> {
+        let mut rows = self
+            .read_conn
+            .query(
+                "select 1 from memories where rowid = ? limit 1",
+                libsql::params![id],
+            )
+            .await?;
+        Ok(rows.next().await?.is_some())
+    }
+
     /// Deletes a memory by rowid; returns true if a row was actually removed.
     pub async fn delete(&self, id: i64) -> Result<bool> {
         let conn = self.write_conn.lock().await;
@@ -365,15 +339,20 @@ impl MemoryStore {
             )
             .await?;
 
-            // Removing outgoing relations from this memory and incoming relations pointing to it
+            // Removing incoming links from source JSON before deleting normalized edges
+            let relation_path = format!("$.\"{id}\"");
             tx.execute(
-                "delete from memory_relations where from_id = ?",
-                libsql::params![id],
+                "update memories
+                 set relations = json_remove(relations, ?), updated_at = ?
+                 where rowid in (
+                    select from_id from memory_relations where to_id = ?
+                 )",
+                libsql::params![relation_path, unix_secs(), id],
             )
             .await?;
             tx.execute(
-                "delete from memory_relations where to_id = ?",
-                libsql::params![id],
+                "delete from memory_relations where from_id = ? or to_id = ?",
+                libsql::params![id, id],
             )
             .await?;
         }
@@ -393,7 +372,6 @@ impl MemoryStore {
     /// - `confidence` and `decay_rate` are clamped to [0.0, 1.0] when provided.
     /// - `last_seen_at` is always bumped to now when any field is updated,
     ///   resetting the confidence decay clock.
-    /// - When `agent_id` is set, only modifies the row if it also matches that agent.
     /// - Returns true when at least one row was modified.
     pub async fn update(&self, id: i64, opts: UpdateOptions<'_>) -> Result<bool> {
         let UpdateOptions {
@@ -424,10 +402,19 @@ impl MemoryStore {
             return Ok(false);
         }
 
+        let tags_json = tags.map(tags_to_json).transpose()?;
+        let relations_json = relations.map(relations_to_json).transpose()?;
         let conn = self.write_conn.lock().await;
         let tx = conn
             .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
             .await?;
+        if let Some(updated_relations) = relations {
+            let relation_ids: Vec<i64> = updated_relations
+                .iter()
+                .map(|(target_id, _)| *target_id)
+                .collect();
+            validate_relation_targets(&tx, &relation_ids).await?;
+        }
         let now = unix_secs();
 
         // Building SET clauses and positional params for each provided field
@@ -446,9 +433,9 @@ impl MemoryStore {
                 Value::Text(s.to_owned())
             });
         }
-        if let Some(t) = tags {
+        if let Some(value) = &tags_json {
             set_clauses.push("tags = ?");
-            params.push(Value::Text(serde_json::to_string(t)?));
+            params.push(Value::Text(value.clone()));
         }
         if let Some(emb) = embedding {
             set_clauses.push("embedding = ?");
@@ -478,9 +465,9 @@ impl MemoryStore {
             set_clauses.push("attrs = ?");
             params.push(Value::Text(serde_json::to_string(a)?));
         }
-        if let Some(rels) = relations {
+        if let Some(value) = &relations_json {
             set_clauses.push("relations = ?");
-            params.push(Value::Text(relations_to_json(rels)?));
+            params.push(Value::Text(value.clone()));
         }
         if let Some(r) = refs {
             set_clauses.push("refs = ?");
@@ -500,41 +487,37 @@ impl MemoryStore {
 
         let affected = tx.execute(&sql, libsql::params_from_iter(params)).await?;
 
-        // Syncing memory_tags when the tags column was updated
+        // Synchronizing normalized tables from the same canonical JSON values
         if affected > 0
-            && let Some(updated_tags) = tags
+            && let Some(value) = tags_json
         {
             tx.execute(
                 "delete from memory_tags where memory_id = ?",
                 libsql::params![id],
             )
             .await?;
-
-            for tag in updated_tags.iter().filter(|t| !t.is_empty()) {
-                tx.execute(
-                    "insert or ignore into memory_tags (memory_id, tag) values (?, ?)",
-                    libsql::params![id, tag.as_str()],
-                )
-                .await?;
-            }
+            tx.execute(
+                "insert or ignore into memory_tags (memory_id, tag)
+                 select ?, value from json_each(?) where trim(value) != ''",
+                libsql::params![id, value],
+            )
+            .await?;
         }
 
-        // Syncing memory_relations when the relations column was updated
         if affected > 0
-            && let Some(updated_rels) = relations
+            && let Some(value) = relations_json
         {
             tx.execute(
                 "delete from memory_relations where from_id = ?",
                 libsql::params![id],
             )
             .await?;
-            for (to_id, kind) in updated_rels.iter() {
-                tx.execute(
-                    "insert or ignore into memory_relations (from_id, to_id, kind) values (?, ?, ?)",
-                    libsql::params![id, *to_id, kind.as_str()],
-                )
-                .await?;
-            }
+            tx.execute(
+                "insert or ignore into memory_relations (from_id, to_id, kind)
+                 select ?, cast(key as integer), value from json_each(?)",
+                libsql::params![id, value],
+            )
+            .await?;
         }
 
         tx.commit().await?;
@@ -544,21 +527,17 @@ impl MemoryStore {
 
     /// Resets the decay clock on a batch of memories without changing any other field.
     ///
-    /// Issues a single UPDATE touching only `updated_at` and `last_seen_at`. Returns
-    /// the count of rows actually modified; may be less than `ids.len()` when some
-    /// ids do not exist.
+    /// Issues a single update touching only `last_seen_at`. Returns the count of rows
+    /// actually modified; may be less than `ids.len()` when some identifiers do not exist.
     pub async fn revalidate_batch(&self, ids: &[i64]) -> Result<u64> {
         if ids.is_empty() {
             return Ok(0);
         }
         let conn = self.write_conn.lock().await;
         let now = unix_secs();
-        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let sql = format!(
-            "update memories set updated_at = ?, last_seen_at = ? where rowid in ({placeholders})"
-        );
-        let mut params: Vec<Value> = Vec::with_capacity(2 + ids.len());
-        params.push(Value::Integer(now));
+        let placeholders = vec!["?"; ids.len()].join(", ");
+        let sql = format!("update memories set last_seen_at = ? where rowid in ({placeholders})");
+        let mut params: Vec<Value> = Vec::with_capacity(1 + ids.len());
         params.push(Value::Integer(now));
         for id in ids {
             params.push(Value::Integer(*id));
@@ -617,13 +596,12 @@ impl MemoryStore {
         }
 
         // Fetch full memories for all referenced ids in a single query
-        let all_other_ids: Vec<i64> = out_pairs
+        let unique_other_ids: std::collections::HashSet<i64> = out_pairs
             .iter()
             .map(|(oid, _)| *oid)
             .chain(in_pairs.iter().map(|(oid, _)| *oid))
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
             .collect();
+        let all_other_ids: Vec<i64> = unique_other_ids.into_iter().collect();
         let memory_map = fetch_memories_by_ids(conn, &all_other_ids).await?;
 
         let outgoing = out_pairs
@@ -674,7 +652,7 @@ impl MemoryStore {
             if frontier.is_empty() {
                 break;
             }
-            let placeholders = frontier.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let placeholders = vec!["?"; frontier.len()].join(", ");
             // next_nodes: (new_id, via_kind); may contain duplicates, deduped via visited check
             let mut next_nodes: Vec<(i64, String)> = Vec::new();
 
@@ -813,7 +791,7 @@ impl MemoryStore {
             if frontier.is_empty() {
                 break;
             }
-            let placeholders = frontier.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let placeholders = vec!["?"; frontier.len()].join(", ");
             let sql = format!(
                 "select from_id, to_id, kind from memory_relations where from_id in ({placeholders})"
             );
@@ -1018,7 +996,9 @@ mod tests {
 
     async fn fresh() -> (MemoryStore, NamedTempFile) {
         let tmp = NamedTempFile::new().unwrap();
-        let store = MemoryStore::open(tmp.path()).await.unwrap();
+        let store = MemoryStore::open(tmp.path(), "test-model", 2)
+            .await
+            .unwrap();
         (store, tmp)
     }
 
@@ -1362,6 +1342,42 @@ mod tests {
         // ordered by count desc: "a" (2) before "b" (1)
         assert_eq!(counts[0], ("a".into(), 2));
         assert_eq!(counts[1], ("b".into(), 1));
+    }
+
+    #[tokio::test]
+    async fn insert_and_update_drop_blank_tags_consistently() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "tagged",
+                &V1,
+                InsertOptions {
+                    tags: &["rust".into(), String::new(), "  ".into()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].tags,
+            ["rust"]
+        );
+
+        store
+            .update(
+                id,
+                UpdateOptions {
+                    tags: Some(&[String::new(), "go".into()]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].tags,
+            ["go"]
+        );
+        assert_eq!(store.tags().await.unwrap(), [("go".into(), 1)]);
     }
 
     #[tokio::test]
@@ -2040,9 +2056,13 @@ mod tests {
     #[tokio::test]
     async fn insert_and_list_roundtrip_with_relations() {
         let (store, _tmp) = fresh().await;
-        // Insert a target memory first so relation ids are valid in spirit
+        // Inserting targets before creating links
         let target_id = store
             .insert("target", &V2, InsertOptions::default())
+            .await
+            .unwrap();
+        let other_target_id = store
+            .insert("other target", &V2, InsertOptions::default())
             .await
             .unwrap();
         let id = store
@@ -2052,7 +2072,7 @@ mod tests {
                 InsertOptions {
                     relations: &[
                         (target_id, "caused_by".to_owned()),
-                        (99, "related_to".to_owned()),
+                        (other_target_id, "related_to".to_owned()),
                     ],
                     ..Default::default()
                 },
@@ -2063,8 +2083,75 @@ mod tests {
         let source = rows.iter().find(|m| m.id == id).unwrap();
         let mut expected = std::collections::BTreeMap::new();
         expected.insert(target_id.to_string(), "caused_by".to_owned());
-        expected.insert("99".to_owned(), "related_to".to_owned());
+        expected.insert(other_target_id.to_string(), "related_to".to_owned());
         assert_eq!(source.relations, expected);
+    }
+
+    #[tokio::test]
+    async fn insert_rejects_missing_relation_target_atomically() {
+        let (store, _tmp) = fresh().await;
+        let error = store
+            .insert(
+                "invalid source",
+                &V1,
+                InsertOptions {
+                    relations: &[(999, "related_to".to_owned())],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("missing memory identifiers"));
+        assert!(
+            store
+                .list(FilterOptions::default(), 10, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_target_removes_incoming_relation_from_both_stores() {
+        let (store, _tmp) = fresh().await;
+        let target_id = store
+            .insert("target", &V2, InsertOptions::default())
+            .await
+            .unwrap();
+        let source_id = store
+            .insert(
+                "source",
+                &V1,
+                InsertOptions {
+                    relations: &[(target_id, "related_to".to_owned())],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(store.delete(target_id).await.unwrap());
+        let source_ids = [source_id];
+        let memories = store
+            .list(
+                FilterOptions {
+                    ids: Some(&source_ids),
+                    ..Default::default()
+                },
+                1,
+                0,
+            )
+            .await
+            .unwrap();
+        assert!(memories[0].relations.is_empty());
+        assert!(
+            store
+                .neighbors(source_id, None)
+                .await
+                .unwrap()
+                .outgoing
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -2087,12 +2174,27 @@ mod tests {
     #[tokio::test]
     async fn update_relations() {
         let (store, _tmp) = fresh().await;
+        let first_target = store
+            .insert("first target", &V2, InsertOptions::default())
+            .await
+            .unwrap();
+        let second_target = store
+            .insert("second target", &V2, InsertOptions::default())
+            .await
+            .unwrap();
+        let replacement_target = store
+            .insert("replacement target", &V2, InsertOptions::default())
+            .await
+            .unwrap();
         let id = store
             .insert(
                 "with links",
                 &V1,
                 InsertOptions {
-                    relations: &[(10, "blocks".to_owned()), (20, "blocks".to_owned())],
+                    relations: &[
+                        (first_target, "blocks".to_owned()),
+                        (second_target, "blocks".to_owned()),
+                    ],
                     ..Default::default()
                 },
             )
@@ -2102,27 +2204,44 @@ mod tests {
             .update(
                 id,
                 UpdateOptions {
-                    relations: Some(&[(30, "causes".to_owned())]),
+                    relations: Some(&[(replacement_target, "causes".to_owned())]),
                     ..Default::default()
                 },
             )
             .await
             .unwrap();
-        let rows = store.list(FilterOptions::default(), 1, 0).await.unwrap();
-        let mut expected = std::collections::BTreeMap::new();
-        expected.insert("30".to_owned(), "causes".to_owned());
+        let ids = [id];
+        let rows = store
+            .list(
+                FilterOptions {
+                    ids: Some(&ids),
+                    ..Default::default()
+                },
+                1,
+                0,
+            )
+            .await
+            .unwrap();
+        let expected = std::collections::BTreeMap::from([(
+            replacement_target.to_string(),
+            "causes".to_owned(),
+        )]);
         assert_eq!(rows[0].relations, expected);
     }
 
     #[tokio::test]
     async fn update_relations_to_empty_clears_list() {
         let (store, _tmp) = fresh().await;
+        let target_id = store
+            .insert("target", &V2, InsertOptions::default())
+            .await
+            .unwrap();
         let id = store
             .insert(
                 "with links",
                 &V1,
                 InsertOptions {
-                    relations: &[(5, "blocks".to_owned())],
+                    relations: &[(target_id, "blocks".to_owned())],
                     ..Default::default()
                 },
             )
@@ -2156,15 +2275,18 @@ mod tests {
             .insert("x", &V1, InsertOptions::default())
             .await
             .unwrap();
-        let before = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
+        let before = store.list(FilterOptions::default(), 1, 0).await.unwrap();
+        let before_last_seen = before[0].last_seen_at;
+        let before_updated = before[0].updated_at;
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         let count = store.revalidate_batch(&[id]).await.unwrap();
         assert_eq!(count, 1);
-        let after = store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].last_seen_at;
+        let after = store.list(FilterOptions::default(), 1, 0).await.unwrap();
         assert!(
-            after > before,
+            after[0].last_seen_at > before_last_seen,
             "last_seen_at should increase after revalidate"
         );
+        assert_eq!(after[0].updated_at, before_updated);
     }
 
     #[tokio::test]
@@ -2195,33 +2317,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_embedding_model_records_on_first_open() {
-        let (store, _tmp) = fresh().await;
-        store
-            .check_embedding_model("bge-small-en-v1.5")
+    async fn open_rejects_embedding_model_mismatch() {
+        let tmp = NamedTempFile::new().unwrap();
+        MemoryStore::open(tmp.path(), "first-model", 2)
             .await
             .unwrap();
-        // Second call with the same model must succeed
-        store
-            .check_embedding_model("bge-small-en-v1.5")
+        let error = MemoryStore::open(tmp.path(), "second-model", 2)
             .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn check_embedding_model_rejects_mismatch() {
-        let (store, _tmp) = fresh().await;
-        store
-            .check_embedding_model("bge-small-en-v1.5")
-            .await
-            .unwrap();
-        let err = store
-            .check_embedding_model("bge-large-en-v1.5")
-            .await
-            .unwrap_err();
+            .err()
+            .expect("mismatched model should fail");
         assert!(
-            err.to_string().contains("mismatch"),
-            "error message should mention mismatch: {err}"
+            error.to_string().contains("mismatch"),
+            "error message should mention mismatch: {error}"
         );
     }
 }

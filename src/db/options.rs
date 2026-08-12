@@ -76,3 +76,18 @@ pub struct FilterOptions<'a> {
     /// Restricts results to memories whose refs array contains this substring.
     pub refs_contain: Option<&'a str>,
 }
+
+impl FilterOptions<'_> {
+    /// Returns true when no effective pre-filter is present.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ids.is_none()
+            && self.tags.is_none_or(|tags| tags.is_empty())
+            && self.memory_type.is_none()
+            && self.status.is_none()
+            && self.severity.is_none()
+            && self.priority.is_none()
+            && self.outcome.is_none()
+            && self.phase.is_none()
+            && self.refs_contain.is_none()
+    }
+}

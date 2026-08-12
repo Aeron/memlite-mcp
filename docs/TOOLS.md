@@ -79,11 +79,11 @@ object mapping a target memory id (string key) to a free-form relation kind:
 {"7": "caused_by", "12": "blocks"}
 ```
 
-Links are one-way — the target memory is unmodified. Common kinds:
-`caused_by`, `causes`, `blocks`, `depends_on`, `supersedes`, `related_to`,
-`duplicate_of`. Kind strings are free-form; pick a label and use it
-consistently within a project. `memory_update` replaces the full set; pass
-`{}` to clear all links.
+Links are one-way; the target memory is unmodified. Every target identifier
+must name an existing memory. Common kinds: `caused_by`, `causes`, `blocks`,
+`depends_on`, `supersedes`, `related_to`, `duplicate_of`. Kind strings are
+free-form; pick a label and use it consistently within a project.
+`memory_update` replaces the full set; pass `{}` to clear all links.
 
 ### References
 
@@ -143,9 +143,11 @@ Each item:
 ## memory_search
 
 Two-stage semantic search: cosine vector search first, word-overlap re-rank
-second. Results are ordered nearest first and include a rounded `distance`
-and `effective_confidence`, RFC 3339 timestamps, folded relations, and an
-optional compact `freshness` warning.
+second. Unfiltered queries use the DiskANN vector index. Filtered queries use
+an exact cosine scan so filters apply before candidate selection. Results are
+ordered nearest first and include a rounded `distance` and
+`effective_confidence`, RFC 3339 timestamps, folded relations, and an optional
+compact `freshness` warning.
 
 Compact by default: each result carries its summary, or a bounded content
 preview as fallback. Pass `include_content: true` for full context and
@@ -224,7 +226,7 @@ session.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `ids` | yes | Numeric identifiers of the memories to revalidate |
+| `ids` | yes | 1-100 numeric identifiers of memories to revalidate |
 
 ## memory_tags
 

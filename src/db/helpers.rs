@@ -15,7 +15,7 @@ pub(super) async fn fetch_memories_by_ids(
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let placeholders = vec!["?"; ids.len()].join(", ");
     let sql = format!(
         "select
             rowid, content, summary, tags, created_at, updated_at, context,
@@ -40,7 +40,7 @@ pub(super) fn build_where(filter: &FilterOptions<'_>, params: &mut Vec<Value>) -
         if ids.is_empty() {
             clauses.push("0".into());
         } else {
-            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let placeholders = vec!["?"; ids.len()].join(", ");
             clauses.push(format!("rowid in ({placeholders})"));
             params.extend(ids.iter().copied().map(Value::Integer));
         }
@@ -204,6 +204,16 @@ pub(super) fn rerank_by_overlap(
     scored.into_iter().map(|(m, dist, _)| (m, dist)).collect()
 }
 
+/// Serialises tags after dropping empty and whitespace-only values.
+pub(super) fn tags_to_json(tags: &[String]) -> Result<String> {
+    let mut seen = HashSet::new();
+    let tags: Vec<&String> = tags
+        .iter()
+        .filter(|tag| !tag.trim().is_empty() && seen.insert(tag.as_str()))
+        .collect();
+    Ok(serde_json::to_string(&tags)?)
+}
+
 /// Serialises directed relations into the JSON object stored in the `relations` column.
 ///
 /// Maps each `(target_id, kind)` pair to a `{"<id>": "<kind>"}` entry, keyed by the
@@ -231,7 +241,7 @@ pub(super) fn unix_secs() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{floats_to_blob, rerank_by_overlap};
+    use super::{floats_to_blob, rerank_by_overlap, tags_to_json};
     use crate::db::types::{Memory, MemoryAttrs};
 
     #[test]
@@ -251,6 +261,17 @@ mod tests {
         for (a, b) in vals.iter().zip(&parsed) {
             assert_eq!(a.to_bits(), b.to_bits(), "{a} != {b}");
         }
+    }
+
+    #[test]
+    fn tags_to_json_drops_blank_values() {
+        let tags = vec![
+            "rust".to_owned(),
+            String::new(),
+            "  ".to_owned(),
+            "rust".to_owned(),
+        ];
+        assert_eq!(tags_to_json(&tags).unwrap(), r#"["rust"]"#);
     }
 
     #[test]

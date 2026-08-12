@@ -103,9 +103,9 @@ pub struct StoreItem {
     /// findings or issues; priority for tasks; outcome and reversible for
     /// decisions; phase for plans.
     pub attrs: Option<MemoryAttrs>,
-    /// Outgoing one-way links as {"<target_id>": "<kind>"}; common kinds:
-    /// caused_by, causes, blocks, depends_on, supersedes, related_to,
-    /// duplicate_of.
+    /// Outgoing one-way links to existing memories as {"<target_id>": "<kind>"};
+    /// common kinds: caused_by, causes, blocks, depends_on, supersedes,
+    /// related_to, duplicate_of.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
     /// External pointers such as file paths, symbols, URLs, or issue
     /// identifiers; file paths should be short and project-relative.
@@ -131,6 +131,7 @@ pub struct DeleteParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RevalidateParams {
     /// Numeric identifiers of the memories to revalidate; resets the decay clock on each.
+    #[schemars(length(min = 1, max = 100))]
     pub ids: Vec<i64>,
 }
 
@@ -179,6 +180,7 @@ pub struct UpdateParams {
     /// Numeric identifier of the memory to update.
     pub id: i64,
     /// Replacement content; triggers re-embedding when provided.
+    #[schemars(length(min = 1))]
     pub content: Option<String>,
     /// Replacement summary; pass empty string to clear the field.
     pub summary: Option<String>,
@@ -213,9 +215,9 @@ pub struct UpdateParams {
     /// issues; priority to tasks; outcome and reversible to decisions; phase
     /// to plans. An empty object clears all metadata.
     pub attrs: Option<MemoryAttrs>,
-    /// Replacement outgoing one-way links as {"<target_id>": "<kind>"};
-    /// common kinds: caused_by, causes, blocks, depends_on, supersedes,
-    /// related_to, duplicate_of. An empty object clears all links.
+    /// Replacement outgoing one-way links to existing memories as
+    /// {"<target_id>": "<kind>"}; common kinds: caused_by, causes, blocks,
+    /// depends_on, supersedes, related_to, duplicate_of. An empty object clears all links.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
     /// Replacement external pointers such as file paths, symbols, URLs, or
     /// issue identifiers; file paths should be short and project-relative.
