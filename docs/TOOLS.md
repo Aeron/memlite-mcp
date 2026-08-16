@@ -9,6 +9,22 @@ return deterministic block text with literal prose; other successful
 structured tool content uses [TOON v3.0](https://toonformat.dev). Tool errors
 remain plain text. All output formats omit null and empty collection fields.
 
+## Direct CLI
+
+Every operation is also available as `memlite-mcp tool <name>`. Direct command
+names omit the `memory_` prefix. Text output matches MCP block text and TOON
+shapes. Pass `--format json` for structured JSON output.
+
+Required scalar inputs such as queries and identifiers are positional. Other
+parameters use kebab-case flags. Repeat `--tag`, `--relation ID:KIND`, and
+`--ref` for collection values. `tool update` provides `--clear-tags`,
+`--clear-attrs`, `--clear-relations`, and `--clear-refs` because those fields
+replace complete sets.
+
+`tool store` stores one memory per invocation. MCP `memory_store` remains the
+batch interface for 1 to 100 atomic inserts. Run
+`memlite-mcp tool <name> --help` for exact command syntax.
+
 ## Memory model
 
 Each memory is a record with required `content` and `memory_type` fields and

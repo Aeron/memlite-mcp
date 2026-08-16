@@ -6,56 +6,60 @@ use std::{
 };
 
 use anyhow::Result;
-use clap::{Parser, ValueEnum};
+use clap::{Args, ValueEnum};
 use sha2::{Digest, Sha256};
 use strum::Display;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::errors::ResolveError;
 
-/// Local-only MCP server for persistent agent memory.
-#[derive(Parser)]
-#[command(name = "memlite-mcp", version)]
+/// Holds shared project, storage, embedding, and logging options.
+#[derive(Args)]
 pub struct Config {
     /// Project identifier shared across agents. All agents with the same path
     /// read and write the same DB file. Defaults to the first workspace root
     /// reported by the MCP client, or CWD if none is available.
-    #[arg(long = "project-path", env = "MEMLITE_PROJECT_PATH")]
+    #[arg(long = "project-path", env = "MEMLITE_PROJECT_PATH", global = true)]
     project_path: Option<String>,
 
     /// Directory for per-project DB files. Defaults to the XDG data home.
-    #[arg(long = "db-dir", env = "MEMLITE_DB_DIR")]
+    #[arg(long = "db-dir", env = "MEMLITE_DB_DIR", global = true)]
     db_dir: Option<PathBuf>,
 
     /// Allows the filesystem root ("/") as the project path.
     /// Off by default; using the whole filesystem as a project is almost certainly wrong.
-    #[arg(long = "allow-root", env = "MEMLITE_ALLOW_ROOT", default_value_t = false, value_parser = clap::builder::BoolishValueParser::new())]
+    #[arg(long = "allow-root", env = "MEMLITE_ALLOW_ROOT", default_value_t = false, value_parser = clap::builder::BoolishValueParser::new(), global = true)]
     allow_root: bool,
 
     /// Allows the home directory as the project path.
     /// Off by default; the home directory spans many unrelated projects.
-    #[arg(long = "allow-home", env = "MEMLITE_ALLOW_HOME", default_value_t = false, value_parser = clap::builder::BoolishValueParser::new())]
+    #[arg(long = "allow-home", env = "MEMLITE_ALLOW_HOME", default_value_t = false, value_parser = clap::builder::BoolishValueParser::new(), global = true)]
     allow_home: bool,
 
     /// Embedding model to use for new memories.
     #[arg(
         long = "embedding-model",
         env = "MEMLITE_EMBEDDING_MODEL",
-        default_value_t = EmbeddingModel::Small
+        default_value_t = EmbeddingModel::Small,
+        global = true
     )]
     pub embedding_model: EmbeddingModel,
 
     /// Directory for cached embedding model files. Defaults to `<cache-dir>/memlite-mcp`.
-    #[arg(long = "embedding-cache-dir", env = "MEMLITE_EMBEDDING_CACHE_DIR")]
+    #[arg(
+        long = "embedding-cache-dir",
+        env = "MEMLITE_EMBEDDING_CACHE_DIR",
+        global = true
+    )]
     embedding_cache_dir: Option<PathBuf>,
 
     /// Write logs to this file instead of stderr. Useful when the MCP host does not
     /// surface the server's stderr (e.g. Zed has no MCP log panel).
-    #[arg(long = "log-file", env = "MEMLITE_LOG_FILE")]
+    #[arg(long = "log-file", env = "MEMLITE_LOG_FILE", global = true)]
     pub log_file: Option<PathBuf>,
 
     /// Minimum log level when `RUST_LOG` is not set. Applies to both file and stderr output.
-    #[arg(long = "log-level", env = "MEMLITE_LOG_LEVEL", default_value_t = LogLevel::Info)]
+    #[arg(long = "log-level", env = "MEMLITE_LOG_LEVEL", default_value_t = LogLevel::Info, global = true)]
     log_level: LogLevel,
 }
 
@@ -176,12 +180,16 @@ impl Config {
         Ok(path)
     }
 
-    /// Initialises the global tracing subscriber based on `log_file` and `log_level`.
+    /// Initialises the global tracing subscriber when a log destination is available.
     ///
-    /// Writes to the file when set, falling back to stderr. Respects `RUST_LOG` when
-    /// set; otherwise uses `--log-level` (default: info). Must be called once at
-    /// startup before any `tracing` macros are used.
-    pub fn init_logging(&self) -> Result<()> {
+    /// Writes to the configured file for every command. Otherwise writes to stderr only
+    /// when `log_to_stderr` is true. Respects `RUST_LOG` when set; otherwise uses
+    /// `--log-level` (default: info). Must be called once at startup.
+    pub fn init_logging(&self, log_to_stderr: bool) -> Result<()> {
+        if self.log_file.is_none() && !log_to_stderr {
+            return Ok(());
+        }
+
         let filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new(self.log_level.to_string()));
 

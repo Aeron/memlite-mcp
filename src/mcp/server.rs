@@ -14,12 +14,9 @@ use rmcp::{
 };
 use tokio::sync::{Notify, OnceCell};
 
-use super::{
-    output::{render_list_results, render_search_results},
-    params::{
-        DeleteParams, EmptyParams, HubsParams, ListParams, NeighborsParams, PathParams,
-        RevalidateParams, SearchParams, StoreParams, TraverseParams, UpdateParams,
-    },
+use super::params::{
+    DeleteParams, EmptyParams, HubsParams, ListParams, NeighborsParams, PathParams,
+    RevalidateParams, SearchParams, StoreParams, TraverseParams, UpdateParams,
 };
 use crate::{
     config::Config,
@@ -29,6 +26,10 @@ use crate::{
         UpdateOptions,
     },
     embedding::EmbeddingService,
+    output::{
+        hubs_json, neighbors_json, path_json, render_list_results, render_search_results,
+        render_toon, stats_json, traverse_json,
+    },
 };
 
 /// Initial instructions for the MCP client (caveman style).
@@ -42,29 +43,6 @@ macro_rules! parse_filter {
             Err(e) => return tool_err(e),
         }
     };
-}
-
-/// Removes null and empty collection fields recursively while preserving array positions.
-fn compact_value(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Array(items) => {
-            for item in items {
-                compact_value(item);
-            }
-        }
-        serde_json::Value::Object(fields) => {
-            // Compacting descendants before checking whether fields became empty
-            for value in fields.values_mut() {
-                compact_value(value);
-            }
-            fields.retain(|_, value| {
-                !matches!(value, serde_json::Value::Null)
-                    && !matches!(value, serde_json::Value::Array(items) if items.is_empty())
-                    && !matches!(value, serde_json::Value::Object(fields) if fields.is_empty())
-            });
-        }
-        _ => {}
-    }
 }
 
 pub struct MemServer {
@@ -530,30 +508,7 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        fn format_neighbor(n: crate::db::NeighborInfo) -> serde_json::Value {
-            let (memory_type, summary) = n.memory.map_or_else(
-                || ("untyped".to_owned(), String::new()),
-                |m| {
-                    (
-                        m.memory_type
-                            .map_or_else(|| "untyped".to_owned(), |value| value.to_string()),
-                        m.summary.unwrap_or_default(),
-                    )
-                },
-            );
-            serde_json::json!({
-                "id":          n.other_id,
-                "kind":        n.kind,
-                "memory_type": memory_type,
-                "summary":     summary,
-            })
-        }
-
-        let body = serde_json::json!({
-            "outgoing": neighbors.outgoing.into_iter().map(format_neighbor).collect::<Vec<_>>(),
-            "incoming": neighbors.incoming.into_iter().map(format_neighbor).collect::<Vec<_>>(),
-        });
-        tool_ok(body)
+        tool_ok(neighbors_json(neighbors))
     }
 
     /// BFS traversal from a starting memory node.
@@ -574,30 +529,7 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        let nodes: Vec<_> = result
-            .nodes
-            .into_iter()
-            .map(|n| {
-                let m = n.memory;
-                serde_json::json!({
-                    "id":          m.id,
-                    "depth":       n.depth,
-                    "via_kind":    n.via_kind.unwrap_or_default(),
-                    "memory_type": m.memory_type.map_or_else(
-                        || "untyped".to_owned(),
-                        |value| value.to_string(),
-                    ),
-                    "summary":     m.summary.unwrap_or_default(),
-                })
-            })
-            .collect();
-        let edges: Vec<_> = result
-            .edges
-            .into_iter()
-            .map(|(f, t, k)| serde_json::json!({"from_id": f, "to_id": t, "kind": k}))
-            .collect();
-        let body = serde_json::json!({"start_id": result.start_id, "nodes": nodes, "edges": edges});
-        tool_ok(body)
+        tool_ok(traverse_json(result))
     }
 
     /// Finds the shortest directed path between two memory nodes.
@@ -617,28 +549,7 @@ impl MemServer {
             .await
             .map_err(ServerError::StoreOp)?;
 
-        let body = match result {
-            None => serde_json::json!({"found": false, "path": []}),
-            Some(steps) => {
-                let path: Vec<_> = steps
-                    .into_iter()
-                    .map(|s| {
-                        let m = s.memory;
-                        serde_json::json!({
-                            "id":          m.id,
-                            "via_kind":    s.via_kind.unwrap_or_default(),
-                            "memory_type": m.memory_type.map_or_else(
-                                || "untyped".to_owned(),
-                                |value| value.to_string(),
-                            ),
-                            "summary":     m.summary.unwrap_or_default(),
-                        })
-                    })
-                    .collect();
-                serde_json::json!({"found": true, "path": path})
-            }
-        };
-        tool_ok(body)
+        tool_ok(path_json(result))
     }
 
     /// Returns the most-connected memories ranked by total relation degree.
@@ -654,19 +565,7 @@ impl MemServer {
         };
         let top_n = p.top_n.unwrap_or(10);
         let entries = store.hubs(top_n).await.map_err(ServerError::StoreOp)?;
-        let body: Vec<_> = entries
-            .into_iter()
-            .map(|e| {
-                serde_json::json!({
-                    "id":           e.id,
-                    "summary":      e.summary.unwrap_or_default(),
-                    "memory_type":  e.memory_type.map_or_else(|| "untyped".to_owned(), |value| value.to_string()),
-                    "out_degree":   e.out_degree,
-                    "in_degree":    e.in_degree,
-                })
-            })
-            .collect();
-        tool_ok(serde_json::Value::Array(body))
+        tool_ok(hubs_json(entries))
     }
 
     /// Returns graph-level aggregate statistics.
@@ -686,25 +585,7 @@ impl MemServer {
             }));
         };
         let stats = store.graph_stats().await.map_err(ServerError::StoreOp)?;
-        let by_type = serde_json::Value::Object(
-            stats
-                .by_type
-                .into_iter()
-                .map(|(memory_type, count)| {
-                    (
-                        memory_type.unwrap_or_else(|| "untyped".to_owned()),
-                        serde_json::Value::from(count),
-                    )
-                })
-                .collect(),
-        );
-        let body = serde_json::json!({
-            "total_memories":  stats.total_memories,
-            "by_type":         by_type,
-            "total_relations": stats.total_relations,
-            "relation_kinds":  stats.relation_kinds,
-        });
-        tool_ok(body)
+        tool_ok(stats_json(stats))
     }
 }
 
@@ -782,9 +663,8 @@ impl ServerHandler for MemServer {
 }
 
 /// Encodes compact structured output as TOON text.
-fn tool_ok(mut value: serde_json::Value) -> Result<CallToolResult, McpError> {
-    compact_value(&mut value);
-    let body = serde_toon::to_string(&value).map_err(ServerError::ToonEncode)?;
+fn tool_ok(value: serde_json::Value) -> Result<CallToolResult, McpError> {
+    let body = render_toon(value).map_err(ServerError::ToonEncode)?;
     tool_text(body)
 }
 
@@ -861,10 +741,12 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+    use crate::cli::Cli;
 
     fn test_server() -> MemServer {
-        let config = Config::try_parse_from([
+        let Cli { config, .. } = Cli::try_parse_from([
             "memlite-mcp",
+            "serve",
             "--project-path",
             "/tmp/memlite-mcp-server-test",
         ])

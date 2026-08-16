@@ -59,7 +59,7 @@ impl McpClient {
         // [profile.release] so the binary is release-quality.
         let binary = env!("CARGO_BIN_EXE_memlite-mcp");
         let mut child = Command::new(binary)
-            .args(["--project-path", "/bench", "--db-dir"])
+            .args(["serve", "--project-path", "/bench", "--db-dir"])
             .arg(db_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -1,11 +1,13 @@
 use std::fmt::Write;
 
-use crate::db::types::Memory;
+use crate::db::types::{
+    GraphStats, HubEntry, Memory, NeighborInfo, Neighbors, PathStep, TraverseResult,
+};
 
 const CONTENT_PREVIEW_CHARS: usize = 120;
 
 /// Renders semantic search results as compact blocks with literal prose.
-pub(super) fn render_search_results(results: &[(Memory, f64)], include_content: bool) -> String {
+pub(crate) fn render_search_results(results: &[(Memory, f64)], include_content: bool) -> String {
     if results.is_empty() {
         return "memories: 0".to_owned();
     }
@@ -21,7 +23,7 @@ pub(super) fn render_search_results(results: &[(Memory, f64)], include_content: 
 }
 
 /// Renders chronological memory results as compact blocks with literal prose.
-pub(super) fn render_list_results(memories: &[Memory], include_content: bool) -> String {
+pub(crate) fn render_list_results(memories: &[Memory], include_content: bool) -> String {
     if memories.is_empty() {
         return "memories: 0".to_owned();
     }
@@ -34,6 +36,206 @@ pub(super) fn render_list_results(memories: &[Memory], include_content: bool) ->
         render_memory(&mut output, memory, None, true, include_content);
     }
     output
+}
+
+/// Converts chronological results into JSON while honoring content selection.
+pub(crate) fn list_json(memories: &[Memory], include_content: bool) -> serde_json::Value {
+    serde_json::Value::Array(
+        memories
+            .iter()
+            .map(|memory| memory_json(memory, None, include_content))
+            .collect(),
+    )
+}
+
+/// Converts semantic results into JSON while honoring content selection.
+pub(crate) fn search_json(results: &[(Memory, f64)], include_content: bool) -> serde_json::Value {
+    serde_json::Value::Array(
+        results
+            .iter()
+            .map(|(memory, distance)| memory_json(memory, Some(*distance), include_content))
+            .collect(),
+    )
+}
+
+/// Converts immediate neighbors into compact selection rows.
+pub(crate) fn neighbors_json(neighbors: Neighbors) -> serde_json::Value {
+    serde_json::json!({
+        "outgoing": neighbors.outgoing.into_iter().map(neighbor_json).collect::<Vec<_>>(),
+        "incoming": neighbors.incoming.into_iter().map(neighbor_json).collect::<Vec<_>>(),
+    })
+}
+
+/// Converts traversal results into compact node and edge rows.
+pub(crate) fn traverse_json(result: TraverseResult) -> serde_json::Value {
+    let nodes: Vec<_> = result
+        .nodes
+        .into_iter()
+        .map(|node| {
+            let memory = node.memory;
+            serde_json::json!({
+                "id": memory.id,
+                "depth": node.depth,
+                "via_kind": node.via_kind.unwrap_or_default(),
+                "memory_type": memory.memory_type.map_or_else(
+                    || "untyped".to_owned(),
+                    |value| value.to_string(),
+                ),
+                "summary": memory.summary.unwrap_or_default(),
+            })
+        })
+        .collect();
+    let edges: Vec<_> = result
+        .edges
+        .into_iter()
+        .map(|(from_id, to_id, kind)| {
+            serde_json::json!({"from_id": from_id, "to_id": to_id, "kind": kind})
+        })
+        .collect();
+    serde_json::json!({"start_id": result.start_id, "nodes": nodes, "edges": edges})
+}
+
+/// Converts an optional path into compact selection rows.
+pub(crate) fn path_json(result: Option<Vec<PathStep>>) -> serde_json::Value {
+    let Some(steps) = result else {
+        return serde_json::json!({"found": false, "path": []});
+    };
+    let path: Vec<_> = steps
+        .into_iter()
+        .map(|step| {
+            let memory = step.memory;
+            serde_json::json!({
+                "id": memory.id,
+                "via_kind": step.via_kind.unwrap_or_default(),
+                "memory_type": memory.memory_type.map_or_else(
+                    || "untyped".to_owned(),
+                    |value| value.to_string(),
+                ),
+                "summary": memory.summary.unwrap_or_default(),
+            })
+        })
+        .collect();
+    serde_json::json!({"found": true, "path": path})
+}
+
+/// Converts hub entries into compact ranking rows.
+pub(crate) fn hubs_json(entries: Vec<HubEntry>) -> serde_json::Value {
+    serde_json::Value::Array(
+        entries
+            .into_iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "id": entry.id,
+                    "summary": entry.summary.unwrap_or_default(),
+                    "memory_type": entry.memory_type.map_or_else(
+                        || "untyped".to_owned(),
+                        |value| value.to_string(),
+                    ),
+                    "out_degree": entry.out_degree,
+                    "in_degree": entry.in_degree,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Converts graph statistics into the public result shape.
+pub(crate) fn stats_json(stats: GraphStats) -> serde_json::Value {
+    let by_type = serde_json::Value::Object(
+        stats
+            .by_type
+            .into_iter()
+            .map(|(memory_type, count)| {
+                (
+                    memory_type.unwrap_or_else(|| "untyped".to_owned()),
+                    serde_json::Value::from(count),
+                )
+            })
+            .collect(),
+    );
+    serde_json::json!({
+        "total_memories": stats.total_memories,
+        "by_type": by_type,
+        "total_relations": stats.total_relations,
+        "relation_kinds": stats.relation_kinds,
+    })
+}
+
+/// Encodes compact structured output as TOON text.
+pub(crate) fn render_toon(mut value: serde_json::Value) -> Result<String, serde_toon::Error> {
+    compact_value(&mut value);
+    serde_toon::to_string(&value)
+}
+
+fn neighbor_json(neighbor: NeighborInfo) -> serde_json::Value {
+    let (memory_type, summary) = neighbor.memory.map_or_else(
+        || ("untyped".to_owned(), String::new()),
+        |memory| {
+            (
+                memory
+                    .memory_type
+                    .map_or_else(|| "untyped".to_owned(), |value| value.to_string()),
+                memory.summary.unwrap_or_default(),
+            )
+        },
+    );
+    serde_json::json!({
+        "id": neighbor.other_id,
+        "kind": neighbor.kind,
+        "memory_type": memory_type,
+        "summary": summary,
+    })
+}
+
+fn memory_json(memory: &Memory, distance: Option<f64>, include_content: bool) -> serde_json::Value {
+    let mut value = serde_json::to_value(memory).expect("Memory must serialize");
+    let fields = value
+        .as_object_mut()
+        .expect("Memory must serialize as an object");
+    fields.insert(
+        "effective_confidence".to_owned(),
+        serde_json::Value::from(memory.effective_confidence()),
+    );
+    if let Some(distance) = distance {
+        fields.insert("distance".to_owned(), serde_json::Value::from(distance));
+    }
+    if let Some(freshness) = memory.freshness_warning() {
+        fields.insert("freshness".to_owned(), serde_json::Value::from(freshness));
+    }
+    if include_content {
+        fields.remove("summary");
+    } else {
+        fields.remove("content");
+        fields.remove("context");
+        if memory.summary.as_deref().is_none_or(str::is_empty) {
+            fields.insert(
+                "content_preview".to_owned(),
+                serde_json::Value::from(content_preview(&memory.content)),
+            );
+        }
+    }
+    value
+}
+
+fn compact_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                compact_value(item);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for value in fields.values_mut() {
+                compact_value(value);
+            }
+            fields.retain(|_, value| {
+                !matches!(value, serde_json::Value::Null)
+                    && !matches!(value, serde_json::Value::Array(items) if items.is_empty())
+                    && !matches!(value, serde_json::Value::Object(fields) if fields.is_empty())
+            });
+        }
+        _ => {}
+    }
 }
 
 fn render_memory(

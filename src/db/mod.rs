@@ -10,5 +10,5 @@ pub use store::MemoryStore;
 
 pub use types::{
     BatchInsertItem, MemoryAttrOutcome, MemoryAttrPhase, MemoryAttrPriority, MemoryAttrSeverity,
-    MemoryAttrs, MemoryStatus, MemoryType, NeighborInfo, TraverseDirection,
+    MemoryAttrs, MemoryStatus, MemoryType, TraverseDirection,
 };
