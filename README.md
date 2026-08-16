@@ -45,7 +45,7 @@ cargo build --release
 
 The embedding model is downloaded on the first `memory_store` or
 `memory_search` call, not at server start, and cached for fully offline use
-afterwards. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for cache
+afterwards. See [docs/configuration.md](docs/configuration.md) for cache
 locations.
 
 ## Configuration
@@ -56,7 +56,7 @@ The defaults are fine for most setups. Run the MCP server with
 variants, which matters if your memories will not be in English.
 
 For all flags, env vars, and the embedding models table, see
-[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+[docs/configuration.md](docs/configuration.md).
 
 ## MCP server
 
@@ -87,8 +87,11 @@ Text output is the default. Add `--format json` for scripts. Global project,
 storage, embedding, and logging flags work before or after nested commands.
 Run `memlite-mcp tool <command> --help` for exact arguments.
 
-For the memory model (types, typed attrs, trust and decay, relations,
-references) and per-tool parameters, see [docs/TOOLS.md](docs/TOOLS.md).
+For the full command and flag reference, see
+[docs/configuration.md](docs/configuration.md). For the memory model (types,
+typed attrs, trust and decay, relations, references), see
+[docs/memory.md](docs/memory.md). For per-tool parameters, see
+[docs/tools.md](docs/tools.md).
 
 ## Benchmarks
 
