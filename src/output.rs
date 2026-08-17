@@ -4,8 +4,6 @@ use crate::db::types::{
     GraphStats, HubEntry, Memory, NeighborInfo, Neighbors, PathStep, TraverseResult,
 };
 
-const CONTENT_PREVIEW_CHARS: usize = 120;
-
 /// Renders semantic search results as compact blocks with literal prose.
 pub(crate) fn render_search_results(results: &[(Memory, f64)], include_content: bool) -> String {
     if results.is_empty() {
@@ -81,7 +79,7 @@ pub(crate) fn traverse_json(result: TraverseResult) -> serde_json::Value {
                     || "untyped".to_owned(),
                     |value| value.to_string(),
                 ),
-                "summary": memory.summary.unwrap_or_default(),
+                "summary": memory.summary,
             })
         })
         .collect();
@@ -111,7 +109,7 @@ pub(crate) fn path_json(result: Option<Vec<PathStep>>) -> serde_json::Value {
                     || "untyped".to_owned(),
                     |value| value.to_string(),
                 ),
-                "summary": memory.summary.unwrap_or_default(),
+                "summary": memory.summary,
             })
         })
         .collect();
@@ -126,7 +124,7 @@ pub(crate) fn hubs_json(entries: Vec<HubEntry>) -> serde_json::Value {
             .map(|entry| {
                 serde_json::json!({
                     "id": entry.id,
-                    "summary": entry.summary.unwrap_or_default(),
+                    "summary": entry.summary,
                     "memory_type": entry.memory_type.map_or_else(
                         || "untyped".to_owned(),
                         |value| value.to_string(),
@@ -175,7 +173,7 @@ fn neighbor_json(neighbor: NeighborInfo) -> serde_json::Value {
                 memory
                     .memory_type
                     .map_or_else(|| "untyped".to_owned(), |value| value.to_string()),
-                memory.summary.unwrap_or_default(),
+                memory.summary,
             )
         },
     );
@@ -207,12 +205,6 @@ fn memory_json(memory: &Memory, distance: Option<f64>, include_content: bool) ->
     } else {
         fields.remove("content");
         fields.remove("context");
-        if memory.summary.as_deref().is_none_or(str::is_empty) {
-            fields.insert(
-                "content_preview".to_owned(),
-                serde_json::Value::from(content_preview(&memory.content)),
-            );
-        }
     }
     value
 }
@@ -267,11 +259,7 @@ fn render_memory(
 
     // Writing compact metadata before selection or full prose
     if !include_content {
-        if let Some(summary) = memory.summary.as_deref().filter(|value| !value.is_empty()) {
-            write_scalar(output, "summary", summary);
-        } else {
-            write_scalar(output, "content_preview", &content_preview(&memory.content));
-        }
+        write_scalar(output, "summary", &memory.summary);
     }
     writeln!(
         output,
@@ -321,17 +309,6 @@ fn render_memory(
         }
         write_block(output, "content", &memory.content);
     }
-}
-
-fn content_preview(content: &str) -> String {
-    let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.chars().count() <= CONTENT_PREVIEW_CHARS {
-        return normalized;
-    }
-
-    let mut preview: String = normalized.chars().take(CONTENT_PREVIEW_CHARS - 3).collect();
-    preview.push_str("...");
-    preview
 }
 
 fn format_attrs(memory: &Memory) -> Vec<String> {
@@ -419,7 +396,7 @@ mod tests {
         Memory {
             id: 49,
             content: "line one\n\nline two".to_owned(),
-            summary: Some("Output plan".to_owned()),
+            summary: "Output plan".to_owned(),
             tags: vec!["mcp".to_owned(), "performance".to_owned()],
             created_at: now,
             updated_at: now,
@@ -477,25 +454,6 @@ mod tests {
         assert!(!actual.contains("context:"));
         assert!(!actual.contains("content:"));
         assert!(!actual.contains("content_preview:"));
-    }
-
-    #[test]
-    fn renders_bounded_content_preview_when_summary_is_missing() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        let mut memory = sample_memory(now);
-        memory.summary = None;
-        memory.content = "alpha\n beta\tgamma".to_owned();
-
-        let actual = render_search_results(&[(memory, 0.12345)], false);
-
-        assert!(actual.contains("content_preview: alpha beta gamma\n"));
-        assert_eq!(
-            content_preview(&"x".repeat(121)),
-            format!("{}...", "x".repeat(117))
-        );
     }
 
     #[test]

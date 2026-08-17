@@ -113,14 +113,14 @@ Each subcommand below wraps the identically named MCP tool; see
 Stores one memory. Wraps [`memory_store`](tools.md#memory_store).
 
 ```
-memlite-mcp tool store <CONTENT> --memory-type <TYPE> [OPTIONS]
+memlite-mcp tool store <CONTENT> --memory-type <TYPE> --summary <SUMMARY> [OPTIONS]
 ```
 
 | Argument | Kind | Description |
 |---|---|---|
 | `content` | positional, required | Full text to embed and store |
 | `--memory-type` | flag, required | Structured memory category |
-| `--summary` | flag | One-sentence description for list views |
+| `--summary` | flag, required | One-sentence description for list views; blank values are rejected |
 | `--tag` | flag, repeatable | Grouping label |
 | `--context` | flag | Background rationale |
 | `--confidence` | flag | Initial confidence score in the range 0 to 1 |
@@ -201,7 +201,7 @@ memlite-mcp tool update <ID> [OPTIONS]
 |---|---|---|
 | `id` | positional, required | Numeric memory identifier |
 | `--content` | flag | Replacement content; triggers re-embedding |
-| `--summary` | flag | Replacement summary; pass an empty string to clear |
+| `--summary` | flag | Replacement summary; blank values are rejected |
 | `--tag` | flag, repeatable | Replacement tag |
 | `--clear-tags` | flag (presence) | Clears all tags |
 | `--context` | flag | Replacement context; pass an empty string to clear |

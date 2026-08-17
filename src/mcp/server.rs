@@ -174,6 +174,9 @@ impl MemServer {
             if item.content.trim().is_empty() {
                 return tool_err(format!("item {i}: content must not be blank"));
             }
+            if item.summary.trim().is_empty() {
+                return tool_err(format!("item {i}: summary must not be blank"));
+            }
             let mt = match item.memory_type.parse::<MemoryType>() {
                 Ok(v) => v,
                 Err(e) => return tool_err(format!("item {i}: {e}")),
@@ -234,7 +237,7 @@ impl MemServer {
     ///
     /// Skips embedding entirely when no DB file exists yet.
     #[tool(
-        description = "Search memories by semantic similarity before investigating, debugging, or implementing. Returns closest matches ordered by cosine distance: <0.15 likely same concept, <0.40 related, 0.40-0.70 weak, >0.70 unrelated. effective_confidence >=0.8 is reliable, 0.5-0.8 warrants caution, <0.5 is potentially stale. Content is omitted by default; compact results include summary or a bounded content preview. Pass include_content=true for full context and content; full results omit redundant summary."
+        description = "Search memories by semantic similarity before investigating, debugging, or implementing. Returns closest matches ordered by cosine distance: <0.15 likely same concept, <0.40 related, 0.40-0.70 weak, >0.70 unrelated. effective_confidence >=0.8 is reliable, 0.5-0.8 warrants caution, <0.5 is potentially stale. Content is omitted by default; compact results include the required summary. Pass include_content=true for full context and content; full results omit redundant summary."
     )]
     async fn memory_search(
         &self,
@@ -375,10 +378,8 @@ impl MemServer {
     }
 
     /// Updates one or more fields of an existing memory, re-embedding when `content` changes.
-    ///
-    /// Passing `summary: ""` clears the summary field (sets it to NULL).
     #[tool(
-        description = "Update an existing memory. Provide id plus any fields to change. Updating content triggers re-embedding. Pass summary as empty string to clear it."
+        description = "Update an existing memory. Provide id plus any fields to change. Updating content triggers re-embedding. Blank summaries are rejected."
     )]
     async fn memory_update(
         &self,
@@ -405,6 +406,12 @@ impl MemServer {
             .is_some_and(|content| content.trim().is_empty())
         {
             return tool_err("content must not be blank");
+        }
+        if p.summary
+            .as_ref()
+            .is_some_and(|summary| summary.trim().is_empty())
+        {
+            return tool_err("summary must not be blank");
         }
 
         let update_attrs = p.attrs;
@@ -741,7 +748,7 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::cli::Cli;
+    use crate::{cli::Cli, mcp::params::StoreItem};
 
     fn test_server() -> MemServer {
         let Cli { config, .. } = Cli::try_parse_from([
@@ -790,6 +797,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memory_store_rejects_blank_summary_before_embedding() {
+        let result = test_server()
+            .memory_store(Parameters(StoreParams {
+                items: vec![StoreItem {
+                    content: "content".to_owned(),
+                    summary: "  ".to_owned(),
+                    tags: None,
+                    context: None,
+                    memory_type: "project".to_owned(),
+                    confidence: None,
+                    decay_rate: None,
+                    attrs: None,
+                    relations: None,
+                    refs: None,
+                }],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result_text(&result), "item 0: summary must not be blank");
+    }
+
+    #[tokio::test]
     async fn memory_update_rejects_blank_content_before_opening_store() {
         let result = test_server()
             .memory_update(Parameters(UpdateParams {
@@ -809,6 +839,28 @@ mod tests {
             .unwrap();
         assert_eq!(result.is_error, Some(true));
         assert_eq!(result_text(&result), "content must not be blank");
+    }
+
+    #[tokio::test]
+    async fn memory_update_rejects_blank_summary_before_opening_store() {
+        let result = test_server()
+            .memory_update(Parameters(UpdateParams {
+                id: 1,
+                content: None,
+                summary: Some("  ".to_owned()),
+                tags: None,
+                context: None,
+                confidence: None,
+                decay_rate: None,
+                memory_type: None,
+                attrs: None,
+                relations: None,
+                refs: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result_text(&result), "summary must not be blank");
     }
 
     #[tokio::test]

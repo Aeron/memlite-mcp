@@ -71,7 +71,7 @@ Confirmed accurate? Call `memory_revalidate([id])`. Multiple: pass up to 100 ids
 
 ### `summary`
 
-Provide when content > 2-3 sentences, uses jargon, or is structured data. Shown in compact search/list output; helps decide whether to fetch full content. Compact output falls back to bounded one-line content preview when summary absent. Full output omits summary; content already present. Skip for short, self-describing facts. Pass `""` to clear.
+Every memory need summary. One sentence name stored info; no full repeat. Compact search/list show summary. Full output omit it because content already there. Blank summary rejected.
 
 ### `context`
 

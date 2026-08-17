@@ -94,7 +94,7 @@ struct StoreArgs {
 
     /// One-sentence description for list views.
     #[arg(long)]
-    summary: Option<String>,
+    summary: String,
 
     /// Grouping label; repeat for multiple tags.
     #[arg(long = "tag")]
@@ -177,7 +177,7 @@ struct UpdateArgs {
     #[arg(long)]
     content: Option<String>,
 
-    /// Replacement summary; pass an empty string to clear.
+    /// Replacement summary; blank values are rejected.
     #[arg(long)]
     summary: Option<String>,
 
@@ -443,6 +443,9 @@ async fn store(config: &Config, format: OutputFormat, args: StoreArgs) -> Result
     if args.content.trim().is_empty() {
         bail!("content must not be blank");
     }
+    if args.summary.trim().is_empty() {
+        bail!("summary must not be blank");
+    }
     let memory_type = args
         .memory_type
         .parse::<MemoryType>()
@@ -554,6 +557,13 @@ async fn update(config: &Config, format: OutputFormat, mut args: UpdateArgs) -> 
         .is_some_and(|value| value.trim().is_empty())
     {
         bail!("content must not be blank");
+    }
+    if args
+        .summary
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        bail!("summary must not be blank");
     }
 
     let has_attrs = args.clear_attrs || !args.attrs.is_empty();

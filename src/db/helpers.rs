@@ -106,11 +106,7 @@ pub(super) fn build_where(filter: &FilterOptions<'_>, params: &mut Vec<Value>) -
 pub(super) fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let id: i64 = row.get(0)?;
     let content: String = row.get(1)?;
-    let summary = match row.get_value(2)? {
-        Value::Null => None,
-        Value::Text(s) => Some(s),
-        other => return Err(anyhow!("unexpected type for summary: {other:?}")),
-    };
+    let summary: String = row.get(2)?;
     let tags_json: String = row.get(3)?;
     let created_at: i64 = row.get(4)?;
     let updated_at: i64 = row.get(5)?;
@@ -281,7 +277,7 @@ mod tests {
                 Memory {
                     id: 1,
                     content: content.to_owned(),
-                    summary: None,
+                    summary: "summary".to_owned(),
                     tags: vec![],
                     created_at: 0,
                     updated_at: 0,
@@ -311,7 +307,7 @@ mod tests {
                 Memory {
                     id: 1,
                     content: content.to_owned(),
-                    summary: None,
+                    summary: "summary".to_owned(),
                     tags: vec![],
                     created_at: 0,
                     updated_at: 0,

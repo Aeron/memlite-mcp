@@ -6,10 +6,10 @@ govern it. It applies uniformly to the MCP tools (see
 [configuration.md](configuration.md)); both are thin interfaces over the
 same underlying store.
 
-Each memory is a record with required `content` and `memory_type` fields and
-a set of optional fields: `summary`, `tags`, `context`, `confidence`,
-`decay_rate`, `attrs`, `relations`, and `refs`. The sections below describe
-the fields that carry structure.
+Each memory is a record with required `content`, `summary`, and `memory_type`
+fields. Optional fields are `tags`, `context`, `confidence`, `decay_rate`,
+`attrs`, `relations`, and `refs`. The sections below describe the fields that
+carry structure.
 
 ## Memory types
 

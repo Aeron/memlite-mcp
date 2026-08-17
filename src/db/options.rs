@@ -5,10 +5,9 @@ use crate::db::types::{
 
 /// Holds the optional metadata fields for inserting a new memory row.
 #[cfg(test)]
-#[derive(Default)]
 pub struct InsertOptions<'a> {
     /// Short label for list views.
-    pub summary: Option<&'a str>,
+    pub summary: &'a str,
     /// Category labels stored as a JSON array.
     pub tags: &'a [String],
     /// Background rationale for the memory.
@@ -27,12 +26,29 @@ pub struct InsertOptions<'a> {
     pub refs: &'a [String],
 }
 
+#[cfg(test)]
+impl Default for InsertOptions<'_> {
+    fn default() -> Self {
+        Self {
+            summary: "test memory",
+            tags: &[],
+            context: None,
+            confidence: None,
+            decay_rate: None,
+            memory_type: MemoryType::default(),
+            attrs: None,
+            relations: &[],
+            refs: &[],
+        }
+    }
+}
+
 /// Holds the fields that can be updated on an existing memory row.
 #[derive(Default)]
 pub struct UpdateOptions<'a> {
     /// Replacement content; triggers re-embedding when provided.
     pub content: Option<&'a str>,
-    /// Replacement summary; pass Some("") to clear.
+    /// Replacement summary; blank values are rejected.
     pub summary: Option<&'a str>,
     /// Replacement tags.
     pub tags: Option<&'a [String]>,

@@ -88,7 +88,7 @@ impl MemoryStore {
         let item = BatchInsertItem {
             content: content.to_owned(),
             embedding: embedding.to_vec(),
-            summary: opts.summary.map(str::to_owned),
+            summary: opts.summary.to_owned(),
             tags: opts.tags.to_vec(),
             context: opts.context.map(str::to_owned),
             confidence: opts.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
@@ -112,6 +112,9 @@ impl MemoryStore {
     pub async fn insert_batch(&self, items: Vec<BatchInsertItem>) -> Result<Vec<i64>> {
         if items.is_empty() {
             return Ok(Vec::new());
+        }
+        if items.iter().any(|item| item.summary.trim().is_empty()) {
+            return Err(anyhow!("summary must not be blank"));
         }
 
         let conn = self.write_conn.lock().await;
@@ -142,7 +145,7 @@ impl MemoryStore {
                 sql,
                 libsql::params_from_iter([
                     Value::Text(item.content),
-                    item.summary.map(Value::Text).unwrap_or(Value::Null),
+                    Value::Text(item.summary),
                     Value::Text(tags_json.clone()),
                     Value::Blob(emb_blob),
                     Value::Integer(now),
@@ -364,7 +367,7 @@ impl MemoryStore {
 
     /// Updates the specified fields of a memory row.
     ///
-    /// - `summary = Some("")` clears the summary (sets to NULL).
+    /// - Blank `summary` values are rejected.
     /// - `context = Some("")` clears the context (sets to NULL).
     /// - `attrs = Some({})` clears all type-specific extra fields.
     /// - Supplying a new `embedding` alongside updated content keeps the index
@@ -387,6 +390,9 @@ impl MemoryStore {
             relations,
             refs,
         } = opts;
+        if summary.is_some_and(|value| value.trim().is_empty()) {
+            return Err(anyhow!("summary must not be blank"));
+        }
         if content.is_none()
             && summary.is_none()
             && tags.is_none()
@@ -427,11 +433,7 @@ impl MemoryStore {
         }
         if let Some(s) = summary {
             set_clauses.push("summary = ?");
-            params.push(if s.is_empty() {
-                Value::Null
-            } else {
-                Value::Text(s.to_owned())
-            });
+            params.push(Value::Text(s.to_owned()));
         }
         if let Some(value) = &tags_json {
             set_clauses.push("tags = ?");
@@ -890,7 +892,7 @@ impl MemoryStore {
             from all_ids a
             left join out_deg o on o.id = a.id
             left join in_deg i on i.id = a.id
-            left join memories m on m.rowid = a.id
+            join memories m on m.rowid = a.id
             order by (coalesce(o.cnt, 0) + coalesce(i.cnt, 0)) desc, a.id asc
             limit ?
         ";
@@ -901,11 +903,7 @@ impl MemoryStore {
             let id: i64 = row.get(0)?;
             let out_degree: i64 = row.get(1)?;
             let in_degree: i64 = row.get(2)?;
-            let summary = match row.get_value(3)? {
-                Value::Null => None,
-                Value::Text(s) => Some(s),
-                _ => None,
-            };
+            let summary: String = row.get(3)?;
             let memory_type = match row.get_value(4)? {
                 Value::Null => None,
                 Value::Text(s) => s.parse().ok(),
@@ -1055,7 +1053,7 @@ mod tests {
                 "content",
                 &V1,
                 InsertOptions {
-                    summary: Some("summ"),
+                    summary: "summ",
                     tags: &["tag".into()],
                     context: Some("why it matters"),
                     ..Default::default()
@@ -1068,7 +1066,7 @@ mod tests {
         let m = &rows[0];
         assert_eq!(m.id, id);
         assert_eq!(m.content, "content");
-        assert_eq!(m.summary.as_deref(), Some("summ"));
+        assert_eq!(m.summary, "summ");
         assert_eq!(m.tags, ["tag"]);
         assert_eq!(m.context.as_deref(), Some("why it matters"));
         // Defaults
@@ -1406,20 +1404,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_clears_summary_on_empty_string() {
+    async fn update_rejects_blank_summary() {
         let (store, _tmp) = fresh().await;
         let id = store
             .insert(
                 "x",
                 &V1,
                 InsertOptions {
-                    summary: Some("summ"),
+                    summary: "summ",
                     ..Default::default()
                 },
             )
             .await
             .unwrap();
-        store
+        let error = store
             .update(
                 id,
                 UpdateOptions {
@@ -1428,11 +1426,11 @@ mod tests {
                 },
             )
             .await
-            .unwrap();
-        assert!(
-            store.list(FilterOptions::default(), 1, 0).await.unwrap()[0]
-                .summary
-                .is_none()
+            .unwrap_err();
+        assert_eq!(error.to_string(), "summary must not be blank");
+        assert_eq!(
+            store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].summary,
+            "summ"
         );
     }
 
@@ -1888,13 +1886,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn insert_batch_rejects_blank_summary() {
+        let (store, _tmp) = fresh().await;
+        let error = store
+            .insert_batch(vec![BatchInsertItem {
+                content: "content".into(),
+                embedding: V1.to_vec(),
+                summary: "  ".into(),
+                tags: vec![],
+                context: None,
+                confidence: 1.0,
+                decay_rate: 0.0,
+                memory_type: MemoryType::Project,
+                attrs: MemoryAttrs::default(),
+                relations: vec![],
+                refs: vec![],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "summary must not be blank");
+        assert!(
+            store
+                .list(FilterOptions::default(), 1, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn insert_batch_returns_ids_in_order() {
         let (store, _tmp) = fresh().await;
         let items = vec![
             BatchInsertItem {
                 content: "first".into(),
                 embedding: V1.to_vec(),
-                summary: Some("s1".into()),
+                summary: "s1".into(),
                 tags: vec!["a".into()],
                 context: None,
                 confidence: 1.0,
@@ -1910,7 +1937,7 @@ mod tests {
             BatchInsertItem {
                 content: "second".into(),
                 embedding: V2.to_vec(),
-                summary: None,
+                summary: "s2".into(),
                 tags: vec![],
                 context: None,
                 confidence: 0.8,
@@ -1936,7 +1963,7 @@ mod tests {
         let second = rows.iter().find(|m| m.content == "second").unwrap();
         assert_eq!(first.id, ids[0]);
         assert_eq!(second.id, ids[1]);
-        assert_eq!(first.summary.as_deref(), Some("s1"));
+        assert_eq!(first.summary, "s1");
         assert_eq!(first.tags, ["a"]);
         assert_eq!(first.memory_type, Some(MemoryType::Project));
         assert_eq!(first.attrs.status, Some(MemoryStatus::Open));

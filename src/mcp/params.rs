@@ -12,7 +12,7 @@ pub struct SearchParams {
     #[schemars(range(max = 100))]
     pub limit: Option<u32>,
     /// Full context and content in each result (default: false).
-    /// Compact selection output when false: summary, or bounded content preview as fallback.
+    /// Compact selection output when false includes the required summary.
     pub include_content: Option<bool>,
     /// Restricts results to memories that carry all of the given tags.
     pub tags: Option<Vec<String>>,
@@ -70,9 +70,9 @@ pub struct StoreItem {
     /// Full text to embed and store.
     #[schemars(length(min = 1))]
     pub content: String,
-    /// One-sentence description for quick recall without reading the full
-    /// content. Provide when content is long, complex, or not self-describing.
-    pub summary: Option<String>,
+    /// One-sentence description for quick recall without reading the full content.
+    #[schemars(length(min = 1))]
+    pub summary: String,
     /// Grouping labels; reuse existing tags, lowercase, singular where natural
     /// (e.g. ["architecture", "auth", "bug"]).
     pub tags: Option<Vec<String>>,
@@ -182,7 +182,7 @@ pub struct UpdateParams {
     /// Replacement content; triggers re-embedding when provided.
     #[schemars(length(min = 1))]
     pub content: Option<String>,
-    /// Replacement summary; pass empty string to clear the field.
+    /// Replacement summary; blank values are rejected.
     pub summary: Option<String>,
     /// Replacement grouping labels; reuse existing tags, lowercase, singular
     /// where natural.

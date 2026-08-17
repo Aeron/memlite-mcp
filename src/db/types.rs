@@ -12,7 +12,7 @@ pub struct Memory {
     /// Full text of the memory; the field that is embedded for semantic search.
     pub content: String,
     /// One-sentence description for quick recall without reading the full content.
-    pub summary: Option<String>,
+    pub summary: String,
     /// Category labels attached to this memory for grouping and filtering.
     pub tags: Vec<String>,
     /// Unix timestamp (seconds) when the row was first inserted.
@@ -289,7 +289,7 @@ pub struct BatchInsertItem {
     /// Pre-computed embedding vector for `content`.
     pub embedding: Vec<f32>,
     /// Short label for list views.
-    pub summary: Option<String>,
+    pub summary: String,
     /// Category labels.
     pub tags: Vec<String>,
     /// Background rationale.
@@ -379,7 +379,7 @@ pub struct HubEntry {
     /// Memory id.
     pub id: i64,
     /// Short description for identification.
-    pub summary: Option<String>,
+    pub summary: String,
     /// Memory type classification; None only for legacy rows.
     pub memory_type: Option<MemoryType>,
     /// Number of outgoing relation edges.

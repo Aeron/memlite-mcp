@@ -34,7 +34,7 @@ Each item:
 |---|---|---|
 | `content` | yes | Full text to embed and store |
 | `memory_type` | yes | One of the eight [memory types](memory.md#memory-types) |
-| `summary` | no | One-sentence description for quick recall; provide when content is long, complex, or not self-describing |
+| `summary` | yes | One-sentence description for quick recall; blank values are rejected |
 | `tags` | no | Category labels for grouping (e.g. `["architecture", "auth"]`) |
 | `context` | no | Background rationale for this memory |
 | `confidence` | no | Initial confidence score in [0, 1] (default 1.0) |
@@ -52,9 +52,9 @@ ordered nearest first and include a rounded `distance` and
 `effective_confidence`, RFC 3339 timestamps, folded relations, and an optional
 compact `freshness` warning.
 
-Compact by default: each result carries its summary, or a bounded content
-preview as fallback. Pass `include_content: true` for full context and
-content; full results omit the then-redundant summary.
+Compact by default: each result carries its required summary. Pass
+`include_content: true` for full context and content; full results omit the
+then-redundant summary.
 
 | Parameter | Required | Description |
 |---|---|---|
@@ -92,15 +92,15 @@ with `memory_list(ids=[...])`.
 Updates any field of a memory in place. Providing `content` triggers
 re-embedding. Any update resets the decay clock (`last_seen_at`).
 
-Clearing semantics: pass `""` to clear `summary` or `context`; pass `{}` to
-clear `attrs` or `relations`; pass `[]` to clear `refs`. `attrs`,
-`relations`, and `refs` are full-set replacements, not merges.
+Clearing semantics: pass `""` to clear `context`; pass `{}` to clear `attrs`
+or `relations`; pass `[]` to clear `refs`. Blank summaries are rejected.
+`attrs`, `relations`, and `refs` are full-set replacements, not merges.
 
 | Parameter | Required | Description |
 |---|---|---|
 | `id` | yes | Numeric identifier of the memory to update |
 | `content` | no | Replacement content; triggers re-embedding |
-| `summary` | no | Replacement summary |
+| `summary` | no | Replacement summary; blank values are rejected |
 | `tags` | no | Replacement tags |
 | `context` | no | Replacement context |
 | `confidence` | no | Replacement confidence; clamped to [0, 1] |

@@ -25,9 +25,7 @@ fn search_payload() -> Value {
                 "refs": ["src/mcp/server.rs", "benches/toon_format.rs"]
             });
             if i % 2 == 0 {
-                let fields = row.as_object_mut().unwrap();
-                fields.remove("summary");
-                fields.remove("relations");
+                row.as_object_mut().unwrap().remove("relations");
             }
             if i % 3 == 0 {
                 let fields = row.as_object_mut().unwrap();
@@ -89,9 +87,7 @@ fn search_block_text(payload: &Value) -> String {
         )
         .unwrap();
 
-        if let Some(summary) = row.get("summary").and_then(Value::as_str) {
-            writeln!(output, "summary: {summary}").unwrap();
-        }
+        writeln!(output, "summary: {}", row["summary"].as_str().unwrap()).unwrap();
         writeln!(
             output,
             "updated_at: {} (created_at {})",
