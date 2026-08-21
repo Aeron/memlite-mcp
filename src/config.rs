@@ -86,6 +86,9 @@ pub enum EmbeddingModel {
     /// BAAI/bge-large-en-v1.5 (1024 dims, ~620 MB)
     #[value(name = "bge-large-en-v1.5")]
     Large,
+    /// BAAI/bge-m3 (1024 dims, ~2.3 GB; multilingual, 8192-token context)
+    #[value(name = "bge-m3")]
+    M3,
 }
 
 impl std::fmt::Display for EmbeddingModel {
@@ -103,6 +106,7 @@ impl From<EmbeddingModel> for fastembed::EmbeddingModel {
             EmbeddingModel::Small => fastembed::EmbeddingModel::BGESmallENV15,
             EmbeddingModel::Base => fastembed::EmbeddingModel::BGEBaseENV15,
             EmbeddingModel::Large => fastembed::EmbeddingModel::BGELargeENV15,
+            EmbeddingModel::M3 => fastembed::EmbeddingModel::BGEM3,
         }
     }
 }
@@ -433,6 +437,10 @@ mod tests {
         assert!(matches!(
             fastembed::EmbeddingModel::from(EmbeddingModel::Large),
             fastembed::EmbeddingModel::BGELargeENV15
+        ));
+        assert!(matches!(
+            fastembed::EmbeddingModel::from(EmbeddingModel::M3),
+            fastembed::EmbeddingModel::BGEM3
         ));
     }
 }

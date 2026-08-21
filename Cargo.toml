@@ -19,7 +19,7 @@ rmcp = { version = "1.6.0", features = ["server", "transport-io", "macros", "sch
 libsql = { version = "0.9.30", default-features = false, features = ["core"] }
 
 # Embeddings: local ONNX inference (BAAI/bge-small-en-v1.5, 384 dims)
-fastembed = "5.13.4"
+fastembed = "6.0.0"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

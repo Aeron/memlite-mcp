@@ -36,9 +36,11 @@ truthy env var can still be overridden from the command line.
 | `bge-small-en-v1.5` (default) | 384 | ~67 MB |
 | `bge-base-en-v1.5` | 768 | ~210 MB |
 | `bge-large-en-v1.5` | 1024 | ~620 MB |
+| `bge-m3` | 1024 | ~2.3 GB |
 
-All three are English-first models; larger variants trade download size and
-inference time for retrieval quality.
+The v1.5 models are English-first; larger variants trade download size and
+inference time for retrieval quality. `bge-m3` supports 100+ languages and an
+8192-token context, at a much larger download and runtime cost.
 
 The model is downloaded on the first MCP `memory_store` or `memory_search`
 call, or the first direct `tool store`, `tool search`, or content-changing

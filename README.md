@@ -52,8 +52,8 @@ locations.
 
 The defaults are fine for most setups. Run the MCP server with
 `memlite-mcp serve`. The one option worth a look is `--embedding-model`
-(`MEMLITE_EMBEDDING_MODEL`): the bundled models are English-first BGE
-variants, which matters if your memories will not be in English.
+(`MEMLITE_EMBEDDING_MODEL`): English-first BGE v1.5 models are available,
+along with multilingual `bge-m3` for memories spanning 100+ languages.
 
 For all flags, env vars, and the embedding models table, see
 [docs/configuration.md](docs/configuration.md).
