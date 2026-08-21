@@ -75,3 +75,7 @@ harness = false
 [[bench]]
 name = "toon_format"
 harness = false
+
+[[bench]]
+name = "embedding_models"
+harness = false

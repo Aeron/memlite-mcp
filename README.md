@@ -105,3 +105,52 @@ cargo bench --bench toon_format -- --noplot
 
 A reported `toon_ratio` or `block_ratio` below 1.0 means that format is
 smaller than compact JSON for the case.
+
+The embedding model benchmark compares embedding-only cosine quality, raw
+vector payload, and steady-state inference for production model
+configurations. It uses raw queries and raw memory text without prompts or
+benchmark-specific normalization. The default runs only
+`bge-small-en-v1.5`:
+
+```sh
+cargo bench --bench embedding_models -- --noplot
+```
+
+Select one or more models with a comma-separated list:
+
+```sh
+EMBEDDING_BENCH_MODELS=bge-base-en-v1.5,bge-m3 cargo bench --bench embedding_models -- --noplot
+```
+
+Run every supported production model explicitly:
+
+```sh
+EMBEDDING_BENCH_MODELS=all cargo bench --bench embedding_models -- --noplot
+```
+
+`EMBEDDING_BENCH_CACHE_DIR` overrides the model cache. Without it, the
+benchmark uses the same operating system cache directory as MemLite. The first
+run for a model may download files; `cached_init_duration_ms` can therefore
+include download time on a cold cache. Later runs measure initialization from
+the populated cache.
+
+Quality output is split into English semantic paraphrases,
+multilingual/cross-lingual retrieval, and long memories whose relevant detail
+appears late in the text. `recall_at_1` and `recall_at_3` report the fraction of
+queries whose labeled memory appears in the first one or three results. `mrr`
+is mean reciprocal rank. The cosine margin is the labeled memory score minus
+the strongest non-relevant score; larger positive values indicate clearer
+separation. Model output also reports dimensions, raw float bytes per vector,
+raw float MiB per 100,000 vectors, initial corpus and query embedding
+durations, and Criterion steady-state timings for one query and a batch of 32
+short memories. Raw vector figures exclude SQLite and vector-index overhead,
+model files, and runtime memory.
+
+This synthetic corpus isolates embedding behavior. It does not exercise
+DiskANN candidate selection or MemLite's word-overlap reranking, so use results
+as a model-level signal rather than an end-to-end production score. Validate a
+candidate on representative project memories before changing the default.
+
+Running all models is opt-in because the combined downloads and inference cost
+are large. `bge-m3` alone is roughly 2.3 GB, while the production default is the
+much smaller `bge-small-en-v1.5`.
