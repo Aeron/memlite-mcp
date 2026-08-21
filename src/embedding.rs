@@ -45,7 +45,9 @@ impl EmbeddingService {
                             model_kind,
                             cache_dir
                         );
-                        let opts = TextInitOptions::new(model_kind).with_cache_dir(cache_dir);
+                        let opts = TextInitOptions::new(model_kind)
+                            .with_cache_dir(cache_dir)
+                            .with_show_download_progress(false);
                         TextEmbedding::try_new(opts)
                             .map(|m| Arc::new(Mutex::new(m)))
                             .map_err(|e| anyhow!("embedding: {e}"))
