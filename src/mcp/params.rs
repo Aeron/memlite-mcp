@@ -108,7 +108,8 @@ pub struct StoreItem {
     /// related_to, duplicate_of.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
     /// External pointers such as file paths, symbols, URLs, or issue
-    /// identifiers; file paths should be short and project-relative.
+    /// identifiers. Use project-relative file paths in single-project workspaces;
+    /// prefix the project root directory name in multi-project workspaces.
     pub refs: Option<Vec<String>>,
 }
 
@@ -220,7 +221,8 @@ pub struct UpdateParams {
     /// depends_on, supersedes, related_to, duplicate_of. An empty object clears all links.
     pub relations: Option<std::collections::BTreeMap<String, String>>,
     /// Replacement external pointers such as file paths, symbols, URLs, or
-    /// issue identifiers; file paths should be short and project-relative.
-    /// An empty array clears all refs.
+    /// issue identifiers. Use project-relative file paths in single-project
+    /// workspaces; prefix the project root directory name in multi-project
+    /// workspaces. An empty array clears all refs.
     pub refs: Option<Vec<String>>,
 }

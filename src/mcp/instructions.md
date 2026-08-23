@@ -2,7 +2,7 @@ Local agent memory store. Server-side embeddings from plain text.
 
 ## Tool schemas
 
-Use runtime tool descriptions and JSON schemas for exact parameters, limits, defaults, and return behavior. This guide defines workflow and field semantics only, avoiding second parameter reference that can drift from server.
+Use runtime tool descriptions and JSON schemas for exact parameters, limits, defaults, and return behavior. This guide defines workflow and field semantics only, avoiding duplicate parameter reference that can drift from server.
 
 List/search outputs use literal block text. Other structured outputs use TOON v3.0. Inputs remain JSON. Errors remain plain text.
 
@@ -18,7 +18,7 @@ Before finishing, store anything saving meaningful future effort. Don't wait to 
 
 - Decision: what chosen, what rejected, why
 - Non-obvious fact: quirk, undocumented behavior, workaround, env detail
-- Bug diagnosed: root cause + fix, not just symptom
+- Bug diagnosed: root cause + fix, not only symptom
 - Constraint: anything ruling out or shaping future approaches
 - User preference or project convention: naming, tooling, process
 - Significant research: if it cost time once, store it
@@ -71,7 +71,7 @@ Confirmed accurate? Call `memory_revalidate([id])`. Multiple: pass up to 100 ids
 
 ### `summary`
 
-Every memory need summary. One sentence name stored info; no full repeat. Compact search/list show summary. Full output omit it because content already there. Blank summary rejected.
+Every memory needs summary. One sentence naming stored info; no content repeat. Compact search/list rows show summary. Full output omits it; content already there. Blank summary rejected.
 
 ### `context`
 
@@ -132,7 +132,7 @@ Don't delete resolved memories; set `attrs: {"status": "resolved"}` instead. Use
 
 ### `refs`
 
-External reference pointers. Free-form array of strings: file paths, symbol names, URLs, or issue IDs. Examples: `["src/db/store.rs", "MemoryStore::insert"]`, `["https://github.com/foo/issues/42"]`. Use short project-relative paths (`src/db/store.rs`) not absolute paths. `memory_update` replaces full set; pass `[]` to clear. `memory_search` and `memory_list` accept `refs_contain` for substring filtering.
+External reference pointers. Free-form array of strings: file paths, symbol names, URLs, or issue identifiers. Examples: `["src/db/store.rs", "MemoryStore::insert"]`, `["https://github.com/foo/issues/42"]`. Use project-relative paths (`src/db/store.rs`) in single-project workspaces. Prefix project root directory name (`graphlite-mcp/src/db/store.rs`) in multi-project workspaces. Do not use absolute paths. `memory_update` replaces full set; pass `[]` to clear. `memory_search` and `memory_list` accept `refs_contain` for substring filtering.
 
 ### `relations`
 
