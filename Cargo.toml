@@ -79,3 +79,4 @@ harness = false
 [[bench]]
 name = "embedding_models"
 harness = false
+

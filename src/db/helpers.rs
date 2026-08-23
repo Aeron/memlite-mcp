@@ -4,22 +4,28 @@ use anyhow::{Result, anyhow};
 use libsql::Value;
 
 use super::options::FilterOptions;
-use super::types::{Memory, MemoryAttrs};
+use super::types::{CompactMemory, Memory, MemoryAttrs, MemorySummary, MemoryType};
 
-/// Fetches full memory rows for a set of ids, returning a map of id -> Memory.
-/// Missing ids (deleted memories) are silently absent from the result.
-pub(super) async fn fetch_memories_by_ids(
+fn parse_memory_type(row: &libsql::Row, index: i32) -> Result<Option<MemoryType>> {
+    match row.get_value(index)? {
+        Value::Null => Ok(None),
+        Value::Text(value) => Ok(value.parse().ok()),
+        other => Err(anyhow!("unexpected value for type column: {other:?}")),
+    }
+}
+
+/// Fetches compact memory summaries for the requested row identifiers.
+/// Missing rows are silently absent from the result.
+pub(super) async fn fetch_memory_summaries_by_ids(
     conn: &libsql::Connection,
     ids: &[i64],
-) -> Result<HashMap<i64, Memory>> {
+) -> Result<HashMap<i64, MemorySummary>> {
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
     let placeholders = vec!["?"; ids.len()].join(", ");
     let sql = format!(
-        "select
-            rowid, content, summary, tags, created_at, updated_at, context,
-            confidence, decay_rate, last_seen_at, type, relations, refs, attrs
+        "select rowid, summary, type
          from memories
          where rowid in ({placeholders})"
     );
@@ -27,8 +33,17 @@ pub(super) async fn fetch_memories_by_ids(
     let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
     let mut map = HashMap::new();
     while let Some(row) = rows.next().await? {
-        let m = parse_memory_row(&row)?;
-        map.insert(m.id, m);
+        let id: i64 = row.get(0)?;
+        let summary: String = row.get(1)?;
+        let memory_type = parse_memory_type(&row, 2)?;
+        map.insert(
+            id,
+            MemorySummary {
+                id,
+                summary,
+                memory_type,
+            },
+        );
     }
     Ok(map)
 }
@@ -118,11 +133,7 @@ pub(super) fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
     let confidence: f64 = row.get(7)?;
     let decay_rate: f64 = row.get(8)?;
     let last_seen_at: i64 = row.get(9)?;
-    let memory_type = match row.get_value(10)? {
-        Value::Null => None,
-        Value::Text(s) => s.parse().ok(),
-        other => return Err(anyhow!("unexpected value for type column: {other:?}")),
-    };
+    let memory_type = parse_memory_type(row, 10)?;
     let relations_json: String = row.get(11)?;
     let relations: BTreeMap<String, String> = serde_json::from_str(&relations_json)?;
     let tags: Vec<String> = serde_json::from_str(&tags_json)?;
@@ -146,6 +157,42 @@ pub(super) fn parse_memory_row(row: &libsql::Row) -> Result<Memory> {
         attrs,
         relations,
         refs,
+    })
+}
+
+/// Deserialises a compact database row without full prose fields.
+///
+/// Expects columns in this order:
+/// 0=rowid, 1=summary, 2=tags, 3=created_at, 4=updated_at,
+/// 5=confidence, 6=decay_rate, 7=last_seen_at, 8=type,
+/// 9=relations, 10=refs, 11=attrs.
+pub(super) fn parse_compact_memory_row(row: &libsql::Row) -> Result<CompactMemory> {
+    let id: i64 = row.get(0)?;
+    let summary: String = row.get(1)?;
+    let tags_json: String = row.get(2)?;
+    let created_at: i64 = row.get(3)?;
+    let updated_at: i64 = row.get(4)?;
+    let confidence: f64 = row.get(5)?;
+    let decay_rate: f64 = row.get(6)?;
+    let last_seen_at: i64 = row.get(7)?;
+    let memory_type = parse_memory_type(row, 8)?;
+    let relations_json: String = row.get(9)?;
+    let refs_json: String = row.get(10)?;
+    let attrs_json: String = row.get(11)?;
+
+    Ok(CompactMemory {
+        id,
+        summary,
+        tags: serde_json::from_str(&tags_json)?,
+        created_at,
+        updated_at,
+        confidence,
+        decay_rate,
+        last_seen_at,
+        memory_type,
+        attrs: serde_json::from_str(&attrs_json)?,
+        relations: serde_json::from_str(&relations_json)?,
+        refs: serde_json::from_str(&refs_json)?,
     })
 }
 
@@ -250,12 +297,9 @@ mod tests {
         let vals = [1.0f32, 0.5, -0.25];
         let blob = floats_to_blob(&vals);
         assert_eq!(blob.len(), vals.len() * 4);
-        let parsed: Vec<f32> = blob
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-            .collect();
-        for (a, b) in vals.iter().zip(&parsed) {
-            assert_eq!(a.to_bits(), b.to_bits(), "{a} != {b}");
+        for (value, bytes) in vals.iter().zip(blob.as_chunks::<4>().0) {
+            let parsed = f32::from_le_bytes(*bytes);
+            assert_eq!(value.to_bits(), parsed.to_bits(), "{value} != {parsed}");
         }
     }
 

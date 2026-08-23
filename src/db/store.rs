@@ -5,15 +5,15 @@ use libsql::{Builder, Connection, Value};
 use tokio::sync::Mutex;
 
 use super::helpers::{
-    build_where, fetch_memories_by_ids, floats_to_blob, parse_memory_row, relations_to_json,
-    rerank_by_overlap, tags_to_json, unix_secs,
+    build_where, fetch_memory_summaries_by_ids, floats_to_blob, parse_compact_memory_row,
+    parse_memory_row, relations_to_json, rerank_by_overlap, tags_to_json, unix_secs,
 };
 #[cfg(test)]
 use super::options::InsertOptions;
 use super::options::{FilterOptions, UpdateOptions};
 use super::types::{
-    BatchInsertItem, GraphStats, HubEntry, Memory, NeighborInfo, Neighbors, PathStep,
-    TraverseDirection, TraverseNode, TraverseResult,
+    BatchInsertItem, CompactMemory, GraphStats, HubEntry, Memory, NeighborInfo, Neighbors,
+    PathStep, TraverseDirection, TraverseNode, TraverseResult,
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -284,6 +284,40 @@ impl MemoryStore {
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
             results.push(parse_memory_row(&row)?);
+        }
+
+        Ok(results)
+    }
+
+    /// Returns memories without loading full content or context fields.
+    pub async fn list_compact(
+        &self,
+        filter: FilterOptions<'_>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<CompactMemory>> {
+        let mut params: Vec<Value> = Vec::new();
+        let where_sql = build_where(&filter, &mut params)?;
+        params.push(Value::Integer(limit as i64));
+        params.push(Value::Integer(offset as i64));
+
+        let sql = format!(
+            "select
+                rowid, summary, tags, created_at, updated_at,
+                confidence, decay_rate, last_seen_at, type, relations, refs, attrs
+            from memories
+            {where_sql}
+            order by created_at desc
+            limit ? offset ?"
+        );
+        let mut rows = self
+            .read_conn
+            .query(&sql, libsql::params_from_iter(params))
+            .await?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await? {
+            results.push(parse_compact_memory_row(&row)?);
         }
 
         Ok(results)
@@ -597,14 +631,14 @@ impl MemoryStore {
             in_pairs.push((row.get(0)?, row.get(1)?));
         }
 
-        // Fetch full memories for all referenced ids in a single query
+        // Fetching compact summaries for all referenced identifiers in one query
         let unique_other_ids: std::collections::HashSet<i64> = out_pairs
             .iter()
             .map(|(oid, _)| *oid)
             .chain(in_pairs.iter().map(|(oid, _)| *oid))
             .collect();
         let all_other_ids: Vec<i64> = unique_other_ids.into_iter().collect();
-        let memory_map = fetch_memories_by_ids(conn, &all_other_ids).await?;
+        let memory_map = fetch_memory_summaries_by_ids(conn, &all_other_ids).await?;
 
         let outgoing = out_pairs
             .into_iter()
@@ -731,9 +765,9 @@ impl MemoryStore {
             frontier = new_frontier;
         }
 
-        // Fetch memories for all discovered nodes
+        // Fetching compact summaries for all discovered nodes
         let all_ids: Vec<i64> = visited.keys().copied().collect();
-        let memory_map = fetch_memories_by_ids(conn, &all_ids).await?;
+        let memory_map = fetch_memory_summaries_by_ids(conn, &all_ids).await?;
 
         let mut nodes: Vec<TraverseNode> = visited
             .into_iter()
@@ -769,7 +803,7 @@ impl MemoryStore {
         max_hops: u32,
     ) -> Result<Option<Vec<PathStep>>> {
         if from_id == to_id {
-            let map = fetch_memories_by_ids(&self.read_conn, &[from_id]).await?;
+            let map = fetch_memory_summaries_by_ids(&self.read_conn, &[from_id]).await?;
             return Ok(map.get(&from_id).map(|m| {
                 vec![PathStep {
                     memory: m.clone(),
@@ -842,9 +876,9 @@ impl MemoryStore {
         }
         path_ids.reverse();
 
-        // Fetch memories for all path nodes
+        // Fetching compact summaries for all path nodes
         let ids: Vec<i64> = path_ids.iter().map(|(id, _)| *id).collect();
-        let memory_map = fetch_memories_by_ids(conn, &ids).await?;
+        let memory_map = fetch_memory_summaries_by_ids(conn, &ids).await?;
 
         let steps = path_ids
             .into_iter()
@@ -1073,6 +1107,34 @@ mod tests {
         assert_eq!(m.confidence, 1.0);
         assert_eq!(m.decay_rate, 0.0);
         assert!(m.last_seen_at > 0);
+    }
+
+    #[tokio::test]
+    async fn compact_list_roundtrips_metadata_without_full_prose() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert(
+                "large content that compact reads do not select",
+                &V1,
+                InsertOptions {
+                    summary: "compact summary",
+                    tags: &["compact".into()],
+                    context: Some("large context that compact reads do not select"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let rows = store
+            .list_compact(FilterOptions::default(), 10, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, id);
+        assert_eq!(rows[0].summary, "compact summary");
+        assert_eq!(rows[0].tags, ["compact"]);
     }
 
     #[tokio::test]
@@ -2112,6 +2174,56 @@ mod tests {
         expected.insert(target_id.to_string(), "caused_by".to_owned());
         expected.insert(other_target_id.to_string(), "related_to".to_owned());
         assert_eq!(source.relations, expected);
+    }
+
+    #[tokio::test]
+    async fn graph_queries_return_compact_memory_summaries() {
+        let (store, _tmp) = fresh().await;
+        let target_id = store
+            .insert(
+                "target content",
+                &V2,
+                InsertOptions {
+                    summary: "target summary",
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let source_id = store
+            .insert(
+                "source content",
+                &V1,
+                InsertOptions {
+                    summary: "source summary",
+                    relations: &[(target_id, "related_to".to_owned())],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let neighbors = store.neighbors(source_id, None).await.unwrap();
+        assert_eq!(
+            neighbors.outgoing[0].memory.as_ref().unwrap().summary,
+            "target summary"
+        );
+
+        let traversal = store
+            .traverse(source_id, 1, None, TraverseDirection::Out)
+            .await
+            .unwrap();
+        let summaries: Vec<_> = traversal
+            .nodes
+            .iter()
+            .map(|node| node.memory.summary.as_str())
+            .collect();
+        assert_eq!(summaries, ["source summary", "target summary"]);
+
+        let path = store.path(source_id, target_id, 1).await.unwrap().unwrap();
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0].memory.summary, "source summary");
+        assert_eq!(path[1].memory.summary, "target summary");
     }
 
     #[tokio::test]

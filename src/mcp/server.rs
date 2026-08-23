@@ -27,8 +27,8 @@ use crate::{
     },
     embedding::EmbeddingService,
     output::{
-        hubs_json, neighbors_json, path_json, render_list_results, render_search_results,
-        render_toon, stats_json, traverse_json,
+        hubs_json, neighbors_json, path_json, render_compact_list_results, render_list_results,
+        render_search_results, render_toon, stats_json, traverse_json,
     },
 };
 
@@ -312,29 +312,30 @@ impl MemServer {
         let Some(store) = self.store_if_present().await? else {
             return tool_text("memories: 0".to_owned());
         };
-        let memories = store
-            .list(
-                FilterOptions {
-                    ids: p.ids.as_deref(),
-                    tags: p.tags.as_deref(),
-                    memory_type,
-                    status,
-                    severity,
-                    priority,
-                    outcome,
-                    phase,
-                    refs_contain: p.refs_contain.as_deref(),
-                },
-                limit,
-                offset,
-            )
-            .await
-            .map_err(ServerError::StoreOp)?;
-
-        tool_text(render_list_results(
-            &memories,
-            p.include_content.unwrap_or(true),
-        ))
+        let filter = FilterOptions {
+            ids: p.ids.as_deref(),
+            tags: p.tags.as_deref(),
+            memory_type,
+            status,
+            severity,
+            priority,
+            outcome,
+            phase,
+            refs_contain: p.refs_contain.as_deref(),
+        };
+        if p.include_content.unwrap_or(true) {
+            let memories = store
+                .list(filter, limit, offset)
+                .await
+                .map_err(ServerError::StoreOp)?;
+            tool_text(render_list_results(&memories, true))
+        } else {
+            let memories = store
+                .list_compact(filter, limit, offset)
+                .await
+                .map_err(ServerError::StoreOp)?;
+            tool_text(render_compact_list_results(&memories))
+        }
     }
 
     /// Returns each distinct tag with its occurrence count, ordered by frequency.

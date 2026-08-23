@@ -38,6 +38,55 @@ pub struct Memory {
     pub refs: Vec<String>,
 }
 
+fn calculate_effective_confidence(
+    confidence: f64,
+    decay_rate: f64,
+    created_at: i64,
+    last_seen_at: i64,
+) -> f64 {
+    if decay_rate <= 0.0 {
+        return confidence.clamp(0.0, 1.0);
+    }
+    let seen_at = if last_seen_at > 0 {
+        last_seen_at
+    } else {
+        created_at
+    };
+    let days = ((unix_secs() - seen_at).max(0) as f64) / 86400.0;
+    (confidence - decay_rate * days).clamp(0.0, 1.0)
+}
+
+fn calculate_age_days(updated_at: i64) -> u64 {
+    ((unix_secs() - updated_at).max(0) as u64) / 86400
+}
+
+fn calculate_freshness_warning(
+    confidence: f64,
+    decay_rate: f64,
+    created_at: i64,
+    last_seen_at: i64,
+    age_days: u64,
+) -> Option<String> {
+    let effective =
+        calculate_effective_confidence(confidence, decay_rate, created_at, last_seen_at);
+    if decay_rate > 0.0 && effective < confidence.clamp(0.0, 1.0) {
+        let seen_at = if last_seen_at > 0 {
+            last_seen_at
+        } else {
+            created_at
+        };
+        let validation_days = ((unix_secs() - seen_at).max(0) as u64) / 86400;
+        return Some(format!(
+            "decayed:{:.0}%<-{:.0}%,{}d",
+            effective * 100.0,
+            confidence.clamp(0.0, 1.0) * 100.0,
+            validation_days,
+        ));
+    }
+
+    (age_days > 30).then(|| format!("stale:{age_days}d"))
+}
+
 impl Memory {
     /// Computes the current effective confidence after applying time-based decay.
     ///
@@ -45,23 +94,17 @@ impl Memory {
     /// Falls back to `created_at` as the validation baseline when `last_seen_at` is 0.
     /// Result is clamped to [0.0, 1.0].
     pub fn effective_confidence(&self) -> f64 {
-        if self.decay_rate <= 0.0 {
-            return self.confidence.clamp(0.0, 1.0);
-        }
-        let seen_at = if self.last_seen_at > 0 {
-            self.last_seen_at
-        } else {
-            self.created_at
-        };
-        let now = unix_secs();
-        let days = ((now - seen_at).max(0) as f64) / 86400.0;
-        (self.confidence - self.decay_rate * days).clamp(0.0, 1.0)
+        calculate_effective_confidence(
+            self.confidence,
+            self.decay_rate,
+            self.created_at,
+            self.last_seen_at,
+        )
     }
 
     /// Returns the number of whole days since this memory was last modified.
     pub fn age_days(&self) -> u64 {
-        let now = unix_secs();
-        ((now - self.updated_at).max(0) as u64) / 86400
+        calculate_age_days(self.updated_at)
     }
 
     /// Returns a compact signal when this memory may be unreliable.
@@ -69,30 +112,77 @@ impl Memory {
     /// Reports decay when effective confidence has fallen below the initial value,
     /// or staleness when the memory has not been updated in more than 30 days.
     pub fn freshness_warning(&self) -> Option<String> {
-        let eff = self.effective_confidence();
-
-        if self.decay_rate > 0.0 && eff < self.confidence.clamp(0.0, 1.0) {
-            let seen_at = if self.last_seen_at > 0 {
-                self.last_seen_at
-            } else {
-                self.created_at
-            };
-            let val_days = ((unix_secs() - seen_at).max(0) as u64) / 86400;
-            return Some(format!(
-                "decayed:{:.0}%<-{:.0}%,{}d",
-                eff * 100.0,
-                self.confidence.clamp(0.0, 1.0) * 100.0,
-                val_days,
-            ));
-        }
-
-        let days = self.age_days();
-        if days > 30 {
-            return Some(format!("stale:{days}d"));
-        }
-
-        None
+        calculate_freshness_warning(
+            self.confidence,
+            self.decay_rate,
+            self.created_at,
+            self.last_seen_at,
+            self.age_days(),
+        )
     }
+}
+
+/// Read-only projection used when full prose fields are omitted.
+#[derive(Debug, Clone, Serialize)]
+pub struct CompactMemory {
+    /// Row identifier assigned by the database.
+    pub id: i64,
+    /// One-sentence description for quick recall without reading the full content.
+    pub summary: String,
+    /// Category labels attached to this memory for grouping and filtering.
+    pub tags: Vec<String>,
+    /// Unix timestamp (seconds) when the row was first inserted.
+    pub created_at: i64,
+    /// Unix timestamp (seconds) when the row was last modified.
+    pub updated_at: i64,
+    /// Base confidence score in [0, 1]; 1.0 means fully trusted.
+    pub confidence: f64,
+    /// Per-day confidence decay rate; 0.0 means no decay.
+    pub decay_rate: f64,
+    /// Unix timestamp (seconds) when it was last seen (or confidence validated).
+    pub last_seen_at: i64,
+    /// Classification of the memory's origin or intended use; None only for legacy rows.
+    pub memory_type: Option<MemoryType>,
+    /// Type-specific extra fields; serialized to the attrs JSON column.
+    pub attrs: MemoryAttrs,
+    /// Outgoing directed links keyed by stringified target identifier with a free-form kind label.
+    pub relations: std::collections::BTreeMap<String, String>,
+    /// External reference pointers: file paths, symbol names, URLs, issue identifiers, etc.
+    pub refs: Vec<String>,
+}
+
+impl CompactMemory {
+    /// Computes the current effective confidence after applying time-based decay.
+    pub fn effective_confidence(&self) -> f64 {
+        calculate_effective_confidence(
+            self.confidence,
+            self.decay_rate,
+            self.created_at,
+            self.last_seen_at,
+        )
+    }
+
+    /// Returns a compact signal when this memory may be unreliable.
+    pub fn freshness_warning(&self) -> Option<String> {
+        calculate_freshness_warning(
+            self.confidence,
+            self.decay_rate,
+            self.created_at,
+            self.last_seen_at,
+            calculate_age_days(self.updated_at),
+        )
+    }
+}
+
+/// Minimal identity fields used by graph selection outputs.
+#[derive(Debug, Clone)]
+pub struct MemorySummary {
+    /// Row identifier assigned by the database.
+    pub id: i64,
+    /// One-sentence description for quick recall without reading the full content.
+    pub summary: String,
+    /// Classification of the memory's origin or intended use; None only for legacy rows.
+    pub memory_type: Option<MemoryType>,
 }
 
 /// Classifies a memory's intended use, enabling targeted filtering.
@@ -314,8 +404,8 @@ pub struct NeighborInfo {
     pub other_id: i64,
     /// Relation kind (e.g. "caused_by", "blocks").
     pub kind: String,
-    /// Full memory for `other_id`; None when the target was deleted.
-    pub memory: Option<Memory>,
+    /// Compact memory summary for `other_id`; None when the target was deleted.
+    pub memory: Option<MemorySummary>,
 }
 
 /// Immediate in-neighbors and out-neighbors of a single memory node.
@@ -348,8 +438,8 @@ impl From<Option<&str>> for TraverseDirection {
 
 /// One node discovered during a BFS graph traversal.
 pub struct TraverseNode {
-    /// Full memory at this node.
-    pub memory: Memory,
+    /// Compact memory summary at this node.
+    pub memory: MemorySummary,
     /// BFS depth at which this node was first discovered (0 = start node).
     pub depth: u32,
     /// Relation kind that led to this node; None for the start node.
@@ -368,8 +458,8 @@ pub struct TraverseResult {
 
 /// One step along a path between two memory nodes.
 pub struct PathStep {
-    /// Full memory at this step.
-    pub memory: Memory,
+    /// Compact memory summary at this step.
+    pub memory: MemorySummary,
     /// Kind of the edge that led to this node from the previous step; None for the start.
     pub via_kind: Option<String>,
 }

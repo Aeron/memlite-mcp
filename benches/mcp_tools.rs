@@ -3,8 +3,8 @@
 //! Spawns the server binary as a child process and drives it via JSON-RPC
 //! over stdio, measuring round-trip latency per tool call at steady state.
 //!
-//! Each benchmark group creates its own server process so corpus state
-//! does not bleed between groups.
+//! Each benchmark case creates its own server process so corpus state
+//! does not bleed between cases.
 //!
 //! Run: `cargo bench`
 
@@ -181,7 +181,12 @@ impl McpClient {
     fn store(&mut self, content: &str, tags: &[&str]) -> i64 {
         let result = self.call_tool(
             "memory_store",
-            json!({"items": [{"content": content, "tags": tags, "memory_type": "reference"}]}),
+            json!({"items": [{
+                "content": content,
+                "summary": "Benchmark memory",
+                "tags": tags,
+                "memory_type": "reference"
+            }]}),
         );
         let text = result["content"][0]["text"].as_str().unwrap();
         serde_toon::from_str::<Value>(text).unwrap()["ids"][0]
@@ -195,8 +200,11 @@ impl McpClient {
     }
 
     /// Lists memories; discards results.
-    fn list(&mut self, limit: u32) {
-        self.call_tool("memory_list", json!({"limit": limit}));
+    fn list(&mut self, limit: u32, include_content: bool) {
+        self.call_tool(
+            "memory_list",
+            json!({"limit": limit, "include_content": include_content}),
+        );
     }
 
     /// Fetches tag counts; discards results.
@@ -228,6 +236,7 @@ fn seed(client: &mut McpClient, count: usize) {
             .map(|j| {
                 json!({
                     "content": SEED_CONTENT[(i + j) % SEED_CONTENT.len()],
+                    "summary": format!("Seeded benchmark memory {}", i + j),
                     "tags": ["seeded"],
                     "memory_type": "reference"
                 })
@@ -238,17 +247,26 @@ fn seed(client: &mut McpClient, count: usize) {
     }
 }
 
-fn bench_write(c: &mut Criterion) {
+fn seeded_client(count: usize) -> (TempDir, McpClient) {
     let tmp = TempDir::new().unwrap();
     let mut client = McpClient::new(tmp.path());
-    // Priming the ONNX runtime before the timed section; first call includes
-    // JIT compilation of the ONNX graph which is a one-time cost
-    client.store("warmup", &[]);
+    seed(&mut client, count);
+    (tmp, client)
+}
 
+fn bench_write(c: &mut Criterion) {
     let mut group = c.benchmark_group("write");
     group.measurement_time(Duration::from_secs(20));
     group.sample_size(30);
+    let mut state = None;
     group.bench_function("warm", |b| {
+        // Initializing one process lazily for this matched benchmark
+        let (_, client) = state.get_or_insert_with(|| {
+            let tmp = TempDir::new().unwrap();
+            let mut client = McpClient::new(tmp.path());
+            client.store("warmup", &[]);
+            (tmp, client)
+        });
         b.iter(|| client.store(BENCH_CONTENT, &["bench"]));
     });
     group.finish();
@@ -259,13 +277,11 @@ fn bench_search(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(30));
     group.sample_size(20);
 
-    // Each corpus size gets its own isolated server process and DB.
-    // Seeding happens before the timed section; see seed() for time estimates.
+    // Seeding each matched corpus once before its timed samples
     for &n in &[100usize, 1_000, 10_000, 100_000] {
-        let tmp = TempDir::new().unwrap();
-        let mut client = McpClient::new(tmp.path());
-        seed(&mut client, n);
-        group.bench_with_input(BenchmarkId::new("n", n), &n, |b, _| {
+        let mut state = None;
+        group.bench_with_input(BenchmarkId::new("n", n), &n, |b, &n| {
+            let (_, client) = state.get_or_insert_with(|| seeded_client(n));
             b.iter(|| client.search(BENCH_QUERY, 10));
         });
     }
@@ -274,24 +290,22 @@ fn bench_search(c: &mut Criterion) {
 }
 
 fn bench_list(c: &mut Criterion) {
-    let tmp = TempDir::new().unwrap();
-    let mut client = McpClient::new(tmp.path());
-    seed(&mut client, 100);
-
-    let mut group = c.benchmark_group("list");
-    group.bench_function("n100", |b| {
-        b.iter(|| client.list(20));
-    });
+    let mut group = c.benchmark_group("list/n100");
+    for (name, include_content) in [("full", true), ("compact", false)] {
+        let mut state = None;
+        group.bench_function(name, |b| {
+            let (_, client) = state.get_or_insert_with(|| seeded_client(100));
+            b.iter(|| client.list(20, include_content));
+        });
+    }
     group.finish();
 }
 
 fn bench_tags(c: &mut Criterion) {
-    let tmp = TempDir::new().unwrap();
-    let mut client = McpClient::new(tmp.path());
-    seed(&mut client, 100);
-
     let mut group = c.benchmark_group("tags");
+    let mut state = None;
     group.bench_function("n100", |b| {
+        let (_, client) = state.get_or_insert_with(|| seeded_client(100));
         b.iter(|| client.tags());
     });
     group.finish();

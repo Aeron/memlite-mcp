@@ -1,7 +1,8 @@
 use std::fmt::Write;
 
 use crate::db::types::{
-    GraphStats, HubEntry, Memory, NeighborInfo, Neighbors, PathStep, TraverseResult,
+    CompactMemory, GraphStats, HubEntry, Memory, MemoryAttrs, MemoryType, NeighborInfo, Neighbors,
+    PathStep, TraverseResult,
 };
 
 /// Renders semantic search results as compact blocks with literal prose.
@@ -15,23 +16,42 @@ pub(crate) fn render_search_results(results: &[(Memory, f64)], include_content: 
         if index > 0 {
             output.push('\n');
         }
-        render_memory(&mut output, memory, Some(*distance), false, include_content);
+        render_memory(
+            &mut output,
+            MemoryView::from_memory(memory, include_content),
+            Some(*distance),
+            false,
+        );
     }
     output
 }
 
 /// Renders chronological memory results as compact blocks with literal prose.
 pub(crate) fn render_list_results(memories: &[Memory], include_content: bool) -> String {
-    if memories.is_empty() {
+    render_memory_list(
+        memories
+            .iter()
+            .map(|memory| MemoryView::from_memory(memory, include_content)),
+    )
+}
+
+/// Renders chronological results that omit content and context fields.
+pub(crate) fn render_compact_list_results(memories: &[CompactMemory]) -> String {
+    render_memory_list(memories.iter().map(MemoryView::from_compact))
+}
+
+fn render_memory_list<'a>(memories: impl Iterator<Item = MemoryView<'a>>) -> String {
+    let mut memories = memories.peekable();
+    if memories.peek().is_none() {
         return "memories: 0".to_owned();
     }
 
     let mut output = String::new();
-    for (index, memory) in memories.iter().enumerate() {
+    for (index, memory) in memories.enumerate() {
         if index > 0 {
             output.push('\n');
         }
-        render_memory(&mut output, memory, None, true, include_content);
+        render_memory(&mut output, memory, None, true);
     }
     output
 }
@@ -42,6 +62,23 @@ pub(crate) fn list_json(memories: &[Memory], include_content: bool) -> serde_jso
         memories
             .iter()
             .map(|memory| memory_json(memory, None, include_content))
+            .collect(),
+    )
+}
+
+/// Converts compact chronological results into JSON.
+pub(crate) fn compact_list_json(memories: &[CompactMemory]) -> serde_json::Value {
+    serde_json::Value::Array(
+        memories
+            .iter()
+            .map(|memory| {
+                let mut value = serde_json::to_value(memory).expect("CompactMemory must serialize");
+                value["effective_confidence"] = memory.effective_confidence().into();
+                if let Some(freshness) = memory.freshness_warning() {
+                    value["freshness"] = freshness.into();
+                }
+                value
+            })
             .collect(),
     )
 }
@@ -187,19 +224,16 @@ fn neighbor_json(neighbor: NeighborInfo) -> serde_json::Value {
 
 fn memory_json(memory: &Memory, distance: Option<f64>, include_content: bool) -> serde_json::Value {
     let mut value = serde_json::to_value(memory).expect("Memory must serialize");
+    value["effective_confidence"] = memory.effective_confidence().into();
+    if let Some(distance) = distance {
+        value["distance"] = distance.into();
+    }
+    if let Some(freshness) = memory.freshness_warning() {
+        value["freshness"] = freshness.into();
+    }
     let fields = value
         .as_object_mut()
         .expect("Memory must serialize as an object");
-    fields.insert(
-        "effective_confidence".to_owned(),
-        serde_json::Value::from(memory.effective_confidence()),
-    );
-    if let Some(distance) = distance {
-        fields.insert("distance".to_owned(), serde_json::Value::from(distance));
-    }
-    if let Some(freshness) = memory.freshness_warning() {
-        fields.insert("freshness".to_owned(), serde_json::Value::from(freshness));
-    }
     if include_content {
         fields.remove("summary");
     } else {
@@ -230,12 +264,78 @@ fn compact_value(value: &mut serde_json::Value) {
     }
 }
 
+struct MemoryView<'a> {
+    id: i64,
+    summary: &'a str,
+    tags: &'a [String],
+    created_at: i64,
+    updated_at: i64,
+    context: Option<&'a str>,
+    content: Option<&'a str>,
+    confidence: f64,
+    decay_rate: f64,
+    last_seen_at: i64,
+    memory_type: Option<MemoryType>,
+    attrs: &'a MemoryAttrs,
+    relations: &'a std::collections::BTreeMap<String, String>,
+    refs: &'a [String],
+    effective_confidence: f64,
+    freshness: Option<String>,
+}
+
+impl<'a> MemoryView<'a> {
+    fn from_memory(memory: &'a Memory, include_content: bool) -> Self {
+        Self {
+            id: memory.id,
+            summary: &memory.summary,
+            tags: &memory.tags,
+            created_at: memory.created_at,
+            updated_at: memory.updated_at,
+            context: if include_content {
+                memory.context.as_deref()
+            } else {
+                None
+            },
+            content: include_content.then_some(memory.content.as_str()),
+            confidence: memory.confidence,
+            decay_rate: memory.decay_rate,
+            last_seen_at: memory.last_seen_at,
+            memory_type: memory.memory_type,
+            attrs: &memory.attrs,
+            relations: &memory.relations,
+            refs: &memory.refs,
+            effective_confidence: memory.effective_confidence(),
+            freshness: memory.freshness_warning(),
+        }
+    }
+
+    fn from_compact(memory: &'a CompactMemory) -> Self {
+        Self {
+            id: memory.id,
+            summary: &memory.summary,
+            tags: &memory.tags,
+            created_at: memory.created_at,
+            updated_at: memory.updated_at,
+            context: None,
+            content: None,
+            confidence: memory.confidence,
+            decay_rate: memory.decay_rate,
+            last_seen_at: memory.last_seen_at,
+            memory_type: memory.memory_type,
+            attrs: &memory.attrs,
+            relations: &memory.relations,
+            refs: &memory.refs,
+            effective_confidence: memory.effective_confidence(),
+            freshness: memory.freshness_warning(),
+        }
+    }
+}
+
 fn render_memory(
     output: &mut String,
-    memory: &Memory,
+    memory: MemoryView<'_>,
     distance: Option<f64>,
     include_decay: bool,
-    include_content: bool,
 ) {
     // Writing identity and scoring fields in the header
     let memory_type = memory
@@ -243,7 +343,7 @@ fn render_memory(
         .map_or_else(|| "untyped".to_owned(), |value| value.to_string());
     write!(output, "# {} {memory_type}", memory.id).unwrap();
 
-    let attrs = format_attrs(memory);
+    let attrs = format_attrs(memory.attrs);
     if !attrs.is_empty() {
         write!(output, " ({})", attrs.join(", ")).unwrap();
     }
@@ -253,13 +353,13 @@ fn render_memory(
     writeln!(
         output,
         " effective_confidence={}",
-        round_to(memory.effective_confidence(), 3)
+        round_to(memory.effective_confidence, 3)
     )
     .unwrap();
 
     // Writing compact metadata before selection or full prose
-    if !include_content {
-        write_scalar(output, "summary", &memory.summary);
+    if memory.content.is_none() {
+        write_scalar(output, "summary", memory.summary);
     }
     writeln!(
         output,
@@ -286,7 +386,7 @@ fn render_memory(
     if !memory.tags.is_empty() {
         writeln!(output, "tags: {}", memory.tags.join(", ")).unwrap();
     }
-    if let Some(freshness) = memory.freshness_warning() {
+    if let Some(freshness) = memory.freshness.as_deref() {
         writeln!(output, "freshness: {freshness}").unwrap();
     }
     if !memory.relations.is_empty() {
@@ -303,32 +403,32 @@ fn render_memory(
     }
 
     // Writing full prose last so multiline values remain contiguous
-    if include_content {
-        if let Some(context) = memory.context.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(content) = memory.content {
+        if let Some(context) = memory.context.filter(|value| !value.is_empty()) {
             write_scalar(output, "context", context);
         }
-        write_block(output, "content", &memory.content);
+        write_block(output, "content", content);
     }
 }
 
-fn format_attrs(memory: &Memory) -> Vec<String> {
+fn format_attrs(memory_attrs: &MemoryAttrs) -> Vec<String> {
     let mut attrs = Vec::with_capacity(6);
-    if let Some(value) = memory.attrs.status {
+    if let Some(value) = memory_attrs.status {
         attrs.push(format!("status={value}"));
     }
-    if let Some(value) = memory.attrs.severity {
+    if let Some(value) = memory_attrs.severity {
         attrs.push(format!("severity={value}"));
     }
-    if let Some(value) = memory.attrs.priority {
+    if let Some(value) = memory_attrs.priority {
         attrs.push(format!("priority={value}"));
     }
-    if let Some(value) = memory.attrs.outcome {
+    if let Some(value) = memory_attrs.outcome {
         attrs.push(format!("outcome={value}"));
     }
-    if let Some(value) = memory.attrs.reversible {
+    if let Some(value) = memory_attrs.reversible {
         attrs.push(format!("reversible={value}"));
     }
-    if let Some(value) = memory.attrs.phase {
+    if let Some(value) = memory_attrs.phase {
         attrs.push(format!("phase={value}"));
     }
     attrs
@@ -414,6 +514,24 @@ mod tests {
         }
     }
 
+    fn sample_compact_memory(now: i64) -> CompactMemory {
+        let memory = sample_memory(now);
+        CompactMemory {
+            id: memory.id,
+            summary: memory.summary,
+            tags: memory.tags,
+            created_at: memory.created_at,
+            updated_at: memory.updated_at,
+            confidence: memory.confidence,
+            decay_rate: memory.decay_rate,
+            last_seen_at: memory.last_seen_at,
+            memory_type: memory.memory_type,
+            attrs: memory.attrs,
+            relations: memory.relations,
+            refs: memory.refs,
+        }
+    }
+
     #[test]
     fn formats_known_unix_timestamps() {
         assert_eq!(format_unix_timestamp(-1), "1969-12-31T23:59:59Z");
@@ -457,8 +575,28 @@ mod tests {
     }
 
     #[test]
+    fn compact_projection_preserves_compact_output() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let full = sample_memory(now);
+        let compact = sample_compact_memory(now);
+
+        assert_eq!(
+            render_compact_list_results(std::slice::from_ref(&compact)),
+            render_list_results(std::slice::from_ref(&full), false)
+        );
+        assert_eq!(
+            compact_list_json(std::slice::from_ref(&compact)),
+            list_json(std::slice::from_ref(&full), false)
+        );
+    }
+
+    #[test]
     fn renders_empty_results_explicitly() {
         assert_eq!(render_list_results(&[], true), "memories: 0");
+        assert_eq!(render_compact_list_results(&[]), "memories: 0");
         assert_eq!(render_search_results(&[], false), "memories: 0");
     }
 }

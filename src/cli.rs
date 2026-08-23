@@ -12,8 +12,9 @@ use crate::{
     },
     embedding::EmbeddingService,
     output::{
-        hubs_json, list_json, neighbors_json, path_json, render_list_results,
-        render_search_results, render_toon, search_json, stats_json, traverse_json,
+        compact_list_json, hubs_json, list_json, neighbors_json, path_json,
+        render_compact_list_results, render_list_results, render_search_results, render_toon,
+        search_json, stats_json, traverse_json,
     },
 };
 
@@ -508,9 +509,16 @@ async fn list(config: &Config, format: OutputFormat, args: ListArgs) -> Result<(
         .limit
         .unwrap_or_else(|| ids.map_or(20, |values| values.len() as u32))
         .min(100);
-    let memories = store.list(filters, limit, args.offset.unwrap_or(0)).await?;
-    let text = render_list_results(&memories, include_content);
-    write_memories(format, list_json(&memories, include_content), &text)
+    let offset = args.offset.unwrap_or(0);
+    if include_content {
+        let memories = store.list(filters, limit, offset).await?;
+        let text = render_list_results(&memories, true);
+        write_memories(format, list_json(&memories, true), &text)
+    } else {
+        let memories = store.list_compact(filters, limit, offset).await?;
+        let text = render_compact_list_results(&memories);
+        write_memories(format, compact_list_json(&memories), &text)
+    }
 }
 
 async fn tags(config: &Config, format: OutputFormat) -> Result<()> {
