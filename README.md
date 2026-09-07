@@ -36,6 +36,8 @@ to remember anything about do not accumulate empty database files.
 - **Compact output**: readable block text for prose-heavy results, [TOON](https://toonformat.dev) for the rest
 - **Per-project isolation**: one DB per project path; all agents on the same project share the same DB
 - **Direct CLI management**: inspect, search, update, and remove memories without an MCP client
+- **Shared worker election**: ordinary `serve` processes elect one worker per database directory; proxies promote automatically if it exits
+- **Resource sharing**: active projects keep one lazy database handle each; embedding models load lazily once per selected model when cache settings match
 
 ## Build
 
@@ -71,6 +73,15 @@ memlite-mcp serve
 The server exposes 12 `memory_*` tools: store, search, list, update, delete,
 revalidate, tags, and five graph tools (neighbors, traverse, path, hubs,
 stats).
+
+All `serve` processes are peers. First process for a database directory elects
+itself as shared worker; later processes retain their editor-facing MCP sessions
+and proxy memory operations over a private Unix socket. One worker can host many
+projects, with one lazy database handle per active project and one lazy embedding
+model instance per selected model when cache settings match. Read-only sessions still
+do not create empty project databases. If worker exits, one proxy promotes itself
+and others reconnect automatically. A request active during failover can fail
+once and should be retried.
 
 ## Direct CLI
 

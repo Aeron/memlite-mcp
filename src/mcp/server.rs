@@ -1,25 +1,17 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock},
-};
+use std::sync::Arc;
 
-use anyhow::anyhow;
 use rmcp::{
-    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
+    ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    serde_json,
-    service::{NotificationContext, QuitReason},
     tool, tool_handler, tool_router,
 };
-use tokio::sync::{Notify, OnceCell};
 
 use super::params::{
     DeleteParams, EmptyParams, HubsParams, ListParams, NeighborsParams, PathParams,
     RevalidateParams, SearchParams, StoreParams, TraverseParams, UpdateParams,
 };
 use crate::{
-    config::Config,
     db::{
         BatchInsertItem, FilterOptions, MemoryAttrOutcome, MemoryAttrPhase, MemoryAttrPriority,
         MemoryAttrSeverity, MemoryStatus, MemoryStore, MemoryType, TraverseDirection,
@@ -30,6 +22,7 @@ use crate::{
         hubs_json, neighbors_json, path_json, render_compact_list_results, render_list_results,
         render_search_results, render_toon, stats_json, traverse_json,
     },
+    worker::ProjectHandle,
 };
 
 /// Initial instructions for the MCP client (caveman style).
@@ -46,11 +39,7 @@ macro_rules! parse_filter {
 }
 
 pub struct MemServer {
-    db_path: OnceLock<PathBuf>,
-    store: OnceCell<MemoryStore>,
-    embedding: EmbeddingService,
-    config: Config,
-    shutdown: Arc<Notify>,
+    project: Arc<ProjectHandle>,
 
     #[allow(dead_code)]
     tool_router: ToolRouter<MemServer>,
@@ -58,95 +47,34 @@ pub struct MemServer {
 
 #[tool_router]
 impl MemServer {
-    pub fn new(config: Config, embedding: EmbeddingService) -> Self {
-        MemServer {
-            db_path: OnceLock::new(),
-            store: OnceCell::new(),
-            embedding,
-            config,
-            shutdown: Arc::new(Notify::new()),
+    pub(crate) fn new(project: Arc<ProjectHandle>) -> Self {
+        Self {
+            project,
             tool_router: Self::tool_router(),
         }
     }
 
-    /// Serves over stdio and drives the server to completion.
-    ///
-    /// Returns an error if the transport fails or if a fatal initialization
-    /// error occurs (e.g., project path cannot be resolved).
-    pub async fn run(self) -> anyhow::Result<()> {
-        let shutdown = Arc::clone(&self.shutdown);
-        let service = self.serve(rmcp::transport::stdio()).await?;
-        tracing::info!("memlite-mcp listening; project path resolves on initialize");
-
-        tokio::select! {
-            result = service.waiting() => {
-                match &result {
-                    Ok(QuitReason::Closed | QuitReason::Cancelled) => {
-                        tracing::debug!(reason = ?result, "server stopped");
-                    }
-                    Ok(QuitReason::JoinError(e)) => {
-                        tracing::warn!(error = %e, "server send task failed");
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!(error = %e, "server loop panicked");
-                    }
-                }
-                result.map(|_| ()).map_err(anyhow::Error::from)
-            }
-            _ = shutdown.notified() => {
-                // Yielding once so rmcp's internal send loop can flush the log
-                // notification dispatched from on_initialized before we tear down
-                tokio::task::yield_now().await;
-                Err(anyhow!("exiting: initialization failed (see logs)"))
-            }
-        }
-    }
-
-    /// Returns the cached store, opening (and creating) the DB file on the first call.
-    ///
-    /// Also validates that the database's recorded embedding model matches the configured
-    /// one; returns an error if they differ to prevent mixed-dimension vector corruption.
+    /// Opens or returns project storage.
     async fn open_store(&self) -> Result<&MemoryStore, McpError> {
-        let db_path = self.db_path.get().ok_or_else(|| self.path_not_resolved())?;
-        let model = self.config.embedding_model;
-        self.store
-            .get_or_try_init(|| {
-                let path = db_path.clone();
-                async move {
-                    // Reading vector width from fastembed's model registry
-                    let fastembed_model = model.into();
-                    let dimensions = fastembed::TextEmbedding::get_model_info(&fastembed_model)
-                        .expect("configured embedding model must be supported")
-                        .dim;
-                    MemoryStore::open(&path, &model.to_string(), dimensions)
-                        .await
-                        .map_err(|e| McpError::from(ServerError::StoreOpen(e)))
-                }
-            })
+        self.project
+            .open_store()
             .await
+            .map_err(ServerError::StoreOpen)
+            .map_err(McpError::from)
     }
 
-    /// Returns `Some(store)` when the DB file exists, `None` when it has not been created yet.
-    ///
-    /// Skips opening for read-only tools so a project with no stored memories never
-    /// gets a DB file created on its behalf.
+    /// Returns project storage only when its database exists.
     async fn store_if_present(&self) -> Result<Option<&MemoryStore>, McpError> {
-        if let Some(store) = self.store.get() {
-            return Ok(Some(store));
-        }
-        let db_path = self.db_path.get().ok_or_else(|| self.path_not_resolved())?;
-        if !db_path.exists() {
-            return Ok(None);
-        }
-        Ok(Some(self.open_store().await?))
+        self.project
+            .store_if_present()
+            .await
+            .map_err(ServerError::StoreOpen)
+            .map_err(McpError::from)
     }
 
-    /// Builds an MCP error for when the project path was never resolved at startup.
-    fn path_not_resolved(&self) -> McpError {
-        McpError::from(ServerError::PathNotResolved(
-            "store unavailable: project path not yet resolved".to_owned(),
-        ))
+    /// Returns project embedding inference.
+    fn embedding(&self) -> &EmbeddingService {
+        self.project.embedding()
     }
 
     /// Embeds each item and inserts all rows in a single transaction.
@@ -196,7 +124,7 @@ impl MemServer {
             .map(|item| std::mem::take(&mut item.content))
             .collect();
         let (contents, embeddings) = self
-            .embedding
+            .embedding()
             .embed_batch_owned(contents)
             .await
             .map_err(ServerError::Embed)?;
@@ -257,7 +185,7 @@ impl MemServer {
             return tool_text("memories: 0".to_owned());
         };
         let (query, embedding) = self
-            .embedding
+            .embedding()
             .embed_owned(p.query)
             .await
             .map_err(ServerError::Embed)?;
@@ -439,7 +367,7 @@ impl MemServer {
         // Moving changed content through inference without an extra allocation
         let new_embedding = if let Some(content) = p.content.take() {
             let (content, embedding) = self
-                .embedding
+                .embedding()
                 .embed_owned(content)
                 .await
                 .map_err(ServerError::Embed)?;
@@ -600,78 +528,14 @@ impl MemServer {
 #[tool_handler]
 impl ServerHandler for MemServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("memlite", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS.to_string())
+        server_info()
     }
+}
 
-    #[allow(deprecated)]
-    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
-        // Guarding against double-initialization
-        if self.db_path.get().is_some() {
-            return;
-        }
-
-        // Skipping if the client didn't advertise roots support; calling list_roots
-        // on such a client would hang waiting for a response that never comes
-        let peer = context.peer.peer_info();
-        tracing::debug!(
-            has_peer_info = peer.is_some(),
-            roots_capability = ?peer.and_then(|i| i.capabilities.roots.as_ref()),
-            "on_initialized: peer capabilities"
-        );
-        let supports_roots = peer.is_some_and(|info| info.capabilities.roots.is_some());
-
-        const LIST_ROOTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-        // Avoiding deprecated roots lookup when explicit identity already selects the database
-        let root_uris: Vec<String> = if self.config.explicit_project_path().is_some() {
-            vec![]
-        } else if supports_roots {
-            match tokio::time::timeout(LIST_ROOTS_TIMEOUT, context.peer.list_roots()).await {
-                Ok(Ok(result)) => result.roots.into_iter().map(|r| r.uri).collect(),
-                Ok(Err(e)) => {
-                    tracing::warn!("list_roots failed: {e}");
-                    vec![]
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "list_roots timed out after {:?}; falling back to CWD",
-                        LIST_ROOTS_TIMEOUT
-                    );
-                    vec![]
-                }
-            }
-        } else {
-            tracing::debug!("skipping list_roots: client does not advertise roots capability");
-            vec![]
-        };
-
-        tracing::debug!(root_uris = ?root_uris, "resolved root URIs");
-        let project_path = match self.config.resolve_project_path(&root_uris) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!("fatal: {e}");
-                // Sending a best-effort log notification so the client sees why the
-                // server is about to disconnect; ignored if the client hasn't subscribed
-                let _ = context
-                    .peer
-                    .notify_logging_message(LoggingMessageNotificationParam::new(
-                        LoggingLevel::Error,
-                        serde_json::json!(e.to_string()),
-                    ))
-                    .await;
-                self.shutdown.notify_one();
-                return;
-            }
-        };
-
-        let db_path = self.config.db_path_for(&project_path);
-        tracing::info!(path = ?db_path, project = %project_path, "resolved database path");
-        if self.db_path.set(db_path).is_err() {
-            tracing::warn!("db path already set");
-        }
-    }
+pub(crate) fn server_info() -> ServerInfo {
+    ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        .with_server_info(Implementation::new("memlite", env!("CARGO_PKG_VERSION")))
+        .with_instructions(INSTRUCTIONS.to_string())
 }
 
 /// Encodes compact structured output as TOON text.
@@ -719,8 +583,6 @@ fn parse_relations(
 
 /// Typed errors produced at the MCP boundary, converted to [`McpError`] via [`From`].
 enum ServerError {
-    /// Project path was not resolved during initialisation; store cannot be located.
-    PathNotResolved(String),
     /// [`MemoryStore::open`] failed (permissions, corruption, disk full, etc.).
     StoreOpen(anyhow::Error),
     /// A database query or write operation failed after the store was open.
@@ -735,7 +597,6 @@ impl From<ServerError> for McpError {
     fn from(e: ServerError) -> McpError {
         McpError::internal_error(
             match e {
-                ServerError::PathNotResolved(msg) => msg,
                 ServerError::StoreOpen(e) => format!("failed to open database: {e}"),
                 ServerError::StoreOp(e) => format!("database operation failed: {e}"),
                 ServerError::Embed(e) => format!("embedding failed: {e}"),
@@ -751,19 +612,26 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::{cli::Cli, mcp::params::StoreItem};
+    use crate::{
+        cli::Cli,
+        mcp::params::StoreItem,
+        worker::{ProjectSpec, Registry},
+    };
 
-    fn test_server() -> MemServer {
+    async fn test_server() -> MemServer {
         let Cli { config, .. } = Cli::try_parse_from([
             "memlite-mcp",
             "serve",
             "--project-path",
             "/tmp/memlite-mcp-server-test",
+            "--db-dir",
+            "/tmp/memlite-mcp-server-test-db",
         ])
         .unwrap();
-        let model = config.embedding_model.into();
-        let embedding = EmbeddingService::new(model, std::env::temp_dir());
-        MemServer::new(config, embedding)
+        let project_path = config.resolve_project_path(&[]).unwrap();
+        let spec = ProjectSpec::new(&config, project_path);
+        let project = Registry::default().project(&spec).await.unwrap();
+        MemServer::new(project)
     }
 
     fn result_text(result: &CallToolResult) -> &str {
@@ -802,6 +670,7 @@ mod tests {
     #[tokio::test]
     async fn memory_store_rejects_blank_summary_before_embedding() {
         let result = test_server()
+            .await
             .memory_store(Parameters(StoreParams {
                 items: vec![StoreItem {
                     content: "content".to_owned(),
@@ -825,6 +694,7 @@ mod tests {
     #[tokio::test]
     async fn memory_update_rejects_blank_content_before_opening_store() {
         let result = test_server()
+            .await
             .memory_update(Parameters(UpdateParams {
                 id: 1,
                 content: Some("  ".to_owned()),
@@ -847,6 +717,7 @@ mod tests {
     #[tokio::test]
     async fn memory_update_rejects_blank_summary_before_opening_store() {
         let result = test_server()
+            .await
             .memory_update(Parameters(UpdateParams {
                 id: 1,
                 content: None,
@@ -869,6 +740,7 @@ mod tests {
     #[tokio::test]
     async fn memory_revalidate_rejects_more_than_one_hundred_ids() {
         let result = test_server()
+            .await
             .memory_revalidate(Parameters(RevalidateParams { ids: vec![1; 101] }))
             .await
             .unwrap();

@@ -145,3 +145,7 @@ Revalidating without field changes: `memory_revalidate` (single or list of ids).
 Prefer update when core identity same but details changed: decision revised, fix turned incomplete, constraint shifted, new info extends. Update proactively when current work makes memory stale.
 
 Delete only when fully obsolete or factually wrong with nothing salvageable. Content update triggers re-embedding automatically.
+
+## Shared worker
+
+Ordinary server processes elect one shared worker per database directory. Other processes proxy memory operations while retaining their client MCP sessions. Worker holds one lazy database per active project and loads each selected embedding model lazily once across projects when cache settings match. If it exits, one proxy promotes automatically and others reconnect. Retry a request that overlaps failover.

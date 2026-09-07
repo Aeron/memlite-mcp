@@ -56,6 +56,30 @@ For file references inside a multi-root database, prefix each path with its
 repository root directory name, such as `memlite-mcp/src/config.rs`. See
 [references](memory.md#references) for the full convention.
 
+## Shared worker election
+
+Every `serve` process starts as a peer. First process for a canonical database
+directory takes `worker.lock` and hosts memory operations for all connected MCP
+sessions. Later processes retain their editor-facing MCP session and proxy tool
+operations over a private mode-0600 Unix socket in `/tmp`. There is no separate
+daemon command or detached process.
+
+Worker keeps one lazy `MemoryStore` per active project. Read-only sessions do not
+open or create absent project databases, preserving MemLite's empty-project
+behavior. Embedding services also stay lazy and are shared by model across
+projects. Different models can coexist in one worker. Sessions sharing one
+project must select same model and cache directory; conflicting settings fail
+during initialization instead of creating duplicate resources. Existing database
+metadata still rejects a different model for an already populated project.
+
+When worker process exits, operating system releases its lock. Connected proxies
+re-elect immediately; one promotes and others reconnect. Client MCP sessions
+remain open. In-flight requests are not replayed because a write may already have
+committed. One overlapping request can therefore fail and should be retried.
+
+Project and model registry entries are weak. Store and model resources unload
+when no MCP session still uses them.
+
 ## Embedding models
 
 | Model | Dimensions | Download size |

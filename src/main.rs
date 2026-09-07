@@ -7,10 +7,10 @@ mod db;
 mod embedding;
 mod mcp;
 mod output;
+mod worker;
 
 use cli::{Cli, Command};
-use embedding::EmbeddingService;
-use mcp::MemServer;
+use mcp::ProxyServer;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -26,9 +26,7 @@ async fn main() -> anyhow::Result<()> {
                 project = config.explicit_project_path().unwrap_or("<auto>"),
                 "starting memlite-mcp"
             );
-            let embedding =
-                EmbeddingService::new(config.embedding_model.into(), config.embedding_cache_dir());
-            MemServer::new(config, embedding).run().await
+            ProxyServer::new(config).run().await
         }
         Command::Tool(args) => cli::run(&config, *args).await,
     }

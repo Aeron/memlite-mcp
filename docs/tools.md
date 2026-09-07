@@ -10,6 +10,10 @@ return deterministic block text with literal prose; other successful
 structured tool content uses [TOON v3.0](https://toonformat.dev). Tool errors
 remain plain text. All output formats omit null and empty collection fields.
 
+MCP tool operations may pass through elected shared worker. Proxying is
+transparent to tool schemas and output. A request overlapping worker failover can
+return one transport error; retry it because in-flight writes are never replayed.
+
 ## Direct CLI
 
 Every tool below is also available as `memlite-mcp tool <name>` (names omit

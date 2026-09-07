@@ -2,6 +2,7 @@
 name = "memlite-mcp"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 authors = ["Eugene \"Aeron\" Glybin"]
 description = "Persistent agent memory MCP server and CLI using local SQLite storage and ONNX embeddings."
 categories = ["command-line-utilities", "development-tools"]
@@ -13,7 +14,7 @@ include = ["/src/**/*", "/docs/**/*.md", "/LICENSE", "/README.md"]
 
 [dependencies]
 # MCP server: official Rust SDK with stdio transport and tool macros
-rmcp = { version = "1.6.0", features = ["server", "transport-io", "macros", "schemars"] }
+rmcp = { version = "1.6.0", features = ["client", "server", "transport-io", "macros", "schemars"] }
 
 # Database: libsql (SQLite fork) with built-in vector functions
 libsql = { version = "0.9.30", default-features = false, features = ["core"] }
@@ -22,7 +23,7 @@ libsql = { version = "0.9.30", default-features = false, features = ["core"] }
 fastembed = { version = "6.0.0", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
 
 # Async runtime
-tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

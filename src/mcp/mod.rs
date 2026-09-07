@@ -1,4 +1,5 @@
 mod params;
-mod server;
+mod proxy;
+pub(crate) mod server;
 
-pub use server::MemServer;
+pub use proxy::ProxyServer;

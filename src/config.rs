@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use clap::{Args, ValueEnum};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use strum::Display;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -72,7 +73,7 @@ pub enum LogLevel {
 }
 
 /// Supported local embedding models.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize, ValueEnum)]
 pub enum EmbeddingModel {
     /// BAAI/bge-small-en-v1.5 (384 dims, ~67 MB; default)
     #[value(name = "bge-small-en-v1.5")]
@@ -111,12 +112,13 @@ impl From<EmbeddingModel> for fastembed::EmbeddingModel {
 impl Config {
     /// Returns the resolved embedding model cache directory.
     pub fn embedding_cache_dir(&self) -> PathBuf {
-        match &self.embedding_cache_dir {
-            Some(p) => p.clone(),
+        let path = match &self.embedding_cache_dir {
+            Some(path) => path.clone(),
             None => dirs::cache_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("memlite-mcp"),
-        }
+        };
+        absolute_path(path)
     }
 
     /// Returns the raw CLI/env project path, if provided explicitly.
@@ -124,15 +126,28 @@ impl Config {
         self.project_path.as_deref()
     }
 
-    /// Returns the DB file path for the given project path.
-    pub fn db_path_for(&self, project_path: &str) -> PathBuf {
-        let dir = self.db_dir.clone().unwrap_or_else(|| {
+    /// Returns absolute shared database directory.
+    pub fn db_dir(&self) -> PathBuf {
+        let path = self.db_dir.clone().unwrap_or_else(|| {
             dirs::data_local_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("memlite-mcp")
         });
+        let path = absolute_path(path);
+        std::fs::canonicalize(&path).unwrap_or(path)
+    }
+
+    /// Creates and returns canonical shared database directory.
+    pub fn prepare_db_dir(&self) -> Result<PathBuf> {
+        let path = self.db_dir();
+        std::fs::create_dir_all(&path)?;
+        Ok(std::fs::canonicalize(path)?)
+    }
+
+    /// Returns DB file path for given project path.
+    pub fn db_path_for(&self, project_path: &str) -> PathBuf {
         let hash = Sha256::digest(project_path.as_bytes());
-        dir.join(format!("{hash:x}.db"))
+        self.db_dir().join(format!("{hash:x}.db"))
     }
 
     /// Resolves the effective project path from the explicit override or MCP roots.
@@ -216,6 +231,10 @@ impl Config {
         }
         Ok(())
     }
+}
+
+fn absolute_path(path: PathBuf) -> PathBuf {
+    std::path::absolute(&path).unwrap_or(path)
 }
 
 /// Returns true when `path` is the current user's home directory.
