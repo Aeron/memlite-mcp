@@ -11,6 +11,8 @@ use sha2::{Digest, Sha256};
 use strum::Display;
 use tracing_subscriber::{EnvFilter, fmt};
 
+pub(crate) const DEFAULT_EMBEDDING_MAX_BATCH_SIZE: usize = 128;
+
 /// Holds shared project, storage, embedding, and logging options.
 #[derive(Args)]
 pub struct Config {
@@ -42,6 +44,16 @@ pub struct Config {
         global = true
     )]
     pub embedding_model: EmbeddingModel,
+
+    /// Maximum requested embedding inference batch size.
+    #[arg(
+        long = "embedding-max-batch-size",
+        env = "MEMLITE_EMBEDDING_MAX_BATCH_SIZE",
+        default_value_t = DEFAULT_EMBEDDING_MAX_BATCH_SIZE,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        global = true
+    )]
+    pub embedding_max_batch_size: usize,
 
     /// Directory for cached embedding model files. Defaults to `<cache-dir>/memlite-mcp`.
     #[arg(
@@ -87,6 +99,18 @@ pub enum EmbeddingModel {
     /// BAAI/bge-m3 (1024 dims, ~2.3 GB; multilingual, 8192-token context)
     #[value(name = "bge-m3")]
     M3,
+}
+
+impl EmbeddingModel {
+    /// Returns conservative inference batch limit.
+    pub(crate) const fn max_batch_size(self) -> usize {
+        match self {
+            EmbeddingModel::Small => 128,
+            EmbeddingModel::Base => 64,
+            EmbeddingModel::Large => 32,
+            EmbeddingModel::M3 => 8,
+        }
+    }
 }
 
 impl std::fmt::Display for EmbeddingModel {
@@ -293,6 +317,7 @@ mod tests {
             allow_root: false,
             allow_home: false,
             embedding_model: EmbeddingModel::Small,
+            embedding_max_batch_size: 128,
             embedding_cache_dir: None,
             log_file: None,
             log_level: LogLevel::Info,
@@ -306,9 +331,24 @@ mod tests {
             allow_root: false,
             allow_home: false,
             embedding_model: EmbeddingModel::Small,
+            embedding_max_batch_size: 128,
             embedding_cache_dir: None,
             log_file: None,
             log_level: LogLevel::Info,
+        }
+    }
+
+    #[test]
+    fn embedding_models_have_conservative_batch_limits() {
+        let cases = [
+            (EmbeddingModel::Small, 128),
+            (EmbeddingModel::Base, 64),
+            (EmbeddingModel::Large, 32),
+            (EmbeddingModel::M3, 8),
+        ];
+
+        for (model, expected) in cases {
+            assert_eq!(model.max_batch_size(), expected);
         }
     }
 

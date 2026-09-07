@@ -20,6 +20,7 @@ Clap's own generated usage listing.
 | `--allow-root` | `MEMLITE_ALLOW_ROOT` | `false` | Allow `/` as the project path (off by default; almost always wrong) |
 | `--allow-home` | `MEMLITE_ALLOW_HOME` | `false` | Allow the home directory as the project path (off by default; spans unrelated projects) |
 | `--embedding-model` | `MEMLITE_EMBEDDING_MODEL` | `bge-small-en-v1.5` | See [embedding models](#embedding-models) below |
+| `--embedding-max-batch-size` | `MEMLITE_EMBEDDING_MAX_BATCH_SIZE` | `128` | Requested inference batch cap; effective size also respects model tier cap |
 | `--embedding-cache-dir` | `MEMLITE_EMBEDDING_CACHE_DIR` | OS cache dir / `memlite-mcp` | Override where model files are cached |
 | `--log-file` | `MEMLITE_LOG_FILE` | — | Write logs to this file instead of stderr |
 | `--log-level` | `MEMLITE_LOG_LEVEL` | `info` | Minimum log level when `RUST_LOG` is not set (`trace`/`debug`/`info`/`warn`/`error`) |
@@ -68,8 +69,8 @@ Worker keeps one lazy `MemoryStore` per active project. Read-only sessions do no
 open or create absent project databases, preserving MemLite's empty-project
 behavior. Embedding services also stay lazy and are shared by model across
 projects. Different models can coexist in one worker. Sessions sharing one
-project must select same model and cache directory; conflicting settings fail
-during initialization instead of creating duplicate resources. Existing database
+project must select same model, batch cap, and cache directory; conflicting
+settings fail during initialization instead of creating duplicate resources. Existing database
 metadata still rejects a different model for an already populated project.
 
 When worker process exits, operating system releases its lock. Connected proxies
@@ -82,12 +83,17 @@ when no MCP session still uses them.
 
 ## Embedding models
 
-| Model | Dimensions | Download size |
-|---|---|---|
-| `bge-small-en-v1.5` (default) | 384 | ~67 MB |
-| `bge-base-en-v1.5` | 768 | ~210 MB |
-| `bge-large-en-v1.5` | 1024 | ~620 MB |
-| `bge-m3` | 1024 | ~2.3 GB |
+`--embedding-max-batch-size` sets a user cap. The effective inference batch size
+is the smaller of that value and the selected model's conservative tier cap.
+This limits batching passed to FastEmbed; it is not a claimed hard process
+memory limit.
+
+| Model | Dimensions | Download size | Tier cap |
+|---|---:|---:|---:|
+| `bge-small-en-v1.5` (default) | 384 | ~67 MB | 128 |
+| `bge-base-en-v1.5` | 768 | ~210 MB | 64 |
+| `bge-large-en-v1.5` | 1024 | ~620 MB | 32 |
+| `bge-m3` | 1024 | ~2.3 GB | 8 |
 
 The v1.5 models are English-first; larger variants trade download size and
 inference time for retrieval quality. `bge-m3` supports 100+ languages and an

@@ -79,10 +79,10 @@ impl MemServer {
 
     /// Embeds each item and inserts all rows in a single transaction.
     ///
-    /// All items are embedded in one ONNX inference pass. Returns identifiers in the same order
-    /// as the input. Fails atomically: if any item is invalid or any insert fails, nothing is written.
+    /// Embeds all items through one batched FastEmbed call. Returns identifiers in input order.
+    /// Fails atomically: if any item is invalid or any insert fails, nothing is written.
     #[tool(
-        description = "Store one or more memories in one call. Before storing, call memory_tags to reuse the taxonomy, then memory_search for the same concept; if distance < 0.15, update the existing memory instead. Store only information that will save meaningful future effort. Embeds all items in one ONNX pass and inserts them atomically. Returns {\"ids\":[...]} in input order. All succeed or all fail. Maximum 100 items."
+        description = "Store one or more memories in one call. Before storing, call memory_tags to reuse the taxonomy, then memory_search for the same concept; if distance < 0.15, update the existing memory instead. Store only information that will save meaningful future effort. Embeds all items through one batched FastEmbed call and inserts them atomically. Returns {\"ids\":[...]} in input order. All succeed or all fail. Maximum 100 items."
     )]
     async fn memory_store(
         &self,

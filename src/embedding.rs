@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use fastembed::{EmbeddingModel as FastEmbeddingModel, TextEmbedding, TextInitOptions};
 use tokio::sync::OnceCell;
 
 use anyhow::{Result, anyhow};
+
+use crate::config::EmbeddingModel;
 
 /// Async-safe wrapper around a fastembed TextEmbedding model.
 ///
@@ -13,22 +15,26 @@ use anyhow::{Result, anyhow};
 /// `TextEmbedding::embed` takes `&mut self` and is CPU-bound, so calls are
 /// dispatched via `spawn_blocking` to avoid stalling the Tokio reactor.
 pub struct EmbeddingService {
-    model_kind: EmbeddingModel,
+    model_kind: FastEmbeddingModel,
     cache_dir: PathBuf,
+    batch_size: usize,
     cell: OnceCell<Arc<Mutex<TextEmbedding>>>,
 }
 
 impl EmbeddingService {
-    /// Creates a service configured to load `model` from `cache_dir` on first use.
-    ///
-    /// Does not download or initialize anything; the model loads on the first call to
-    /// [`embed_owned`] or [`embed_batch_owned`].
-    pub fn new(model: EmbeddingModel, cache_dir: PathBuf) -> Self {
+    /// Creates lazy service with model-aware batch cap.
+    pub fn new(model: EmbeddingModel, cache_dir: PathBuf, max_batch_size: usize) -> Self {
         EmbeddingService {
-            model_kind: model,
+            model_kind: model.into(),
             cache_dir,
+            batch_size: model.max_batch_size().min(max_batch_size),
             cell: OnceCell::new(),
         }
+    }
+
+    /// Returns effective inference batch size.
+    pub const fn batch_size(&self) -> usize {
+        self.batch_size
     }
 
     /// Returns the initialized model, loading and caching it on the first call.
@@ -59,7 +65,7 @@ impl EmbeddingService {
             .map(Arc::clone)
     }
 
-    /// Embeds owned strings in one ONNX inference pass and returns them with their vectors.
+    /// Embeds owned strings in one batched FastEmbed call and returns them with their vectors.
     ///
     /// Keeping ownership in the blocking task lets callers retain stored content without
     /// cloning every string before inference.
@@ -68,11 +74,12 @@ impl EmbeddingService {
         texts: Vec<String>,
     ) -> Result<(Vec<String>, Vec<Vec<f32>>)> {
         let expected = texts.len();
+        let batch_size = self.batch_size;
         let model = self.model().await?;
         tokio::task::spawn_blocking(move || {
             let mut guard = model.lock().expect("embedding mutex poisoned");
             let embeddings = guard
-                .embed(&texts, None)
+                .embed(&texts, Some(batch_size))
                 .map_err(|e| anyhow!("embedding: {e}"))?;
             if embeddings.len() != expected {
                 return Err(anyhow!(
@@ -97,5 +104,22 @@ impl EmbeddingService {
             .pop()
             .ok_or_else(|| anyhow!("embedding returned no vector"))?;
         Ok((text, embedding))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_batch_size_uses_model_tier() {
+        let service = EmbeddingService::new(EmbeddingModel::M3, PathBuf::new(), 128);
+        assert_eq!(service.batch_size(), 8);
+    }
+
+    #[test]
+    fn effective_batch_size_uses_user_cap() {
+        let service = EmbeddingService::new(EmbeddingModel::Small, PathBuf::new(), 16);
+        assert_eq!(service.batch_size(), 16);
     }
 }

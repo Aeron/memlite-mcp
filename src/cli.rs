@@ -758,7 +758,11 @@ async fn open_store(config: &Config, create: bool) -> Result<Option<MemoryStore>
 }
 
 fn embedding(config: &Config) -> EmbeddingService {
-    EmbeddingService::new(config.embedding_model.into(), config.embedding_cache_dir())
+    EmbeddingService::new(
+        config.embedding_model,
+        config.embedding_cache_dir(),
+        config.embedding_max_batch_size,
+    )
 }
 
 fn relations(values: Vec<Relation>) -> Vec<(i64, String)> {

@@ -19,17 +19,21 @@ use tokio::{
 };
 
 use crate::{
-    config::{Config, EmbeddingModel},
+    config::{Config, DEFAULT_EMBEDDING_MAX_BATCH_SIZE, EmbeddingModel},
     db::MemoryStore,
     embedding::EmbeddingService,
     mcp::server::MemServer,
 };
 
-const WORKER_PROTOCOL: u32 = 1;
+const WORKER_PROTOCOL: u32 = 2;
 const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
 const RECONNECT_DELAY: Duration = Duration::from_millis(100);
+
+fn default_embedding_max_batch_size() -> usize {
+    DEFAULT_EMBEDDING_MAX_BATCH_SIZE
+}
 
 /// Describes one project session without unrelated process configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -37,6 +41,8 @@ pub(crate) struct ProjectSpec {
     project_path: String,
     db_path: PathBuf,
     embedding_model: EmbeddingModel,
+    #[serde(default = "default_embedding_max_batch_size")]
+    embedding_max_batch_size: usize,
     embedding_cache_dir: PathBuf,
 }
 
@@ -47,6 +53,7 @@ impl ProjectSpec {
             db_path: config.db_path_for(&project_path),
             project_path,
             embedding_model: config.embedding_model,
+            embedding_max_batch_size: config.embedding_max_batch_size,
             embedding_cache_dir: config.embedding_cache_dir(),
         }
     }
@@ -124,8 +131,9 @@ struct SharedEmbedding {
 }
 
 impl SharedEmbedding {
-    fn compatible(&self, cache_dir: &Path) -> bool {
+    fn compatible(&self, cache_dir: &Path, model: EmbeddingModel, batch_size: usize) -> bool {
         self.cache_dir == cache_dir
+            && self.service.batch_size() == model.max_batch_size().min(batch_size)
     }
 }
 
@@ -164,9 +172,13 @@ impl Registry {
     fn embedding(&self, spec: &ProjectSpec) -> Result<Arc<SharedEmbedding>> {
         let mut models = self.models.lock().expect("model registry mutex poisoned");
         if let Some(shared) = models.get(&spec.embedding_model).and_then(Weak::upgrade) {
-            if !shared.compatible(&spec.embedding_cache_dir) {
+            if !shared.compatible(
+                &spec.embedding_cache_dir,
+                spec.embedding_model,
+                spec.embedding_max_batch_size,
+            ) {
                 bail!(
-                    "embedding model '{}' already loaded with a different cache directory",
+                    "embedding model '{}' already loaded with different cache or batch settings",
                     spec.embedding_model
                 );
             }
@@ -175,8 +187,9 @@ impl Registry {
 
         let shared = Arc::new(SharedEmbedding {
             service: EmbeddingService::new(
-                spec.embedding_model.into(),
+                spec.embedding_model,
                 spec.embedding_cache_dir.clone(),
+                spec.embedding_max_batch_size,
             ),
             cache_dir: spec.embedding_cache_dir.clone(),
         });
@@ -473,6 +486,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn previous_protocol_without_batch_field_gets_mismatch_response() {
+        let project = tempdir().unwrap();
+        let db_dir = tempdir().unwrap();
+        let mut request = serde_json::to_value(Handshake {
+            protocol: WORKER_PROTOCOL - 1,
+            project: spec(project.path(), db_dir.path()),
+        })
+        .unwrap();
+        request["project"]
+            .as_object_mut()
+            .unwrap()
+            .remove("embedding_max_batch_size");
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let registry = Arc::new(Registry::default());
+        let serving = tokio::spawn(serve_connection(server, registry));
+
+        write_frame(&mut client, &request).await.unwrap();
+        let response: HandshakeResponse = read_frame(&mut client).await.unwrap();
+        let expected = format!(
+            "protocol mismatch: worker {WORKER_PROTOCOL}, client {}",
+            WORKER_PROTOCOL - 1
+        );
+
+        assert_eq!(response.error.as_deref(), Some(expected.as_str()));
+        serving.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn registry_reuses_project_handle_without_creating_database() {
         let project = tempdir().unwrap();
         let db_dir = tempdir().unwrap();
@@ -541,7 +582,30 @@ mod tests {
         let _active = registry.embedding(&first).unwrap();
         let error = registry.embedding(&conflicting).err().unwrap();
 
-        assert!(error.to_string().contains("different cache directory"));
+        assert!(
+            error
+                .to_string()
+                .contains("different cache or batch settings")
+        );
+    }
+
+    #[test]
+    fn registry_rejects_different_batch_for_active_model() {
+        let project = tempdir().unwrap();
+        let db_dir = tempdir().unwrap();
+        let first = spec(project.path(), db_dir.path());
+        let mut conflicting = first.clone();
+        conflicting.embedding_max_batch_size = 16;
+        let registry = Registry::default();
+
+        let _active = registry.embedding(&first).unwrap();
+        let error = registry.embedding(&conflicting).err().unwrap();
+
+        assert!(
+            error
+                .to_string()
+                .contains("different cache or batch settings")
+        );
     }
 
     fn spec(project: &Path, db_dir: &Path) -> ProjectSpec {
@@ -549,6 +613,7 @@ mod tests {
             project_path: project.to_string_lossy().into_owned(),
             db_path: db_dir.join("project.db"),
             embedding_model: EmbeddingModel::Small,
+            embedding_max_batch_size: DEFAULT_EMBEDDING_MAX_BATCH_SIZE,
             embedding_cache_dir: db_dir.join("cache"),
         }
     }
