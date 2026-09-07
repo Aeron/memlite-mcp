@@ -5,7 +5,7 @@ use strum::{Display, EnumString};
 use super::helpers::unix_secs;
 
 /// Represents a single stored memory row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct Memory {
     /// Row identifier assigned by the database.
     pub id: i64,
@@ -123,7 +123,7 @@ impl Memory {
 }
 
 /// Read-only projection used when full prose fields are omitted.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct CompactMemory {
     /// Row identifier assigned by the database.
     pub id: i64,
@@ -349,7 +349,7 @@ pub enum MemoryAttrPhase {
 ///   issue/finding: status, severity
 ///   decision: outcome, reversible
 ///   plan: phase
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct MemoryAttrs {
     /// Lifecycle state; most useful for task, issue, and finding memories.

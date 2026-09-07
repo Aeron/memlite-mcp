@@ -12,11 +12,10 @@ use anyhow::{Result, anyhow};
 /// completes without blocking on a potentially large model download.
 /// `TextEmbedding::embed` takes `&mut self` and is CPU-bound, so calls are
 /// dispatched via `spawn_blocking` to avoid stalling the Tokio reactor.
-#[derive(Clone)]
 pub struct EmbeddingService {
     model_kind: EmbeddingModel,
     cache_dir: PathBuf,
-    cell: Arc<OnceCell<Arc<Mutex<TextEmbedding>>>>,
+    cell: OnceCell<Arc<Mutex<TextEmbedding>>>,
 }
 
 impl EmbeddingService {
@@ -28,7 +27,7 @@ impl EmbeddingService {
         EmbeddingService {
             model_kind: model,
             cache_dir,
-            cell: Arc::new(OnceCell::new()),
+            cell: OnceCell::new(),
         }
     }
 

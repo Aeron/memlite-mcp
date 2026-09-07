@@ -5,7 +5,6 @@ mod cli;
 mod config;
 mod db;
 mod embedding;
-mod errors;
 mod mcp;
 mod output;
 

@@ -1,17 +1,14 @@
 use std::{
-    borrow::Cow,
     fs::OpenOptions,
     path::{Path, PathBuf},
     sync::Mutex,
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 use clap::{Args, ValueEnum};
 use sha2::{Digest, Sha256};
 use strum::Display;
 use tracing_subscriber::{EnvFilter, fmt};
-
-use crate::errors::ResolveError;
 
 /// Holds shared project, storage, embedding, and logging options.
 #[derive(Args)]
@@ -122,21 +119,6 @@ impl Config {
         }
     }
 
-    /// Returns the resolved DB directory.
-    ///
-    /// Borrows when `--db-dir` was provided explicitly, allocating only for
-    /// the XDG default fallback.
-    pub fn db_dir(&self) -> Cow<'_, Path> {
-        match &self.db_dir {
-            Some(p) => Cow::Borrowed(p.as_path()),
-            None => Cow::Owned(
-                dirs::data_local_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join("memlite-mcp"),
-            ),
-        }
-    }
-
     /// Returns the raw CLI/env project path, if provided explicitly.
     pub fn explicit_project_path(&self) -> Option<&str> {
         self.project_path.as_deref()
@@ -144,8 +126,13 @@ impl Config {
 
     /// Returns the DB file path for the given project path.
     pub fn db_path_for(&self, project_path: &str) -> PathBuf {
-        self.db_dir()
-            .join(format!("{}.db", Self::project_path_hash(project_path)))
+        let dir = self.db_dir.clone().unwrap_or_else(|| {
+            dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("memlite-mcp")
+        });
+        let hash = Sha256::digest(project_path.as_bytes());
+        dir.join(format!("{hash:x}.db"))
     }
 
     /// Resolves the effective project path from the explicit override or MCP roots.
@@ -153,7 +140,7 @@ impl Config {
     /// Priority: explicit arg > first non-empty `file://` root URI > CWD.
     /// Validates the candidate once: rejects the filesystem root unless `--allow-root` is set,
     /// and rejects the home directory unless `--allow-home` is set.
-    pub fn resolve_project_path(&self, root_uris: &[String]) -> Result<String, ResolveError> {
+    pub fn resolve_project_path(&self, root_uris: &[String]) -> Result<String> {
         let path = if let Some(p) = self.project_path.as_deref() {
             p.to_owned()
         } else {
@@ -172,14 +159,22 @@ impl Config {
                         .ok()
                         .and_then(|p| p.to_str().map(str::to_owned))
                 })
-                .ok_or(ResolveError::NotFound)?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "cannot determine project path: set --project-path or MEMLITE_PROJECT_PATH"
+                    )
+                })?
         };
 
         if !self.allow_root && path == "/" {
-            return Err(ResolveError::RootPath);
+            bail!(
+                "project path '/' is the filesystem root; use --allow-root to opt in, or set a real project directory via --project-path or MEMLITE_PROJECT_PATH"
+            );
         }
         if !self.allow_home && is_home_path(&path) {
-            return Err(ResolveError::HomePath);
+            bail!(
+                "project path is the home directory; use --allow-home to opt in, or set a specific project directory via --project-path or MEMLITE_PROJECT_PATH"
+            );
         }
         Ok(path)
     }
@@ -217,12 +212,6 @@ impl Config {
                 .init();
         }
         Ok(())
-    }
-
-    /// Returns a SHA-256 hex digest of the given project path string.
-    pub fn project_path_hash(project_path: &str) -> String {
-        let hash = Sha256::digest(project_path.as_bytes());
-        format!("{hash:x}")
     }
 }
 
@@ -274,8 +263,6 @@ fn decode_percent(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::errors::ResolveError;
 
     fn config(project_path: &str) -> Config {
         Config {
@@ -331,8 +318,9 @@ mod tests {
     fn resolve_project_path_explicit_wins() {
         let c = config("/my/project");
         assert_eq!(
-            c.resolve_project_path(&["file:///other".to_string()]),
-            Ok("/my/project".to_owned())
+            c.resolve_project_path(&["file:///other".to_string()])
+                .unwrap(),
+            "/my/project"
         );
     }
 
@@ -340,31 +328,31 @@ mod tests {
     fn resolve_project_path_uses_first_root_uri() {
         let c = config_no_path();
         let uris = vec!["file:///first".to_string(), "file:///second".to_string()];
-        assert_eq!(c.resolve_project_path(&uris), Ok("/first".to_owned()));
+        assert_eq!(c.resolve_project_path(&uris).unwrap(), "/first");
     }
 
     #[test]
     fn resolve_project_path_decodes_file_uri_percent_escapes() {
         let c = config_no_path();
         let uris = vec!["file:///tmp/my%20project".to_string()];
-        assert_eq!(
-            c.resolve_project_path(&uris),
-            Ok("/tmp/my project".to_owned())
-        );
+        assert_eq!(c.resolve_project_path(&uris).unwrap(), "/tmp/my project");
     }
 
     #[test]
     fn resolve_project_path_skips_empty_uri() {
         let c = config_no_path();
         let uris = vec!["file://".to_string(), "file:///valid".to_string()];
-        assert_eq!(c.resolve_project_path(&uris), Ok("/valid".to_owned()));
+        assert_eq!(c.resolve_project_path(&uris).unwrap(), "/valid");
     }
 
     #[test]
     fn resolve_project_path_rejects_root_path() {
         assert_eq!(
-            config("/").resolve_project_path(&[]),
-            Err(ResolveError::RootPath)
+            config("/")
+                .resolve_project_path(&[])
+                .unwrap_err()
+                .to_string(),
+            "project path '/' is the filesystem root; use --allow-root to opt in, or set a real project directory via --project-path or MEMLITE_PROJECT_PATH"
         );
     }
 
@@ -372,7 +360,7 @@ mod tests {
     fn resolve_project_path_allow_root_opts_in() {
         let mut c = config("/");
         c.allow_root = true;
-        assert_eq!(c.resolve_project_path(&[]), Ok("/".to_owned()));
+        assert_eq!(c.resolve_project_path(&[]).unwrap(), "/");
     }
 
     #[test]
@@ -380,7 +368,10 @@ mod tests {
         // First non-empty URI resolves to "/" and is rejected; no fallthrough to later entries
         let c = config_no_path();
         let uris = vec!["file:///".to_string(), "file:///real/project".to_string()];
-        assert_eq!(c.resolve_project_path(&uris), Err(ResolveError::RootPath));
+        assert_eq!(
+            c.resolve_project_path(&uris).unwrap_err().to_string(),
+            "project path '/' is the filesystem root; use --allow-root to opt in, or set a real project directory via --project-path or MEMLITE_PROJECT_PATH"
+        );
     }
 
     #[test]
@@ -395,8 +386,11 @@ mod tests {
             return; // skip when home dir is unavailable
         };
         assert_eq!(
-            config(&home).resolve_project_path(&[]),
-            Err(ResolveError::HomePath)
+            config(&home)
+                .resolve_project_path(&[])
+                .unwrap_err()
+                .to_string(),
+            "project path is the home directory; use --allow-home to opt in, or set a specific project directory via --project-path or MEMLITE_PROJECT_PATH"
         );
     }
 
@@ -409,8 +403,11 @@ mod tests {
             home.push('/');
         }
         assert_eq!(
-            config(&home).resolve_project_path(&[]),
-            Err(ResolveError::HomePath)
+            config(&home)
+                .resolve_project_path(&[])
+                .unwrap_err()
+                .to_string(),
+            "project path is the home directory; use --allow-home to opt in, or set a specific project directory via --project-path or MEMLITE_PROJECT_PATH"
         );
     }
 
@@ -421,7 +418,7 @@ mod tests {
         };
         let mut c = config(&home);
         c.allow_home = true;
-        assert_eq!(c.resolve_project_path(&[]), Ok(home));
+        assert_eq!(c.resolve_project_path(&[]).unwrap(), home);
     }
 
     #[test]

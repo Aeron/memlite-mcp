@@ -683,9 +683,7 @@ fn tool_text(body: String) -> Result<CallToolResult, McpError> {
 
 /// Wraps a message as a tool-level error result (distinct from an MCP protocol error).
 fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
-    let mut result = CallToolResult::success(vec![Content::text(msg.to_string())]);
-    result.is_error = Some(true);
-    Ok(result)
+    Ok(CallToolResult::error(vec![Content::text(msg.to_string())]))
 }
 
 /// Converts an optional relations map into a validated list of `(target_id, kind)` pairs.

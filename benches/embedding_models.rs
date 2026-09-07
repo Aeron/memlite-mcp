@@ -7,7 +7,10 @@ use std::{
 };
 
 use criterion::{Criterion, SamplingMode, Throughput, criterion_group, criterion_main};
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use fastembed::{
+    EmbeddingModel, TextEmbedding, TextInitOptions,
+    similarity::{cosine_similarity, top_k},
+};
 
 const DEFAULT_MODEL: &str = "bge-small-en-v1.5";
 const SUITES: [&str; 3] = [
@@ -231,27 +234,6 @@ fn queries() -> Vec<LabeledQuery> {
     ]
 }
 
-fn cosine(left: &[f32], right: &[f32]) -> f32 {
-    assert_eq!(left.len(), right.len(), "cosine vector dimensions differ");
-    assert!(!left.is_empty(), "cosine vectors are empty");
-
-    let (dot, left_norm, right_norm) = left.iter().zip(right).fold(
-        (0.0_f32, 0.0_f32, 0.0_f32),
-        |(dot, left_norm, right_norm), (&left, &right)| {
-            (
-                dot + left * right,
-                left_norm + left * left,
-                right_norm + right * right,
-            )
-        },
-    );
-    let denominator = left_norm.sqrt() * right_norm.sqrt();
-    assert!(denominator > 0.0, "cosine vector norm is zero");
-    let score = dot / denominator;
-    assert!(score.is_finite(), "cosine score is not finite");
-    score
-}
-
 fn verify_embeddings(embeddings: &[Vec<f32>], expected: usize, dimensions: usize) {
     assert_eq!(embeddings.len(), expected, "embedding count differs");
     for embedding in embeddings {
@@ -283,22 +265,18 @@ fn report_quality(
                 .iter()
                 .position(|item| item.name == query.relevant)
                 .expect("query relevant memory is missing");
-            let scores: Vec<f32> = corpus_embeddings
-                .iter()
-                .map(|memory_embedding| cosine(query_embedding, memory_embedding))
-                .collect();
-            let mut ranking: Vec<usize> = (0..scores.len()).collect();
-            ranking.sort_unstable_by(|&left, &right| scores[right].total_cmp(&scores[left]));
+            let ranking = top_k(query_embedding, corpus_embeddings, corpus_embeddings.len());
             let rank = ranking
                 .iter()
-                .position(|&index| index == relevant)
+                .position(|(index, _)| *index == relevant)
                 .expect("relevant memory is missing from ranking")
                 + 1;
-            let best_negative = scores
+            let relevant_score = cosine_similarity(query_embedding, &corpus_embeddings[relevant]);
+            let best_negative = corpus_embeddings
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| *index != relevant)
-                .map(|(_, &score)| score)
+                .map(|(_, embedding)| cosine_similarity(query_embedding, embedding))
                 .max_by(f32::total_cmp)
                 .expect("quality corpus needs a negative memory");
 
@@ -306,7 +284,7 @@ fn report_quality(
             recall_at_1 += f64::from(rank <= 1);
             recall_at_3 += f64::from(rank <= 3);
             reciprocal_rank += 1.0 / rank as f64;
-            margin += f64::from(scores[relevant] - best_negative);
+            margin += f64::from(relevant_score - best_negative);
         }
 
         assert!(count > 0, "quality suite has no queries");
