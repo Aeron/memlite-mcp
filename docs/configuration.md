@@ -15,7 +15,7 @@ Clap's own generated usage listing.
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
-| `--project-path` | `MEMLITE_PROJECT_PATH` | first MCP workspace root under `serve`, or CWD under `tool` | Project identifier; agents and direct commands sharing the same path share a DB |
+| `--project-path` | `MEMLITE_PROJECT_PATH` | first MCP workspace root under `serve`, or CWD under `tool` | Project identity; resolved to an absolute path before selecting the shared DB |
 | `--db-dir` | `MEMLITE_DB_DIR` | OS data dir / `memlite-mcp` | Directory for per-project DB files (`~/.local/share/…` on Linux, `~/Library/Application Support/…` on macOS) |
 | `--allow-root` | `MEMLITE_ALLOW_ROOT` | `false` | Allow `/` as the project path (off by default; almost always wrong) |
 | `--allow-home` | `MEMLITE_ALLOW_HOME` | `false` | Allow the home directory as the project path (off by default; spans unrelated projects) |
@@ -28,6 +28,33 @@ Clap's own generated usage listing.
 `--allow-root` and `--allow-home` take an explicit `true`/`false` value
 (e.g. `--allow-root true`) rather than acting as bare presence flags, so a
 truthy env var can still be overridden from the command line.
+
+## Project identity
+
+MemLite hashes the resolved project path to select its database. Explicit
+relative paths become absolute before hashing, matching GraphLite and avoiding
+separate databases for equivalent relative and absolute inputs.
+
+MCP workspace roots remain a compatibility fallback. Multi-root hosts may start
+each server process with a different current working directory, so their
+automatic fallback is not a stable workspace identity. Set one absolute
+`MEMLITE_PROJECT_PATH` value in the MCP host configuration and use the same
+value for direct commands that should share its memories. For example, add this
+to the existing Zed context server command:
+
+```json
+"env": {
+  "MEMLITE_PROJECT_PATH": "/Users/me/Development/my-workspace"
+}
+```
+
+The explicit value selects the database without requesting deprecated MCP
+roots. It may identify the common workspace rather than one repository. Changing
+it selects a different database and does not migrate existing memories.
+
+For file references inside a multi-root database, prefix each path with its
+repository root directory name, such as `memlite-mcp/src/config.rs`. See
+[references](memory.md#references) for the full convention.
 
 ## Embedding models
 

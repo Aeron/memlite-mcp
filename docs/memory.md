@@ -91,14 +91,19 @@ pointing to external resources related to the memory:
 ```
 
 Useful kinds of entries: project-relative file paths, fully-qualified symbol
-names, URLs to docs or issues, ticket identifiers. Prefer short paths
-(`src/db/store.rs`) over absolute paths; absolute paths are stored as-is
-and are less portable. `memory_update` replaces the full set; pass `[]`
-to clear.
+names, URLs to docs or issues, ticket identifiers. In a single-project
+database, use paths relative to that project, such as `src/db/store.rs`. In a
+multi-project database, prefix paths with the repository root directory name,
+such as `memlite-mcp/src/db/store.rs`. Do not use absolute paths.
+
+References remain exactly as provided because root prefixes disambiguate files
+from different repositories. MemLite does not rewrite old or new values.
+`memory_update` replaces the full set; pass `[]` to clear.
 
 Both `memory_search` and `memory_list` accept an optional `refs_contain`
 string that filters results to memories whose `refs` array contains the
-given substring in any entry.
+given literal substring in any entry. Query file references with the same
+single-project or root-prefixed form used when storing them.
 
 ## Knowledge graph
 

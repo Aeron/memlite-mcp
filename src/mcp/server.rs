@@ -605,6 +605,7 @@ impl ServerHandler for MemServer {
             .with_instructions(INSTRUCTIONS.to_string())
     }
 
+    #[allow(deprecated)]
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
         // Guarding against double-initialization
         if self.db_path.get().is_some() {
@@ -623,7 +624,10 @@ impl ServerHandler for MemServer {
 
         const LIST_ROOTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-        let root_uris: Vec<String> = if supports_roots {
+        // Avoiding deprecated roots lookup when explicit identity already selects the database
+        let root_uris: Vec<String> = if self.config.explicit_project_path().is_some() {
+            vec![]
+        } else if supports_roots {
             match tokio::time::timeout(LIST_ROOTS_TIMEOUT, context.peer.list_roots()).await {
                 Ok(Ok(result)) => result.roots.into_iter().map(|r| r.uri).collect(),
                 Ok(Err(e)) => {

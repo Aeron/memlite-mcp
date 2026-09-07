@@ -29,7 +29,8 @@ pub struct SearchParams {
     /// Restricts results to memories with the given plan phase.
     pub phase: Option<String>,
     /// Restricts results to memories whose refs array contains this substring.
-    /// Useful for finding all memories that mention a specific file or symbol.
+    /// Uses literal matching without path normalization; query file refs using the
+    /// same single-root or root-prefixed form used when storing them.
     pub refs_contain: Option<String>,
 }
 
@@ -62,6 +63,8 @@ pub struct ListParams {
     /// Restricts results to memories with the given plan phase.
     pub phase: Option<String>,
     /// Restricts results to memories whose refs array contains this substring.
+    /// Uses literal matching without path normalization; query file refs using the
+    /// same single-root or root-prefixed form used when storing them.
     pub refs_contain: Option<String>,
 }
 
@@ -109,7 +112,8 @@ pub struct StoreItem {
     pub relations: Option<std::collections::BTreeMap<String, String>>,
     /// External pointers such as file paths, symbols, URLs, or issue
     /// identifiers. Use project-relative file paths in single-project workspaces;
-    /// prefix the project root directory name in multi-project workspaces.
+    /// prefix the project root directory name in multi-project workspaces. Paths
+    /// remain exactly as provided.
     pub refs: Option<Vec<String>>,
 }
 
@@ -223,6 +227,6 @@ pub struct UpdateParams {
     /// Replacement external pointers such as file paths, symbols, URLs, or
     /// issue identifiers. Use project-relative file paths in single-project
     /// workspaces; prefix the project root directory name in multi-project
-    /// workspaces. An empty array clears all refs.
+    /// workspaces. Paths remain exactly as provided. An empty array clears all refs.
     pub refs: Option<Vec<String>>,
 }

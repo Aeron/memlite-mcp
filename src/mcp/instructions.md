@@ -132,7 +132,7 @@ Don't delete resolved memories; set `attrs: {"status": "resolved"}` instead. Use
 
 ### `refs`
 
-External reference pointers. Free-form array of strings: file paths, symbol names, URLs, or issue identifiers. Examples: `["src/db/store.rs", "MemoryStore::insert"]`, `["https://github.com/foo/issues/42"]`. Use project-relative paths (`src/db/store.rs`) in single-project workspaces. Prefix project root directory name (`graphlite-mcp/src/db/store.rs`) in multi-project workspaces. Do not use absolute paths. `memory_update` replaces full set; pass `[]` to clear. `memory_search` and `memory_list` accept `refs_contain` for substring filtering.
+External reference pointers. Free-form array of strings: file paths, symbols, URLs, or issue identifiers. Examples: `["src/db/store.rs", "MemoryStore::insert"]`, `["https://github.com/foo/issues/42"]`. Use project-relative paths (`src/db/store.rs`) in single-project workspaces. Prefix project root directory name (`graphlite-mcp/src/db/store.rs`) in multi-project workspaces. Do not use absolute paths. Values remain exactly as provided; `refs_contain` uses literal substring matching, so query file refs using the stored form. `memory_update` replaces full set; pass `[]` to clear.
 
 ### `relations`
 

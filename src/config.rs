@@ -13,8 +13,8 @@ use tracing_subscriber::{EnvFilter, fmt};
 /// Holds shared project, storage, embedding, and logging options.
 #[derive(Args)]
 pub struct Config {
-    /// Project identifier shared across agents. All agents with the same path
-    /// read and write the same DB file. Defaults to the first workspace root
+    /// Project path used as the shared database identity. Equivalent relative paths
+    /// resolve to an absolute form before hashing. Defaults to the first workspace root
     /// reported by the MCP client, or CWD if none is available.
     #[arg(long = "project-path", env = "MEMLITE_PROJECT_PATH", global = true)]
     project_path: Option<String>,
@@ -165,6 +165,9 @@ impl Config {
                     )
                 })?
         };
+
+        let path = std::path::absolute(path)?;
+        let path = path.to_string_lossy().into_owned();
 
         if !self.allow_root && path == "/" {
             bail!(
@@ -321,6 +324,17 @@ mod tests {
             c.resolve_project_path(&["file:///other".to_string()])
                 .unwrap(),
             "/my/project"
+        );
+    }
+
+    #[test]
+    fn resolve_project_path_makes_relative_identity_absolute() {
+        let resolved = config("relative-project")
+            .resolve_project_path(&[])
+            .unwrap();
+        assert_eq!(
+            Path::new(&resolved),
+            std::env::current_dir().unwrap().join("relative-project")
         );
     }
 

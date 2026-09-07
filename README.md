@@ -50,12 +50,14 @@ locations.
 
 ## Configuration
 
-The defaults are fine for most setups. Run the MCP server with
-`memlite-mcp serve`. The one option worth a look is `--embedding-model`
-(`MEMLITE_EMBEDDING_MODEL`): English-first BGE v1.5 models are available,
-along with multilingual `bge-m3` for memories spanning 100+ languages.
+The defaults are fine for single-root setups. Run the MCP server with
+`memlite-mcp serve`. Multi-root workspaces should set one stable absolute
+`MEMLITE_PROJECT_PATH` so every server process selects the same database. The
+other option worth a look is `--embedding-model`: English-first BGE v1.5 models
+are available, along with multilingual `bge-m3` for memories spanning 100+
+languages.
 
-For all flags, env vars, and the embedding models table, see
+For all flags, env vars, multi-root setup, and the embedding models table, see
 [docs/configuration.md](docs/configuration.md).
 
 ## MCP server
