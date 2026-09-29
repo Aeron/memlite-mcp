@@ -537,13 +537,11 @@ async fn tags(config: &Config, format: OutputFormat) -> Result<()> {
 }
 
 async fn delete(config: &Config, format: OutputFormat, args: DeleteArgs) -> Result<()> {
-    let Some(store) = open_store(config, false).await? else {
-        bail!("no memory found with identifier {}", args.id);
+    let deleted = match open_store(config, false).await? {
+        Some(store) => store.delete(args.id).await?,
+        None => false,
     };
-    if !store.delete(args.id).await? {
-        bail!("no memory found with identifier {}", args.id);
-    }
-    write_value(format, json!({"deleted": true, "id": args.id}))
+    write_value(format, json!({"deleted": deleted, "id": args.id}))
 }
 
 async fn update(config: &Config, format: OutputFormat, mut args: UpdateArgs) -> Result<()> {

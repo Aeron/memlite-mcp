@@ -295,15 +295,11 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<DeleteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.store_if_present().await? else {
-            return tool_err(format!("no memory found with id {}", p.id));
+        let deleted = match self.store_if_present().await? {
+            Some(store) => store.delete(p.id).await.map_err(ServerError::StoreOp)?,
+            None => false,
         };
-        let deleted = store.delete(p.id).await.map_err(ServerError::StoreOp)?;
-        if deleted {
-            tool_ok(serde_json::json!({ "deleted": true, "id": p.id }))
-        } else {
-            tool_err(format!("no memory found with id {}", p.id))
-        }
+        tool_ok(serde_json::json!({ "deleted": deleted, "id": p.id }))
     }
 
     /// Updates one or more fields of an existing memory, re-embedding when `content` changes.
@@ -694,6 +690,18 @@ mod tests {
             .unwrap();
         assert_eq!(result.is_error, Some(true));
         assert_eq!(result_text(&result), "item 0: summary must not be blank");
+    }
+
+    #[tokio::test]
+    async fn memory_delete_reports_missing_memory() {
+        let result = test_server()
+            .await
+            .memory_delete(Parameters(DeleteParams { id: -1 }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        let value: serde_json::Value = serde_toon::from_str(result_text(&result)).unwrap();
+        assert_eq!(value, serde_json::json!({"deleted": false, "id": -1}));
     }
 
     #[tokio::test]

@@ -31,6 +31,24 @@ fn tool_json_output_omits_logs() {
 }
 
 #[test]
+fn tool_delete_missing_memory_reports_false() {
+    let project = tempfile::tempdir().unwrap();
+    let db_dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_memlite-mcp"))
+        .args(["tool", "delete", "999", "--format", "json"])
+        .arg("--project-path")
+        .arg(project.path())
+        .arg("--db-dir")
+        .arg(db_dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value, serde_json::json!({"deleted": false, "id": 999}));
+}
+
+#[test]
 fn tool_honors_explicit_log_file() {
     let project = tempfile::tempdir().unwrap();
     let db_dir = tempfile::tempdir().unwrap();

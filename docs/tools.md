@@ -116,9 +116,9 @@ or `relations`; pass `[]` to clear `refs`. Blank summaries are rejected.
 
 ## memory_delete
 
-Deletes a memory by numeric identifier and returns whether a record was
-actually removed. Prefer setting `attrs.status` to `resolved` over deletion for
-anything with history value.
+Deletes a memory by numeric identifier and returns `{deleted: true, id}` when
+removed or `{deleted: false, id}` when missing. Prefer setting `attrs.status`
+to `resolved` over deletion for anything with history value.
 
 | Parameter | Required | Description |
 |---|---|---|
