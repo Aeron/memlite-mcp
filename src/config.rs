@@ -1,6 +1,6 @@
 use std::{
     fs::OpenOptions,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Mutex,
 };
 
@@ -186,10 +186,17 @@ impl Config {
             root_uris
                 .iter()
                 .filter_map(|uri| {
-                    let p = uri
-                        .strip_prefix("file://")
-                        .map(decode_percent)
-                        .unwrap_or_else(|| uri.to_owned());
+                    let p = match uri.strip_prefix("file://") {
+                        Some(path) if path.starts_with('/') => decode_percent(path),
+                        Some(path) => {
+                            let (host, rest) = path.split_once('/')?;
+                            if !host.eq_ignore_ascii_case("localhost") {
+                                return None;
+                            }
+                            decode_percent(&format!("/{rest}"))
+                        }
+                        None => uri.to_owned(),
+                    };
                     (!p.is_empty()).then_some(p)
                 })
                 .next()
@@ -206,9 +213,30 @@ impl Config {
         };
 
         let path = std::path::absolute(path)?;
+        // Resolving parent segments before validation to keep project identities stable
+        let path = if path.components().any(|part| part == Component::ParentDir) {
+            std::fs::canonicalize(&path).unwrap_or_else(|_| {
+                let mut normalized = PathBuf::new();
+                for component in path.components() {
+                    if component == Component::ParentDir {
+                        normalized.pop();
+                    } else {
+                        normalized.push(component);
+                    }
+                }
+                normalized
+            })
+        } else {
+            path
+        };
         let path = path.to_string_lossy().into_owned();
 
-        if !self.allow_root && path == "/" {
+        if !self.allow_root
+            && (path == "/"
+                || Path::new(&path)
+                    .canonicalize()
+                    .is_ok_and(|p| p == Path::new("/")))
+        {
             bail!(
                 "project path '/' is the filesystem root; use --allow-root to opt in, or set a real project directory via --project-path or MEMLITE_PROJECT_PATH"
             );
@@ -405,6 +433,19 @@ mod tests {
     }
 
     #[test]
+    fn resolve_project_path_treats_localhost_as_local_file_uri() {
+        let c = config_no_path();
+        let direct = c
+            .resolve_project_path(&["file:///tmp/my%20project".to_string()])
+            .unwrap();
+        let localhost = c
+            .resolve_project_path(&["file://localhost/tmp/my%20project".to_string()])
+            .unwrap();
+        assert_eq!(localhost, direct);
+        assert_eq!(c.db_path_for(&localhost), c.db_path_for(&direct));
+    }
+
+    #[test]
     fn resolve_project_path_decodes_file_uri_percent_escapes() {
         let c = config_no_path();
         let uris = vec!["file:///tmp/my%20project".to_string()];
@@ -426,6 +467,39 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "project path '/' is the filesystem root; use --allow-root to opt in, or set a real project directory via --project-path or MEMLITE_PROJECT_PATH"
+        );
+    }
+
+    #[test]
+    fn resolve_project_path_rejects_root_parent_alias() {
+        assert_eq!(
+            config("/..")
+                .resolve_project_path(&[])
+                .unwrap_err()
+                .to_string(),
+            config("/")
+                .resolve_project_path(&[])
+                .unwrap_err()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_project_path_allow_root_parent_alias_opts_in() {
+        let mut c = config("/..");
+        c.allow_root = true;
+        assert_eq!(c.resolve_project_path(&[]).unwrap(), "/");
+    }
+
+    #[test]
+    fn resolve_project_path_rejects_root_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("root");
+        std::os::unix::fs::symlink("/", &link).unwrap();
+        assert!(
+            config(link.to_str().unwrap())
+                .resolve_project_path(&[])
+                .is_err()
         );
     }
 

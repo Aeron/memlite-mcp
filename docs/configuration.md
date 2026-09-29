@@ -34,7 +34,9 @@ truthy env var can still be overridden from the command line.
 
 MemLite hashes the resolved project path to select its database. Explicit
 relative paths become absolute before hashing, matching GraphLite and avoiding
-separate databases for equivalent relative and absolute inputs.
+separate databases for equivalent relative and absolute inputs. Parent path
+segments are resolved before hashing; paths that resolve to the filesystem
+root still require `--allow-root`.
 
 MCP workspace roots remain a compatibility fallback. Multi-root hosts may start
 each server process with a different current working directory, so their
