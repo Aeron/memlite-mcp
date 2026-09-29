@@ -273,7 +273,7 @@ impl MemoryStore {
                 confidence, decay_rate, last_seen_at, type, relations, refs, attrs
             from memories
             {where_sql}
-            order by created_at desc
+            order by created_at desc, rowid desc
             limit ? offset ?"
         );
         let mut rows = self
@@ -307,7 +307,7 @@ impl MemoryStore {
                 confidence, decay_rate, last_seen_at, type, relations, refs, attrs
             from memories
             {where_sql}
-            order by created_at desc
+            order by created_at desc, rowid desc
             limit ? offset ?"
         );
         let mut rows = self
@@ -2056,6 +2056,20 @@ mod tests {
         let rows = store.list(FilterOptions::default(), 10, 0).await.unwrap();
         // list returns newest-first, so second item is at index 0
         assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, ids[1]);
+        assert_eq!(rows[1].id, ids[0]);
+        assert_eq!(
+            store.list(FilterOptions::default(), 1, 1).await.unwrap()[0].id,
+            ids[0]
+        );
+        let compact = store
+            .list_compact(FilterOptions::default(), 2, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            compact.iter().map(|m| m.id).collect::<Vec<_>>(),
+            [ids[1], ids[0]]
+        );
         let first = rows.iter().find(|m| m.content == "first").unwrap();
         let second = rows.iter().find(|m| m.content == "second").unwrap();
         assert_eq!(first.id, ids[0]);
