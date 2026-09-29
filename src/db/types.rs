@@ -426,16 +426,6 @@ pub enum TraverseDirection {
     Both,
 }
 
-impl From<Option<&str>> for TraverseDirection {
-    fn from(s: Option<&str>) -> Self {
-        match s {
-            Some("in") => TraverseDirection::In,
-            Some("both") => TraverseDirection::Both,
-            _ => TraverseDirection::Out,
-        }
-    }
-}
-
 /// One node discovered during a BFS graph traversal.
 pub struct TraverseNode {
     /// Compact memory summary at this node.

@@ -455,10 +455,15 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<TraverseParams>,
     ) -> Result<CallToolResult, McpError> {
+        let direction = match p.direction.as_deref() {
+            None | Some("out") => TraverseDirection::Out,
+            Some("in") => TraverseDirection::In,
+            Some("both") => TraverseDirection::Both,
+            Some(_) => return tool_err("direction must be out, in, or both"),
+        };
         let Some(store) = self.store_if_present().await? else {
             return tool_ok(serde_json::json!({"start_id": p.start_id, "nodes": [], "edges": []}));
         };
-        let direction = TraverseDirection::from(p.direction.as_deref());
         let depth = p.depth.unwrap_or(2);
         let result = store
             .traverse(p.start_id, depth, p.kind.as_deref(), direction)
@@ -746,6 +751,22 @@ mod tests {
             .unwrap();
         assert_eq!(result.is_error, Some(true));
         assert_eq!(result_text(&result), "too many ids (maximum 100)");
+    }
+
+    #[tokio::test]
+    async fn memory_traverse_rejects_unknown_direction_without_store() {
+        let server = test_server().await;
+        let result = server
+            .memory_traverse(Parameters(TraverseParams {
+                start_id: 1,
+                depth: None,
+                kind: None,
+                direction: Some("inn".to_owned()),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result_text(&result), "direction must be out, in, or both");
     }
 
     #[test]
