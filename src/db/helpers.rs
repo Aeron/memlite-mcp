@@ -73,7 +73,8 @@ pub(super) fn build_where(filter: &FilterOptions<'_>, params: &mut Vec<Value>) -
             .into(),
         );
         params.push(Value::Text(serde_json::to_string(ts)?));
-        params.push(Value::Integer(ts.len() as i64));
+        let distinct_tags = ts.iter().collect::<HashSet<_>>().len();
+        params.push(Value::Integer(distinct_tags as i64));
     }
     if let Some(mt) = filter.memory_type {
         clauses.push("type = ?".into());

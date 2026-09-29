@@ -1317,6 +1317,26 @@ mod tests {
         assert_eq!(both.len(), 1);
         assert_eq!(both[0].content, "a");
 
+        let repeated = FilterOptions {
+            tags: Some(&["bug".into(), "bug".into(), "config".into()]),
+            ..Default::default()
+        };
+        let matches = store.list(repeated, 10, 0).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].content, "a");
+        let compact = store
+            .list_compact(
+                FilterOptions {
+                    tags: Some(&["bug".into(), "bug".into()]),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(compact.len(), 2);
+
         // empty slice = no filter
         let all = store
             .list(
@@ -1365,6 +1385,21 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0.content, "tagged");
+
+        let repeated = store
+            .search(
+                "",
+                &V1,
+                FilterOptions {
+                    tags: Some(&["rust".into(), "rust".into()]),
+                    ..Default::default()
+                },
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(repeated.len(), 1);
+        assert_eq!(repeated[0].0.content, "tagged");
     }
 
     #[tokio::test]
