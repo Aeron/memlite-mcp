@@ -1,4 +1,4 @@
-use std::{fmt::Display, io::Write, str::FromStr};
+use std::{io::Write, str::FromStr};
 
 use anyhow::{Context, Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 use crate::{
     config::Config,
     db::{
-        BatchInsertItem, FilterOptions, MemoryAttrs, MemoryStore, MemoryType, TraverseDirection,
+        BatchInsertItem, FilterOptions, MemoryAttrOutcome, MemoryAttrPhase, MemoryAttrPriority,
+        MemoryAttrSeverity, MemoryAttrs, MemoryStatus, MemoryStore, MemoryType, TraverseDirection,
         UpdateOptions,
     },
     embedding::EmbeddingService,
@@ -91,7 +92,7 @@ struct StoreArgs {
 
     /// Structured memory category.
     #[arg(long)]
-    memory_type: String,
+    memory_type: MemoryType,
 
     /// One-sentence description for list views.
     #[arg(long)]
@@ -204,7 +205,7 @@ struct UpdateArgs {
 
     /// Replacement memory category.
     #[arg(long)]
-    memory_type: Option<String>,
+    memory_type: Option<MemoryType>,
 
     #[command(flatten)]
     attrs: AttrArgs,
@@ -262,7 +263,7 @@ struct TraverseArgs {
 
     /// Edge direction to follow.
     #[arg(long, value_enum)]
-    direction: Option<Direction>,
+    direction: Option<TraverseDirection>,
 }
 
 #[derive(Args)]
@@ -293,27 +294,27 @@ struct FilterArgs {
 
     /// Required memory category.
     #[arg(long)]
-    memory_type: Option<String>,
+    memory_type: Option<MemoryType>,
 
     /// Required lifecycle status.
     #[arg(long)]
-    status: Option<String>,
+    status: Option<MemoryStatus>,
 
     /// Required severity.
     #[arg(long)]
-    severity: Option<String>,
+    severity: Option<MemoryAttrSeverity>,
 
     /// Required priority.
     #[arg(long)]
-    priority: Option<String>,
+    priority: Option<MemoryAttrPriority>,
 
     /// Required decision outcome.
     #[arg(long)]
-    outcome: Option<String>,
+    outcome: Option<MemoryAttrOutcome>,
 
     /// Required plan phase.
     #[arg(long)]
-    phase: Option<String>,
+    phase: Option<MemoryAttrPhase>,
 
     /// Required substring in an external reference.
     #[arg(long)]
@@ -324,19 +325,19 @@ struct FilterArgs {
 struct AttrArgs {
     /// Lifecycle status.
     #[arg(long)]
-    status: Option<String>,
+    status: Option<MemoryStatus>,
 
     /// Severity level.
     #[arg(long)]
-    severity: Option<String>,
+    severity: Option<MemoryAttrSeverity>,
 
     /// Task priority.
     #[arg(long)]
-    priority: Option<String>,
+    priority: Option<MemoryAttrPriority>,
 
     /// Decision outcome.
     #[arg(long)]
-    outcome: Option<String>,
+    outcome: Option<MemoryAttrOutcome>,
 
     /// Decision reversibility.
     #[arg(long, action = ArgAction::Set)]
@@ -344,14 +345,7 @@ struct AttrArgs {
 
     /// Plan phase.
     #[arg(long)]
-    phase: Option<String>,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum Direction {
-    Out,
-    In,
-    Both,
+    phase: Option<MemoryAttrPhase>,
 }
 
 #[derive(Clone)]
@@ -384,18 +378,18 @@ impl FromStr for Relation {
 }
 
 impl FilterArgs {
-    fn options<'a>(&'a self, ids: Option<&'a [i64]>) -> Result<FilterOptions<'a>> {
-        Ok(FilterOptions {
+    fn options<'a>(&'a self, ids: Option<&'a [i64]>) -> FilterOptions<'a> {
+        FilterOptions {
             ids,
             tags: (!self.tags.is_empty()).then_some(self.tags.as_slice()),
-            memory_type: parse_optional(self.memory_type.as_deref())?,
-            status: parse_optional(self.status.as_deref())?,
-            severity: parse_optional(self.severity.as_deref())?,
-            priority: parse_optional(self.priority.as_deref())?,
-            outcome: parse_optional(self.outcome.as_deref())?,
-            phase: parse_optional(self.phase.as_deref())?,
+            memory_type: self.memory_type,
+            status: self.status,
+            severity: self.severity,
+            priority: self.priority,
+            outcome: self.outcome,
+            phase: self.phase,
             refs_contain: self.refs_contain.as_deref(),
-        })
+        }
     }
 }
 
@@ -409,15 +403,15 @@ impl AttrArgs {
             && self.phase.is_none()
     }
 
-    fn value(&self) -> Result<MemoryAttrs> {
-        Ok(MemoryAttrs {
-            status: parse_optional(self.status.as_deref())?,
-            severity: parse_optional(self.severity.as_deref())?,
-            priority: parse_optional(self.priority.as_deref())?,
-            outcome: parse_optional(self.outcome.as_deref())?,
+    fn value(&self) -> MemoryAttrs {
+        MemoryAttrs {
+            status: self.status,
+            severity: self.severity,
+            priority: self.priority,
+            outcome: self.outcome,
             reversible: self.reversible,
-            phase: parse_optional(self.phase.as_deref())?,
-        })
+            phase: self.phase,
+        }
     }
 }
 
@@ -447,12 +441,9 @@ async fn store(config: &Config, format: OutputFormat, args: StoreArgs) -> Result
     if args.summary.trim().is_empty() {
         bail!("summary must not be blank");
     }
-    let memory_type = args
-        .memory_type
-        .parse::<MemoryType>()
-        .map_err(|error| anyhow::anyhow!(error))?;
+
     let relations = relations(args.relations);
-    let attrs = args.attrs.value()?;
+    let attrs = args.attrs.value();
     let store = open_store(config, true)
         .await?
         .expect("create mode must open a store");
@@ -468,7 +459,7 @@ async fn store(config: &Config, format: OutputFormat, args: StoreArgs) -> Result
             context: args.context,
             confidence: args.confidence.unwrap_or(1.0),
             decay_rate: args.decay_rate.unwrap_or(0.0),
-            memory_type,
+            memory_type: args.memory_type,
             attrs,
             relations,
             refs: args.refs,
@@ -485,7 +476,7 @@ async fn search(config: &Config, format: OutputFormat, args: SearchArgs) -> Resu
     let Some(store) = open_store(config, false).await? else {
         return write_memories(format, Value::Array(Vec::new()), "memories: 0");
     };
-    let filters = args.filters.options(None)?;
+    let filters = args.filters.options(None);
     let embedding = embedding(config);
     let (query, vector) = embedding.embed_owned(args.query).await?;
     let results = store
@@ -504,7 +495,7 @@ async fn list(config: &Config, format: OutputFormat, args: ListArgs) -> Result<(
         return write_memories(format, Value::Array(Vec::new()), "memories: 0");
     };
     let ids = (!args.ids.is_empty()).then_some(args.ids.as_slice());
-    let filters = args.filters.options(ids)?;
+    let filters = args.filters.options(ids);
     let limit = args
         .limit
         .unwrap_or_else(|| ids.map_or(20, |values| values.len() as u32))
@@ -590,14 +581,10 @@ async fn update(config: &Config, format: OutputFormat, mut args: UpdateArgs) -> 
         bail!("at least one update field must be provided");
     }
 
-    let memory_type = match args.memory_type.as_deref() {
-        Some("") => bail!("memory_type must not be blank"),
-        value => parse_optional(value)?,
-    };
     let attrs = if args.clear_attrs {
         Some(MemoryAttrs::default())
     } else if has_attrs {
-        Some(args.attrs.value()?)
+        Some(args.attrs.value())
     } else {
         None
     };
@@ -649,7 +636,7 @@ async fn update(config: &Config, format: OutputFormat, mut args: UpdateArgs) -> 
                 context: args.context.as_deref(),
                 confidence: args.confidence,
                 decay_rate: args.decay_rate,
-                memory_type,
+                memory_type: args.memory_type,
                 attrs,
                 relations: relation_values.as_deref(),
                 refs: refs.as_deref(),
@@ -689,11 +676,7 @@ async fn traverse(config: &Config, format: OutputFormat, args: TraverseArgs) -> 
             json!({"start_id": args.start_id, "nodes": [], "edges": []}),
         );
     };
-    let direction = match args.direction.unwrap_or(Direction::Out) {
-        Direction::Out => TraverseDirection::Out,
-        Direction::In => TraverseDirection::In,
-        Direction::Both => TraverseDirection::Both,
-    };
+    let direction = args.direction.unwrap_or_default();
     let result = store
         .traverse(args.start_id, depth, args.kind.as_deref(), direction)
         .await?;
@@ -768,17 +751,6 @@ fn relations(values: Vec<Relation>) -> Vec<(i64, String)> {
         .collect()
 }
 
-fn parse_optional<T>(value: Option<&str>) -> Result<Option<T>>
-where
-    T: FromStr,
-    T::Err: Display,
-{
-    value
-        .map(|value| value.parse::<T>())
-        .transpose()
-        .map_err(|error| anyhow::anyhow!(error.to_string()))
-}
-
 fn write_memories(format: OutputFormat, json: Value, text: &str) -> Result<()> {
     match format {
         OutputFormat::Text => write_text(text),
@@ -837,6 +809,43 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(cli.config.explicit_project_path(), Some("/tmp/project"));
+    }
+
+    #[test]
+    fn parses_and_validates_closed_vocabularies() {
+        for (flag, value) in [
+            ("--memory-type", "project"),
+            ("--status", "resolved"),
+            ("--severity", "high"),
+            ("--priority", "urgent"),
+            ("--outcome", "accepted"),
+            ("--phase", "active"),
+        ] {
+            assert!(Cli::try_parse_from(["memlite-mcp", "tool", "list", flag, value]).is_ok());
+            assert!(Cli::try_parse_from(["memlite-mcp", "tool", "list", flag, "unknown"]).is_err());
+            assert!(
+                Cli::try_parse_from(["memlite-mcp", "tool", "update", "1", flag, value]).is_ok()
+            );
+            assert!(
+                Cli::try_parse_from(["memlite-mcp", "tool", "update", "1", flag, "unknown"])
+                    .is_err()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "memlite-mcp",
+                "tool",
+                "traverse",
+                "1",
+                "--direction",
+                "both"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["memlite-mcp", "tool", "traverse", "1", "--direction", "inn"])
+                .is_err()
+        );
     }
 
     #[test]

@@ -10,6 +10,10 @@ return deterministic block text with literal prose; other successful
 structured tool content uses [TOON v3.0](https://toonformat.dev). Tool errors
 remain plain text. All output formats omit null and empty collection fields.
 
+Memory types, typed-attribute filters, and traversal directions use enum schemas.
+Invalid enum values return MCP `invalid_params` errors before tool execution;
+the CLI rejects them during argument parsing. Relation kinds remain free-form.
+
 MCP tool operations may pass through elected shared worker. Proxying is
 transparent to tool schemas and output. A request overlapping worker failover can
 return one transport error; retry it because in-flight writes are never replayed.

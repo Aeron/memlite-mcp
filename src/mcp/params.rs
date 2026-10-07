@@ -1,7 +1,10 @@
 use rmcp::schemars;
 use serde::Deserialize;
 
-use crate::db::MemoryAttrs;
+use crate::db::{
+    MemoryAttrOutcome, MemoryAttrPhase, MemoryAttrPriority, MemoryAttrSeverity, MemoryAttrs,
+    MemoryStatus, MemoryType, TraverseDirection,
+};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchParams {
@@ -17,17 +20,17 @@ pub struct SearchParams {
     /// Restricts results to memories that carry all of the given tags.
     pub tags: Option<Vec<String>>,
     /// Restricts results to memories of the given type.
-    pub memory_type: Option<String>,
+    pub memory_type: Option<MemoryType>,
     /// Restricts results to memories with the given status.
-    pub status: Option<String>,
+    pub status: Option<MemoryStatus>,
     /// Restricts results to memories with the given severity.
-    pub severity: Option<String>,
+    pub severity: Option<MemoryAttrSeverity>,
     /// Restricts results to memories with the given priority.
-    pub priority: Option<String>,
+    pub priority: Option<MemoryAttrPriority>,
     /// Restricts results to memories with the given decision outcome.
-    pub outcome: Option<String>,
+    pub outcome: Option<MemoryAttrOutcome>,
     /// Restricts results to memories with the given plan phase.
-    pub phase: Option<String>,
+    pub phase: Option<MemoryAttrPhase>,
     /// Restricts results to memories whose refs array contains this substring.
     /// Uses literal matching without path normalization; query file refs using the
     /// same single-root or root-prefixed form used when storing them.
@@ -51,17 +54,17 @@ pub struct ListParams {
     /// Restricts results to memories that carry all of the given tags.
     pub tags: Option<Vec<String>>,
     /// Restricts results to memories of the given type.
-    pub memory_type: Option<String>,
+    pub memory_type: Option<MemoryType>,
     /// Restricts results to memories with the given status.
-    pub status: Option<String>,
+    pub status: Option<MemoryStatus>,
     /// Restricts results to memories with the given severity.
-    pub severity: Option<String>,
+    pub severity: Option<MemoryAttrSeverity>,
     /// Restricts results to memories with the given priority.
-    pub priority: Option<String>,
+    pub priority: Option<MemoryAttrPriority>,
     /// Restricts results to memories with the given decision outcome.
-    pub outcome: Option<String>,
+    pub outcome: Option<MemoryAttrOutcome>,
     /// Restricts results to memories with the given plan phase.
-    pub phase: Option<String>,
+    pub phase: Option<MemoryAttrPhase>,
     /// Restricts results to memories whose refs array contains this substring.
     /// Uses literal matching without path normalization; query file refs using the
     /// same single-root or root-prefixed form used when storing them.
@@ -90,7 +93,7 @@ pub struct StoreItem {
     /// Feedback is not a type: opinions on approach go to "user";
     /// work-quality observations go to "finding" or "issue". Unclear:
     /// use "project" for general codebase facts.
-    pub memory_type: String,
+    pub memory_type: MemoryType,
     /// Initial confidence score in [0, 1] (default 1.0): 0.5-0.7 for
     /// speculative or inferred information, 0.8-0.9 for believed but
     /// unverified information, 1.0 for confirmed information.
@@ -159,7 +162,7 @@ pub struct TraverseParams {
     /// Optional relation kind filter; only edges with this exact kind are traversed.
     pub kind: Option<String>,
     /// Edge direction to follow: "out" (default), "in", or "both".
-    pub direction: Option<String>,
+    pub direction: Option<TraverseDirection>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -214,7 +217,7 @@ pub struct UpdateParams {
     /// Feedback is not a type: opinions on approach go to "user";
     /// work-quality observations go to "finding" or "issue". Empty string is
     /// rejected.
-    pub memory_type: Option<String>,
+    pub memory_type: Option<MemoryType>,
     /// Replacement typed metadata; replaces the full set when provided.
     /// Status applies to tasks, findings, or issues; severity to findings or
     /// issues; priority to tasks; outcome and reversible to decisions; phase
@@ -229,4 +232,83 @@ pub struct UpdateParams {
     /// workspaces; prefix the project root directory name in multi-project
     /// workspaces. Paths remain exactly as provided. An empty array clears all refs.
     pub refs: Option<Vec<String>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn filters_deserialize_closed_vocabularies() {
+        let fields = [
+            ("memory_type", "project"),
+            ("status", "resolved"),
+            ("severity", "high"),
+            ("priority", "urgent"),
+            ("outcome", "accepted"),
+            ("phase", "active"),
+        ];
+        for (field, value) in fields {
+            let mut input = json!({"query": "memory"});
+            input[field] = json!(value);
+            assert!(serde_json::from_value::<SearchParams>(input.clone()).is_ok());
+            assert!(serde_json::from_value::<ListParams>(input.clone()).is_ok());
+            input[field] = json!("unknown");
+            assert!(serde_json::from_value::<SearchParams>(input.clone()).is_err());
+            assert!(serde_json::from_value::<ListParams>(input).is_err());
+        }
+    }
+
+    #[test]
+    fn store_and_update_deserialize_memory_types() {
+        for memory_type in [
+            "user",
+            "project",
+            "reference",
+            "task",
+            "finding",
+            "issue",
+            "decision",
+            "plan",
+        ] {
+            assert!(serde_json::from_value::<StoreParams>(json!({
+                "items": [{"content": "content", "summary": "summary", "memory_type": memory_type}]
+            })).is_ok());
+            assert!(
+                serde_json::from_value::<UpdateParams>(
+                    json!({"id": 1, "memory_type": memory_type})
+                )
+                .is_ok()
+            );
+        }
+        for memory_type in ["", "unknown", "Project"] {
+            assert!(serde_json::from_value::<StoreParams>(json!({
+                "items": [{"content": "content", "summary": "summary", "memory_type": memory_type}]
+            })).is_err());
+            assert!(
+                serde_json::from_value::<UpdateParams>(
+                    json!({"id": 1, "memory_type": memory_type})
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn parameter_schemas_reference_domain_enums() {
+        let schema = serde_json::to_value(schemars::schema_for!(SearchParams)).unwrap();
+        for name in [
+            "MemoryType",
+            "MemoryStatus",
+            "MemoryAttrSeverity",
+            "MemoryAttrPriority",
+            "MemoryAttrOutcome",
+            "MemoryAttrPhase",
+        ] {
+            assert!(schema["$defs"][name].is_object(), "missing {name} schema");
+        }
+        let schema = serde_json::to_value(schemars::schema_for!(TraverseParams)).unwrap();
+        assert!(schema["$defs"]["TraverseDirection"].is_object());
+    }
 }

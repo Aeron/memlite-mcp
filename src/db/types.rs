@@ -187,7 +187,17 @@ pub struct MemorySummary {
 
 /// Classifies a memory's intended use, enabling targeted filtering.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, Default,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    Display,
+    EnumString,
+    Default,
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
@@ -417,8 +427,11 @@ pub struct Neighbors {
 }
 
 /// Specifies which edge directions to follow during graph traversal.
+#[derive(Debug, Clone, Copy, Default, Deserialize, schemars::JsonSchema, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum TraverseDirection {
-    /// Follow outgoing edges only (default).
+    /// Outgoing edges only (default).
+    #[default]
     Out,
     /// Follow incoming edges only.
     In,

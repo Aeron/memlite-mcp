@@ -12,11 +12,7 @@ use super::params::{
     RevalidateParams, SearchParams, StoreParams, TraverseParams, UpdateParams,
 };
 use crate::{
-    db::{
-        BatchInsertItem, FilterOptions, MemoryAttrOutcome, MemoryAttrPhase, MemoryAttrPriority,
-        MemoryAttrSeverity, MemoryStatus, MemoryStore, MemoryType, TraverseDirection,
-        UpdateOptions,
-    },
+    db::{BatchInsertItem, FilterOptions, MemoryStore, UpdateOptions},
     embedding::EmbeddingService,
     output::{
         hubs_json, neighbors_json, path_json, render_compact_list_results, render_list_results,
@@ -27,16 +23,6 @@ use crate::{
 
 /// Initial instructions for the MCP client (caveman style).
 const INSTRUCTIONS: &str = include_str!("instructions.md");
-
-// Parses an Optional<String> filter field into the typed enum, returning early on error.
-macro_rules! parse_filter {
-    ($opt:expr, $ty:ty) => {
-        match $opt.as_deref().map(|s| s.parse::<$ty>()).transpose() {
-            Ok(v) => v,
-            Err(e) => return tool_err(e),
-        }
-    };
-}
 
 pub struct MemServer {
     project: Arc<ProjectHandle>,
@@ -96,7 +82,6 @@ impl MemServer {
         }
 
         // Validating cheap fields before embedding anything
-        let mut parsed_types: Vec<MemoryType> = Vec::with_capacity(p.items.len());
         let mut parsed_relations: Vec<Vec<(i64, String)>> = Vec::with_capacity(p.items.len());
         for (i, item) in p.items.iter_mut().enumerate() {
             if item.content.trim().is_empty() {
@@ -105,15 +90,10 @@ impl MemServer {
             if item.summary.trim().is_empty() {
                 return tool_err(format!("item {i}: summary must not be blank"));
             }
-            let mt = match item.memory_type.parse::<MemoryType>() {
-                Ok(v) => v,
-                Err(e) => return tool_err(format!("item {i}: {e}")),
-            };
-            let rels = match parse_relations(item.relations.take()) {
+            let rels = match parse_relations(item.relations.take().unwrap_or_default()) {
                 Ok(r) => r,
                 Err(msg) => return tool_err(format!("item {i}: {msg}")),
             };
-            parsed_types.push(mt);
             parsed_relations.push(rels);
         }
 
@@ -130,26 +110,27 @@ impl MemServer {
             .map_err(ServerError::Embed)?;
 
         // Assembling values from vectors whose lengths were checked during embedding
-        let mut contents = contents.into_iter();
-        let mut embeddings = embeddings.into_iter();
-        let mut parsed_types = parsed_types.into_iter();
-        let mut parsed_relations = parsed_relations.into_iter();
         let batch_items: Vec<BatchInsertItem> = p
             .items
             .into_iter()
-            .map(|item| BatchInsertItem {
-                content: contents.next().unwrap(),
-                embedding: embeddings.next().unwrap(),
-                summary: item.summary,
-                tags: item.tags.unwrap_or_default(),
-                context: item.context,
-                confidence: item.confidence.unwrap_or(1.0),
-                decay_rate: item.decay_rate.unwrap_or(0.0),
-                memory_type: parsed_types.next().unwrap(),
-                attrs: item.attrs.unwrap_or_default(),
-                relations: parsed_relations.next().unwrap(),
-                refs: item.refs.unwrap_or_default(),
-            })
+            .zip(contents)
+            .zip(embeddings)
+            .zip(parsed_relations)
+            .map(
+                |(((item, content), embedding), relations)| BatchInsertItem {
+                    content,
+                    embedding,
+                    summary: item.summary,
+                    tags: item.tags.unwrap_or_default(),
+                    context: item.context,
+                    confidence: item.confidence.unwrap_or(1.0),
+                    decay_rate: item.decay_rate.unwrap_or(0.0),
+                    memory_type: item.memory_type,
+                    attrs: item.attrs.unwrap_or_default(),
+                    relations,
+                    refs: item.refs.unwrap_or_default(),
+                },
+            )
             .collect();
 
         let store = self.open_store().await?;
@@ -174,12 +155,6 @@ impl MemServer {
         if p.query.trim().is_empty() {
             return tool_err("query must not be blank");
         }
-        let memory_type = parse_filter!(p.memory_type, MemoryType);
-        let status = parse_filter!(p.status, MemoryStatus);
-        let severity = parse_filter!(p.severity, MemoryAttrSeverity);
-        let priority = parse_filter!(p.priority, MemoryAttrPriority);
-        let outcome = parse_filter!(p.outcome, MemoryAttrOutcome);
-        let phase = parse_filter!(p.phase, MemoryAttrPhase);
         let limit = p.limit.unwrap_or(10).min(100);
         let Some(store) = self.store_if_present().await? else {
             return tool_text("memories: 0".to_owned());
@@ -196,12 +171,12 @@ impl MemServer {
                 FilterOptions {
                     ids: None,
                     tags: p.tags.as_deref(),
-                    memory_type,
-                    status,
-                    severity,
-                    priority,
-                    outcome,
-                    phase,
+                    memory_type: p.memory_type,
+                    status: p.status,
+                    severity: p.severity,
+                    priority: p.priority,
+                    outcome: p.outcome,
+                    phase: p.phase,
                     refs_contain: p.refs_contain.as_deref(),
                 },
                 limit,
@@ -226,12 +201,6 @@ impl MemServer {
         if p.ids.as_ref().is_some_and(|ids| ids.len() > 100) {
             return tool_err("too many ids (maximum 100)");
         }
-        let memory_type = parse_filter!(p.memory_type, MemoryType);
-        let status = parse_filter!(p.status, MemoryStatus);
-        let severity = parse_filter!(p.severity, MemoryAttrSeverity);
-        let priority = parse_filter!(p.priority, MemoryAttrPriority);
-        let outcome = parse_filter!(p.outcome, MemoryAttrOutcome);
-        let phase = parse_filter!(p.phase, MemoryAttrPhase);
         let limit = p
             .limit
             .unwrap_or_else(|| p.ids.as_ref().map_or(20, |ids| ids.len() as u32))
@@ -243,12 +212,12 @@ impl MemServer {
         let filter = FilterOptions {
             ids: p.ids.as_deref(),
             tags: p.tags.as_deref(),
-            memory_type,
-            status,
-            severity,
-            priority,
-            outcome,
-            phase,
+            memory_type: p.memory_type,
+            status: p.status,
+            severity: p.severity,
+            priority: p.priority,
+            outcome: p.outcome,
+            phase: p.phase,
             refs_contain: p.refs_contain.as_deref(),
         };
         if p.include_content.unwrap_or(true) {
@@ -340,18 +309,9 @@ impl MemServer {
         }
 
         let update_attrs = p.attrs;
-        let update_memory_type = match p.memory_type.as_deref() {
-            None => None,
-            Some("") => return tool_err("memory_type must not be blank"),
-            Some(s) => match s.parse::<MemoryType>() {
-                Ok(mt) => Some(mt),
-                Err(e) => return tool_err(e),
-            },
-        };
-        let update_relations = match p.relations.take().map(|m| parse_relations(Some(m))) {
-            None => None,
-            Some(Ok(relations)) => Some(relations),
-            Some(Err(message)) => return tool_err(message),
+        let update_relations = match p.relations.take().map(parse_relations).transpose() {
+            Ok(relations) => relations,
+            Err(message) => return tool_err(message),
         };
         let Some(store) = self.store_if_present().await? else {
             return tool_err(format!("no memory found with id {}", p.id));
@@ -384,7 +344,7 @@ impl MemServer {
                     context: p.context.as_deref(),
                     confidence: p.confidence,
                     decay_rate: p.decay_rate,
-                    memory_type: update_memory_type,
+                    memory_type: p.memory_type,
                     attrs: update_attrs,
                     relations: update_relations.as_deref(),
                     refs: update_refs,
@@ -451,12 +411,7 @@ impl MemServer {
         &self,
         Parameters(p): Parameters<TraverseParams>,
     ) -> Result<CallToolResult, McpError> {
-        let direction = match p.direction.as_deref() {
-            None | Some("out") => TraverseDirection::Out,
-            Some("in") => TraverseDirection::In,
-            Some("both") => TraverseDirection::Both,
-            Some(_) => return tool_err("direction must be out, in, or both"),
-        };
+        let direction = p.direction.unwrap_or_default();
         let Some(store) = self.store_if_present().await? else {
             return tool_ok(serde_json::json!({"start_id": p.start_id, "nodes": [], "edges": []}));
         };
@@ -555,15 +510,12 @@ fn tool_err(msg: impl std::fmt::Display) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::error(vec![Content::text(msg.to_string())]))
 }
 
-/// Converts an optional relations map into a validated list of `(target_id, kind)` pairs.
+/// Converts a relations map into a validated list of `(target_id, kind)` pairs.
 ///
 /// Returns an error string when any key is not a valid i64 or any kind value is empty.
 fn parse_relations(
-    map: Option<std::collections::BTreeMap<String, String>>,
+    map: std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<(i64, String)>, String> {
-    let Some(map) = map else {
-        return Ok(Vec::new());
-    };
     let mut result = Vec::with_capacity(map.len());
     for (key, kind) in map {
         let id = key.parse::<i64>().map_err(|_| {
@@ -615,6 +567,7 @@ mod tests {
     use super::*;
     use crate::{
         cli::Cli,
+        db::MemoryType,
         mcp::params::StoreItem,
         worker::{ProjectSpec, Registry},
     };
@@ -690,7 +643,7 @@ mod tests {
                     summary: "  ".to_owned(),
                     tags: None,
                     context: None,
-                    memory_type: "project".to_owned(),
+                    memory_type: MemoryType::Project,
                     confidence: None,
                     decay_rate: None,
                     attrs: None,
@@ -773,28 +726,30 @@ mod tests {
         assert_eq!(result_text(&result), "too many ids (maximum 100)");
     }
 
-    #[tokio::test]
-    async fn memory_traverse_rejects_unknown_direction_without_store() {
-        let server = test_server().await;
-        let result = server
-            .memory_traverse(Parameters(TraverseParams {
-                start_id: 1,
-                depth: None,
-                kind: None,
-                direction: Some("inn".to_owned()),
+    #[test]
+    fn traversal_params_validate_direction_before_opening_store() {
+        for direction in ["out", "in", "both"] {
+            assert!(
+                serde_json::from_value::<TraverseParams>(serde_json::json!({
+                    "start_id": 1, "direction": direction,
+                }))
+                .is_ok()
+            );
+        }
+        assert!(
+            serde_json::from_value::<TraverseParams>(serde_json::json!({
+                "start_id": 1, "direction": "inn",
             }))
-            .await
-            .unwrap();
-        assert_eq!(result.is_error, Some(true));
-        assert_eq!(result_text(&result), "direction must be out, in, or both");
+            .is_err()
+        );
     }
 
     #[test]
     fn parse_relations_rejects_nonpositive_target() {
-        let error = parse_relations(Some(std::collections::BTreeMap::from([(
+        let error = parse_relations(std::collections::BTreeMap::from([(
             "0".to_owned(),
             "related_to".to_owned(),
-        )])))
+        )]))
         .unwrap_err();
         assert!(error.contains("positive numeric id"));
     }
