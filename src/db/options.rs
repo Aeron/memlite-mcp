@@ -46,7 +46,7 @@ impl Default for InsertOptions<'_> {
 /// Holds the fields that can be updated on an existing memory row.
 #[derive(Default)]
 pub struct UpdateOptions<'a> {
-    /// Replacement content; triggers re-embedding when provided.
+    /// Replacement content; requires a replacement embedding when provided.
     pub content: Option<&'a str>,
     /// Replacement summary; blank values are rejected.
     pub summary: Option<&'a str>,
@@ -56,9 +56,9 @@ pub struct UpdateOptions<'a> {
     pub embedding: Option<&'a [f32]>,
     /// Replacement context; pass Some("") to clear.
     pub context: Option<&'a str>,
-    /// Replacement confidence score.
+    /// Finite replacement confidence score; clamped to [0.0, 1.0].
     pub confidence: Option<f64>,
-    /// Replacement per-day decay rate.
+    /// Finite replacement per-day decay rate; clamped to [0.0, 1.0].
     pub decay_rate: Option<f64>,
     /// Replacement memory type.
     pub memory_type: Option<MemoryType>,

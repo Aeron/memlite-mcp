@@ -6,6 +6,14 @@ use libsql::Value;
 use super::options::FilterOptions;
 use super::types::{CompactMemory, Memory, MemoryAttrs, MemorySummary, MemoryType};
 
+/// Rejects non-finite values and clamps finite scores to [0.0, 1.0].
+pub(super) fn clamp_finite(value: f64, field: &str) -> Result<f64> {
+    if !value.is_finite() {
+        return Err(anyhow!("{field} must be finite"));
+    }
+    Ok(value.clamp(0.0, 1.0))
+}
+
 fn parse_memory_type(row: &libsql::Row, index: i32) -> Result<Option<MemoryType>> {
     match row.get_value(index)? {
         Value::Null => Ok(None),

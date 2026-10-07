@@ -1,12 +1,13 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{Result, anyhow};
-use libsql::{Builder, Connection, Value};
+use libsql::{Builder, Connection, Database, Value};
 use tokio::sync::Mutex;
 
 use super::helpers::{
-    build_where, fetch_memory_summaries_by_ids, floats_to_blob, parse_compact_memory_row,
-    parse_memory_row, relations_to_json, rerank_by_overlap, tags_to_json, unix_secs,
+    build_where, clamp_finite, fetch_memory_summaries_by_ids, floats_to_blob,
+    parse_compact_memory_row, parse_memory_row, relations_to_json, rerank_by_overlap, tags_to_json,
+    unix_secs,
 };
 #[cfg(test)]
 use super::options::InsertOptions;
@@ -46,6 +47,7 @@ async fn validate_relation_targets(tx: &libsql::Transaction, ids: &[i64]) -> Res
 
 /// Provides persistent memory operations over explicit query and mutation connections.
 pub struct MemoryStore {
+    db: Database,
     read_conn: Connection,
     write_conn: Mutex<Connection>,
 }
@@ -69,15 +71,25 @@ impl MemoryStore {
         read_conn.busy_timeout(BUSY_TIMEOUT)?;
 
         Ok(MemoryStore {
+            db,
             read_conn,
             write_conn: Mutex::new(write_conn),
         })
     }
 
+    /// Opens an isolated deferred transaction for multi-query graph reads.
+    async fn read_transaction(&self) -> Result<libsql::Transaction> {
+        let conn = self.db.connect()?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        Ok(conn
+            .transaction_with_behavior(libsql::TransactionBehavior::Deferred)
+            .await?)
+    }
+
     /// Inserts a new memory and returns its rowid.
     ///
     /// `confidence` defaults to 1.0 and `decay_rate` defaults to 0.0 when None.
-    /// Both are clamped to [0.0, 1.0].
+    /// Non-finite values are rejected; finite values are clamped to [0.0, 1.0].
     #[cfg(test)]
     pub async fn insert(
         &self,
@@ -91,8 +103,8 @@ impl MemoryStore {
             summary: opts.summary.to_owned(),
             tags: opts.tags.to_vec(),
             context: opts.context.map(str::to_owned),
-            confidence: opts.confidence.unwrap_or(1.0).clamp(0.0, 1.0),
-            decay_rate: opts.decay_rate.unwrap_or(0.0).clamp(0.0, 1.0),
+            confidence: opts.confidence.unwrap_or(1.0),
+            decay_rate: opts.decay_rate.unwrap_or(0.0),
             memory_type: opts.memory_type,
             attrs: opts.attrs.unwrap_or_default(),
             relations: opts.relations.to_vec(),
@@ -107,14 +119,19 @@ impl MemoryStore {
     /// Inserts multiple memories in a single transaction, returning their rowids in input order.
     ///
     /// All rows are inserted atomically: if any insert fails the transaction is rolled back
-    /// and no rows are written. `confidence` and `decay_rate` on each item must already be
-    /// clamped to [0.0, 1.0] by the caller.
-    pub async fn insert_batch(&self, items: Vec<BatchInsertItem>) -> Result<Vec<i64>> {
+    /// and no rows are written. Non-finite `confidence` and `decay_rate` values are rejected;
+    /// finite values are clamped to [0.0, 1.0].
+    pub async fn insert_batch(&self, mut items: Vec<BatchInsertItem>) -> Result<Vec<i64>> {
         if items.is_empty() {
             return Ok(Vec::new());
         }
-        if items.iter().any(|item| item.summary.trim().is_empty()) {
-            return Err(anyhow!("summary must not be blank"));
+        // Validating and clamping every item before starting any writes
+        for item in &mut items {
+            if item.summary.trim().is_empty() {
+                return Err(anyhow!("summary must not be blank"));
+            }
+            item.confidence = clamp_finite(item.confidence, "confidence")?;
+            item.decay_rate = clamp_finite(item.decay_rate, "decay_rate")?;
         }
 
         let conn = self.write_conn.lock().await;
@@ -404,9 +421,9 @@ impl MemoryStore {
     /// - Blank `summary` values are rejected.
     /// - `context = Some("")` clears the context (sets to NULL).
     /// - `attrs = Some({})` clears all type-specific extra fields.
-    /// - Supplying a new `embedding` alongside updated content keeps the index
-    ///   consistent; pass None to leave the stored vector unchanged.
-    /// - `confidence` and `decay_rate` are clamped to [0.0, 1.0] when provided.
+    /// - Replacement `content` requires a new `embedding` to keep the index consistent.
+    /// - Non-finite `confidence` and `decay_rate` values are rejected;
+    ///   finite values are clamped to [0.0, 1.0] when provided.
     /// - `last_seen_at` is always bumped to now when any field is updated,
     ///   resetting the confidence decay clock.
     /// - Returns true when at least one row was modified.
@@ -424,9 +441,18 @@ impl MemoryStore {
             relations,
             refs,
         } = opts;
+        if content.is_some() && embedding.is_none() {
+            return Err(anyhow!("replacement content requires an embedding"));
+        }
         if summary.is_some_and(|value| value.trim().is_empty()) {
             return Err(anyhow!("summary must not be blank"));
         }
+        let confidence = confidence
+            .map(|value| clamp_finite(value, "confidence"))
+            .transpose()?;
+        let decay_rate = decay_rate
+            .map(|value| clamp_finite(value, "decay_rate"))
+            .transpose()?;
         if content.is_none()
             && summary.is_none()
             && tags.is_none()
@@ -487,11 +513,11 @@ impl MemoryStore {
         }
         if let Some(c) = confidence {
             set_clauses.push("confidence = ?");
-            params.push(Value::Real(c.clamp(0.0, 1.0)));
+            params.push(Value::Real(c));
         }
         if let Some(dr) = decay_rate {
             set_clauses.push("decay_rate = ?");
-            params.push(Value::Real(dr.clamp(0.0, 1.0)));
+            params.push(Value::Real(dr));
         }
         if let Some(mt) = memory_type {
             set_clauses.push("type = ?");
@@ -587,7 +613,8 @@ impl MemoryStore {
     /// Both outgoing (this node -> others) and incoming (others -> this node) edges are
     /// returned. When `kind_filter` is supplied, only edges with that exact kind are included.
     pub async fn neighbors(&self, id: i64, kind_filter: Option<&str>) -> Result<Neighbors> {
-        let conn = &self.read_conn;
+        let tx = self.read_transaction().await?;
+        let conn = &tx;
 
         // Outgoing: this memory -> others
         let (out_sql, out_params): (&str, Vec<Value>) = if let Some(kf) = kind_filter {
@@ -672,7 +699,8 @@ impl MemoryStore {
         kind_filter: Option<&str>,
         direction: TraverseDirection,
     ) -> Result<TraverseResult> {
-        let conn = &self.read_conn;
+        let tx = self.read_transaction().await?;
+        let conn = &tx;
         let max_depth = max_depth.min(5);
 
         // visited: id -> (depth, via_kind used to first reach this node)
@@ -767,13 +795,13 @@ impl MemoryStore {
 
         // Fetching compact summaries for all discovered nodes
         let all_ids: Vec<i64> = visited.keys().copied().collect();
-        let memory_map = fetch_memory_summaries_by_ids(conn, &all_ids).await?;
+        let mut memory_map = fetch_memory_summaries_by_ids(conn, &all_ids).await?;
 
         let mut nodes: Vec<TraverseNode> = visited
             .into_iter()
             .filter_map(|(nid, (depth, via_kind))| {
-                memory_map.get(&nid).map(|m| TraverseNode {
-                    memory: m.clone(),
+                memory_map.remove(&nid).map(|memory| TraverseNode {
+                    memory,
                     depth,
                     via_kind,
                 })
@@ -803,16 +831,17 @@ impl MemoryStore {
         max_hops: u32,
     ) -> Result<Option<Vec<PathStep>>> {
         if from_id == to_id {
-            let map = fetch_memory_summaries_by_ids(&self.read_conn, &[from_id]).await?;
-            return Ok(map.get(&from_id).map(|m| {
+            let mut map = fetch_memory_summaries_by_ids(&self.read_conn, &[from_id]).await?;
+            return Ok(map.remove(&from_id).map(|memory| {
                 vec![PathStep {
-                    memory: m.clone(),
+                    memory,
                     via_kind: None,
                 }]
             }));
         }
 
-        let conn = &self.read_conn;
+        let tx = self.read_transaction().await?;
+        let conn = &tx;
         let max_hops = max_hops.min(10);
 
         // BFS with parent tracking: child_id -> (parent_id, edge_kind)
@@ -855,7 +884,7 @@ impl MemoryStore {
             return Ok(None);
         }
 
-        // Reconstruct path by walking parent links from to_id back to from_id
+        // Reconstructing the path by consuming parent links back to from_id
         let mut path_ids: Vec<(i64, Option<String>)> = Vec::new();
         let mut current = to_id;
         loop {
@@ -863,32 +892,27 @@ impl MemoryStore {
                 path_ids.push((from_id, None));
                 break;
             }
-            match parent.get(&current) {
-                Some((p, kind)) => {
-                    path_ids.push((current, Some(kind.clone())));
-                    current = *p;
-                }
-                None => {
-                    path_ids.push((current, None));
-                    break;
-                }
-            }
+            let (previous, kind) = parent.remove(&current).ok_or_else(|| {
+                anyhow!("path has no predecessor for memory identifier: {current}")
+            })?;
+            path_ids.push((current, Some(kind)));
+            current = previous;
         }
         path_ids.reverse();
 
         // Fetching compact summaries for all path nodes
         let ids: Vec<i64> = path_ids.iter().map(|(id, _)| *id).collect();
-        let memory_map = fetch_memory_summaries_by_ids(conn, &ids).await?;
+        let mut memory_map = fetch_memory_summaries_by_ids(conn, &ids).await?;
 
         let steps = path_ids
             .into_iter()
-            .filter_map(|(id, via_kind)| {
-                memory_map.get(&id).map(|m| PathStep {
-                    memory: m.clone(),
-                    via_kind,
-                })
+            .map(|(id, via_kind)| {
+                let memory = memory_map
+                    .remove(&id)
+                    .ok_or_else(|| anyhow!("path references missing memory identifier: {id}"))?;
+                Ok(PathStep { memory, via_kind })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Some(steps))
     }
@@ -960,7 +984,8 @@ impl MemoryStore {
     /// (`neighbors`, `traverse`, `path`, `hubs`): the relation graph is a single shared
     /// structure with no agent column, and edges may legitimately cross agent boundaries.
     pub async fn graph_stats(&self) -> Result<GraphStats> {
-        let conn = &self.read_conn;
+        let tx = self.read_transaction().await?;
+        let conn = &tx;
 
         // Total memories
         let mut rows = conn.query("select count(*) from memories", ()).await?;
@@ -1488,6 +1513,7 @@ mod tests {
                     id,
                     UpdateOptions {
                         content: Some("new"),
+                        embedding: Some(&V2),
                         ..Default::default()
                     },
                 )
@@ -1498,6 +1524,46 @@ mod tests {
             store.list(FilterOptions::default(), 1, 0).await.unwrap()[0].content,
             "new"
         );
+        let results = store
+            .search("", &V2, FilterOptions::default(), 1)
+            .await
+            .unwrap();
+        assert_eq!(results[0].0.id, id);
+        assert_eq!(results[0].1, 0.0);
+    }
+
+    #[tokio::test]
+    async fn update_rejects_content_without_embedding_atomically() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert("old", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        let before =
+            serde_json::to_value(store.list(FilterOptions::default(), 1, 0).await.unwrap())
+                .unwrap();
+        let error = store
+            .update(
+                id,
+                UpdateOptions {
+                    content: Some("new"),
+                    summary: Some("new summary"),
+                    tags: Some(&["new".into()]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "replacement content requires an embedding"
+        );
+        assert_eq!(
+            serde_json::to_value(store.list(FilterOptions::default(), 1, 0).await.unwrap(),)
+                .unwrap(),
+            before
+        );
+        assert!(store.tags().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1571,6 +1637,7 @@ mod tests {
                     999,
                     UpdateOptions {
                         content: Some("x"),
+                        embedding: Some(&V1),
                         ..Default::default()
                     },
                 )
@@ -1612,6 +1679,73 @@ mod tests {
         let m = &store.list(FilterOptions::default(), 1, 0).await.unwrap()[0];
         assert_eq!(m.confidence, 0.6);
         assert_eq!(m.decay_rate, 0.02);
+
+        for (confidence, decay_rate, expected_confidence, expected_decay_rate) in
+            [(2.0, -1.0, 1.0, 0.0), (-1.0, 2.0, 0.0, 1.0)]
+        {
+            assert!(
+                store
+                    .update(
+                        id,
+                        UpdateOptions {
+                            confidence: Some(confidence),
+                            decay_rate: Some(decay_rate),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap()
+            );
+            let rows = store.list(FilterOptions::default(), 1, 0).await.unwrap();
+            assert_eq!(rows[0].confidence, expected_confidence);
+            assert_eq!(rows[0].decay_rate, expected_decay_rate);
+        }
+    }
+
+    #[tokio::test]
+    async fn update_rejects_non_finite_values_atomically() {
+        let (store, _tmp) = fresh().await;
+        let id = store
+            .insert("old", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        let before =
+            serde_json::to_value(store.list(FilterOptions::default(), 1, 0).await.unwrap())
+                .unwrap();
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (field, confidence, decay_rate) in
+                [("confidence", value, 0.0), ("decay_rate", 1.0, value)]
+            {
+                let error = store
+                    .update(
+                        id,
+                        UpdateOptions {
+                            content: Some("new"),
+                            embedding: Some(&V2),
+                            tags: Some(&["new".into()]),
+                            confidence: Some(confidence),
+                            decay_rate: Some(decay_rate),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.to_string(), format!("{field} must be finite"));
+                assert_eq!(
+                    serde_json::to_value(
+                        store.list(FilterOptions::default(), 1, 0).await.unwrap(),
+                    )
+                    .unwrap(),
+                    before
+                );
+            }
+        }
+        assert!(store.tags().await.unwrap().is_empty());
+        let results = store
+            .search("", &V1, FilterOptions::default(), 1)
+            .await
+            .unwrap();
+        assert_eq!(results[0].1, 0.0);
     }
 
     #[tokio::test]
@@ -1629,6 +1763,7 @@ mod tests {
                 id,
                 UpdateOptions {
                     content: Some("updated"),
+                    embedding: Some(&V1),
                     ..Default::default()
                 },
             )
@@ -2012,6 +2147,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn insert_batch_rejects_non_finite_values_atomically() {
+        let (store, _tmp) = fresh().await;
+        let target_id = store
+            .insert("target", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        let item = |confidence, decay_rate| BatchInsertItem {
+            content: "new".into(),
+            embedding: V1.to_vec(),
+            summary: "new summary".into(),
+            tags: vec!["new".into()],
+            context: None,
+            confidence,
+            decay_rate,
+            memory_type: MemoryType::Project,
+            attrs: MemoryAttrs::default(),
+            relations: vec![(target_id, "related_to".into())],
+            refs: vec![],
+        };
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (field, confidence, decay_rate) in
+                [("confidence", value, 0.0), ("decay_rate", 1.0, value)]
+            {
+                let error = store
+                    .insert_batch(vec![item(1.0, 0.0), item(confidence, decay_rate)])
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.to_string(), format!("{field} must be finite"));
+            }
+        }
+        let rows = store.list(FilterOptions::default(), 10, 0).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, target_id);
+        assert!(store.tags().await.unwrap().is_empty());
+        assert!(
+            store
+                .neighbors(target_id, None)
+                .await
+                .unwrap()
+                .incoming
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_batch_clamps_finite_confidence_and_decay_rate() {
+        let (store, _tmp) = fresh().await;
+        let items = [(2.0, -1.0), (-1.0, 2.0)]
+            .into_iter()
+            .map(|(confidence, decay_rate)| BatchInsertItem {
+                content: "content".into(),
+                embedding: V1.to_vec(),
+                summary: "summary".into(),
+                tags: vec![],
+                context: None,
+                confidence,
+                decay_rate,
+                memory_type: MemoryType::Project,
+                attrs: MemoryAttrs::default(),
+                relations: vec![],
+                refs: vec![],
+            })
+            .collect();
+        let ids = store.insert_batch(items).await.unwrap();
+        let rows = store.list(FilterOptions::default(), 2, 0).await.unwrap();
+        assert_eq!(rows[0].id, ids[1]);
+        assert_eq!((rows[0].confidence, rows[0].decay_rate), (0.0, 1.0));
+        assert_eq!(rows[1].id, ids[0]);
+        assert_eq!((rows[1].confidence, rows[1].decay_rate), (1.0, 0.0));
+    }
+
+    #[tokio::test]
     async fn insert_batch_returns_ids_in_order() {
         let (store, _tmp) = fresh().await;
         let items = vec![
@@ -2273,6 +2480,144 @@ mod tests {
         assert_eq!(path.len(), 2);
         assert_eq!(path[0].memory.summary, "source summary");
         assert_eq!(path[1].memory.summary, "target summary");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_read_snapshot_survives_concurrent_commit_without_leaking() {
+        let (store, _tmp) = fresh().await;
+        let store = std::sync::Arc::new(store);
+        let target_id = store
+            .insert(
+                "target",
+                &V2,
+                InsertOptions {
+                    summary: "target summary",
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let source_id = store
+            .insert(
+                "source",
+                &V1,
+                InsertOptions {
+                    summary: "source summary",
+                    relations: &[(target_id, "related_to".into())],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // Establishing the graph snapshot before allowing the writer to commit
+        let tx = store.read_transaction().await.unwrap();
+        let discovered_id = {
+            let mut rows = tx
+                .query(
+                    "select to_id from memory_relations where from_id = ?",
+                    libsql::params![source_id],
+                )
+                .await
+                .unwrap();
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap()
+        };
+        assert_eq!(discovered_id, target_id);
+        let writer_store = store.clone();
+        tokio::spawn(async move {
+            assert!(writer_store.delete(target_id).await.unwrap());
+            assert!(
+                writer_store
+                    .update(
+                        source_id,
+                        UpdateOptions {
+                            summary: Some("changed summary"),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap()
+            );
+        })
+        .await
+        .unwrap();
+
+        // Checking that independent reads see commits while graph hydration keeps its snapshot
+        assert!(store.read_conn.is_autocommit());
+        assert!(!store.contains(target_id).await.unwrap());
+        let (neighbors, traversal, path) = tokio::join!(
+            store.neighbors(source_id, None),
+            store.traverse(source_id, 2, None, TraverseDirection::Out),
+            store.path(source_id, target_id, 2),
+        );
+        assert!(neighbors.unwrap().outgoing.is_empty());
+        let traversal = traversal.unwrap();
+        assert_eq!(traversal.nodes.len(), 1);
+        assert_eq!(traversal.nodes[0].memory.summary, "changed summary");
+        assert!(path.unwrap().is_none());
+        let summaries = fetch_memory_summaries_by_ids(&tx, &[source_id, discovered_id])
+            .await
+            .unwrap();
+        assert_eq!(summaries[&source_id].summary, "source summary");
+        assert_eq!(summaries[&target_id].summary, "target summary");
+        tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn path_rejects_missing_intermediate_memory() {
+        let (store, _tmp) = fresh().await;
+        let target_id = store
+            .insert("target", &V2, InsertOptions::default())
+            .await
+            .unwrap();
+        let middle_id = store
+            .insert(
+                "middle",
+                &V1,
+                InsertOptions {
+                    relations: &[(target_id, "related_to".into())],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let source_id = store
+            .insert(
+                "source",
+                &V1,
+                InsertOptions {
+                    relations: &[(middle_id, "related_to".into())],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let path = store.path(source_id, target_id, 2).await.unwrap().unwrap();
+        assert_eq!(
+            path.iter().map(|step| step.memory.id).collect::<Vec<_>>(),
+            [source_id, middle_id, target_id]
+        );
+
+        // Simulating a dangling intermediate node without normal deletion cleanup
+        store
+            .write_conn
+            .lock()
+            .await
+            .execute(
+                "delete from memories where rowid = ?",
+                libsql::params![middle_id],
+            )
+            .await
+            .unwrap();
+        let error = store
+            .path(source_id, target_id, 2)
+            .await
+            .err()
+            .expect("dangling path must fail");
+        assert_eq!(
+            error.to_string(),
+            format!("path references missing memory identifier: {middle_id}")
+        );
     }
 
     #[tokio::test]

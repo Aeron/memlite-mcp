@@ -58,6 +58,9 @@ clamped to [0, 1]. `memory_search` results include this derived value
 together with readable RFC 3339 timestamps and an optional compact
 `freshness` warning.
 
+Stored confidence and decay values must be finite. Finite inputs are clamped
+to [0, 1]; `NaN` and infinities are rejected without changing stored data.
+
 Set `confidence < 1.0` when storing uncertain or speculative information.
 Set `decay_rate > 0.0` for time-sensitive facts that naturally become stale
 (e.g. `0.01` decays ~1% per day). Calling `memory_update` on any field resets
@@ -114,4 +117,5 @@ table in sync with the `relations` JSON column.
 
 Five tools operate on this table: `memory_neighbors`, `memory_traverse`,
 `memory_path`, `memory_hubs`, and `memory_stats`. All five operate on the
-full global graph of the project DB.
+full global graph of the project DB. Multi-query graph reads use one isolated
+read snapshot, so concurrent writes cannot mix graph versions within a result.

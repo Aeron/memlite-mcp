@@ -384,9 +384,9 @@ pub struct BatchInsertItem {
     pub tags: Vec<String>,
     /// Background rationale.
     pub context: Option<String>,
-    /// Base trust score in [0.0, 1.0]; caller is responsible for clamping.
+    /// Finite base trust score; clamped to [0.0, 1.0] by the store.
     pub confidence: f64,
-    /// Per-day confidence decay in [0.0, 1.0]; caller is responsible for clamping.
+    /// Finite per-day confidence decay; clamped to [0.0, 1.0] by the store.
     pub decay_rate: f64,
     /// Memory type classification.
     pub memory_type: MemoryType,
