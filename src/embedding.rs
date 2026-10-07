@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use fastembed::{EmbeddingModel as FastEmbeddingModel, TextEmbedding, TextInitOptions};
 use tokio::sync::OnceCell;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 
 use crate::config::EmbeddingModel;
 
@@ -55,10 +55,10 @@ impl EmbeddingService {
                             .with_show_download_progress(false);
                         TextEmbedding::try_new(opts)
                             .map(|m| Arc::new(Mutex::new(m)))
-                            .map_err(|e| anyhow!("embedding: {e}"))
+                            .context("embedding")
                     })
                     .await
-                    .map_err(|e| anyhow!("embedding join: {e}"))?
+                    .context("embedding task failed")?
                 }
             })
             .await
@@ -78,9 +78,7 @@ impl EmbeddingService {
         let model = self.model().await?;
         tokio::task::spawn_blocking(move || {
             let mut guard = model.lock().expect("embedding mutex poisoned");
-            let embeddings = guard
-                .embed(&texts, Some(batch_size))
-                .map_err(|e| anyhow!("embedding: {e}"))?;
+            let embeddings = guard.embed(&texts, Some(batch_size)).context("embedding")?;
             if embeddings.len() != expected {
                 return Err(anyhow!(
                     "embedding returned {} vectors for {} inputs",
@@ -91,7 +89,7 @@ impl EmbeddingService {
             Ok((texts, embeddings))
         })
         .await
-        .map_err(|e| anyhow!("embedding join: {e}"))?
+        .context("embedding task failed")?
     }
 
     /// Embeds one owned string and returns it with the raw float vector.

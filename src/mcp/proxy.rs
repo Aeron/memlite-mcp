@@ -53,7 +53,7 @@ impl ProxyServer {
                         tracing::error!(%error, "server loop panicked");
                     }
                 }
-                result.map(|_| ()).map_err(anyhow::Error::from)
+                shutdown_result(result)
             }
             _ = shutdown.notified() => {
                 tokio::task::yield_now().await;
@@ -142,14 +142,16 @@ impl ServerHandler for ProxyServer {
         let project_path = match self.config.resolve_project_path(&root_uris) {
             Ok(path) => path,
             Err(error) => {
-                self.fail_initialization(&context, error.to_string()).await;
+                self.fail_initialization(&context, format!("{error:#}"))
+                    .await;
                 return;
             }
         };
         let db_dir = match self.config.prepare_db_dir() {
             Ok(path) => path,
             Err(error) => {
-                self.fail_initialization(&context, error.to_string()).await;
+                self.fail_initialization(&context, format!("{error:#}"))
+                    .await;
                 return;
             }
         };
@@ -160,7 +162,8 @@ impl ServerHandler for ProxyServer {
                 self.ready.notify_waiters();
             }
             Err(error) => {
-                self.fail_initialization(&context, error.to_string()).await;
+                self.fail_initialization(&context, format!("{error:#}"))
+                    .await;
             }
         }
     }
@@ -182,13 +185,39 @@ impl ProxyServer {
     }
 }
 
+fn shutdown_result(result: Result<QuitReason, tokio::task::JoinError>) -> anyhow::Result<()> {
+    match result {
+        Ok(QuitReason::JoinError(error)) | Err(error) => Err(error.into()),
+        Ok(_) => Ok(()),
+    }
+}
+
 fn internal_error(error: anyhow::Error) -> McpError {
-    McpError::internal_error(error.to_string(), None)
+    McpError::internal_error(format!("{error:#}"), None)
 }
 
 fn forward_error(error: ServiceError) -> McpError {
     match error {
         ServiceError::McpError(error) => error,
         other => McpError::internal_error(other.to_string(), None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_propagates_task_failure() {
+        assert!(shutdown_result(Ok(QuitReason::Closed)).is_ok());
+        assert!(shutdown_result(Ok(QuitReason::Cancelled)).is_ok());
+        let error = tokio::spawn(async { panic!("send task failed") })
+            .await
+            .unwrap_err();
+        assert!(shutdown_result(Ok(QuitReason::JoinError(error))).is_err());
+        let error = tokio::spawn(async { panic!("server loop failed") })
+            .await
+            .unwrap_err();
+        assert!(shutdown_result(Err(error)).is_err());
     }
 }

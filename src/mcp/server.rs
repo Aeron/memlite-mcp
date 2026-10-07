@@ -598,9 +598,9 @@ impl From<ServerError> for McpError {
     fn from(e: ServerError) -> McpError {
         McpError::internal_error(
             match e {
-                ServerError::StoreOpen(e) => format!("failed to open database: {e}"),
-                ServerError::StoreOp(e) => format!("database operation failed: {e}"),
-                ServerError::Embed(e) => format!("embedding failed: {e}"),
+                ServerError::StoreOpen(e) => format!("failed to open database: {e:#}"),
+                ServerError::StoreOp(e) => format!("database operation failed: {e:#}"),
+                ServerError::Embed(e) => format!("embedding failed: {e:#}"),
                 ServerError::ToonEncode(e) => format!("TOON encoding failed: {e}"),
             },
             None,
@@ -640,6 +640,18 @@ mod tests {
             panic!("expected text tool content")
         };
         &content.text
+    }
+
+    #[test]
+    fn server_errors_preserve_causes() {
+        for error in [
+            ServerError::StoreOpen(anyhow::anyhow!("disk full").context("opening store")),
+            ServerError::StoreOp(anyhow::anyhow!("disk full").context("writing memory")),
+            ServerError::Embed(anyhow::anyhow!("model failed").context("embedding task")),
+        ] {
+            let error = McpError::from(error);
+            assert!(error.message.contains("disk full") || error.message.contains("model failed"));
+        }
     }
 
     #[test]

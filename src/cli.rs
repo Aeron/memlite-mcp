@@ -739,9 +739,7 @@ async fn stats(config: &Config, format: OutputFormat) -> Result<()> {
 }
 
 async fn open_store(config: &Config, create: bool) -> Result<Option<MemoryStore>> {
-    let project_path = config
-        .resolve_project_path(&[])
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let project_path = config.resolve_project_path(&[])?;
     let db_path = config.db_path_for(&project_path);
     if !create && !db_path.exists() {
         return Ok(None);
