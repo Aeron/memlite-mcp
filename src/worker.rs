@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
-    sync::{Mutex, Notify, OnceCell, RwLock},
+    sync::{Notify, OnceCell, RwLock},
 };
 
 use crate::{
@@ -85,9 +85,7 @@ impl ProjectHandle {
                 let model = self.spec.embedding_model;
                 let fastembed_model = model.into();
                 let dimensions = fastembed::TextEmbedding::get_model_info(&fastembed_model)
-                    .map_err(|error| {
-                        anyhow!("configured embedding model is not supported: {error}")
-                    })?
+                    .context("configured embedding model is not supported")?
                     .dim;
                 MemoryStore::open(&self.spec.db_path, &model.to_string(), dimensions)
                     .await
@@ -140,14 +138,17 @@ impl SharedEmbedding {
 /// Shares project and model resources inside elected worker.
 #[derive(Default)]
 pub(crate) struct Registry {
-    projects: Mutex<HashMap<PathBuf, Weak<ProjectHandle>>>,
+    projects: StdMutex<HashMap<PathBuf, Weak<ProjectHandle>>>,
     models: StdMutex<HashMap<EmbeddingModel, Weak<SharedEmbedding>>>,
 }
 
 impl Registry {
     /// Opens or reuses one project resource set.
-    pub(crate) async fn project(&self, spec: &ProjectSpec) -> Result<Arc<ProjectHandle>> {
-        let mut projects = self.projects.lock().await;
+    pub(crate) fn project(&self, spec: &ProjectSpec) -> Result<Arc<ProjectHandle>> {
+        let mut projects = self
+            .projects
+            .lock()
+            .expect("project registry mutex poisoned");
         if let Some(project) = projects.get(&spec.db_path).and_then(Weak::upgrade) {
             project.ensure_compatible(spec)?;
             return Ok(project);
@@ -306,9 +307,9 @@ impl Remote {
                         break;
                     }
                     Err(error) => {
-                        *self.failure.write().await = Some(error.to_string());
+                        *self.failure.write().await = Some(format!("{error:#}"));
                         self.changed.notify_waiters();
-                        tracing::warn!(%error, "shared worker reconnect failed");
+                        tracing::warn!(?error, "shared worker reconnect failed");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }
@@ -333,7 +334,7 @@ impl Remote {
                 Ok(Ok(ConnectAttempt::Rejected(error))) => {
                     bail!("shared worker rejected project: {error}");
                 }
-                Ok(Err(error)) => last_error = error.to_string(),
+                Ok(Err(error)) => last_error = format!("{error:#}"),
                 Err(_) => {
                     last_error = format!("connection attempt exceeded {CONNECT_ATTEMPT_TIMEOUT:?}");
                 }
@@ -397,7 +398,7 @@ async fn start_worker(paths: &WorkerPaths, guard: WorkerGuard) -> Result<()> {
                     let registry = Arc::clone(&registry);
                     tokio::spawn(async move {
                         if let Err(error) = serve_connection(stream, registry).await {
-                            tracing::warn!(%error, "shared worker session failed");
+                            tracing::warn!(?error, "shared worker session failed");
                         }
                     });
                 }
@@ -427,13 +428,13 @@ async fn serve_connection(mut stream: UnixStream, registry: Arc<Registry>) -> Re
         return Ok(());
     }
 
-    let project = match registry.project(&handshake.project).await {
+    let project = match registry.project(&handshake.project) {
         Ok(project) => project,
         Err(error) => {
             write_frame(
                 &mut stream,
                 &HandshakeResponse {
-                    error: Some(error.to_string()),
+                    error: Some(format!("{error:#}")),
                 },
             )
             .await?;
@@ -513,14 +514,14 @@ mod tests {
         serving.await.unwrap().unwrap();
     }
 
-    #[tokio::test]
-    async fn registry_reuses_project_handle_without_creating_database() {
+    #[test]
+    fn registry_reuses_project_handle_without_creating_database() {
         let project = tempdir().unwrap();
         let db_dir = tempdir().unwrap();
         let spec = spec(project.path(), db_dir.path());
         let registry = Registry::default();
-        let first = registry.project(&spec).await.unwrap();
-        let second = registry.project(&spec).await.unwrap();
+        let first = registry.project(&spec).unwrap();
+        let second = registry.project(&spec).unwrap();
 
         assert!(Arc::ptr_eq(&first, &second));
         assert!(!spec.db_path.exists());

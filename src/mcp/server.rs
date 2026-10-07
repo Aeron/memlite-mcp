@@ -631,7 +631,7 @@ mod tests {
         .unwrap();
         let project_path = config.resolve_project_path(&[]).unwrap();
         let spec = ProjectSpec::new(&config, project_path);
-        let project = Registry::default().project(&spec).await.unwrap();
+        let project = Registry::default().project(&spec).unwrap();
         MemServer::new(project)
     }
 
