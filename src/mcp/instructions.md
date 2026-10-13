@@ -21,7 +21,7 @@ Before finishing, store anything saving meaningful future effort. Don't wait to 
 - Bug diagnosed: root cause + fix, not only symptom
 - Constraint: anything ruling out or shaping future approaches
 - User preference or project convention: naming, tooling, process
-- Significant research: if it cost time once, store it
+- Significant research: reusable knowledge, comparisons, conclusions; type follows result
 
 Plain mechanical steps don't need storing (e.g., "ran tests"). Test: would future session benefit without rediscovery?
 
@@ -102,18 +102,22 @@ Both `memory_search` and `memory_list` accept optional `tags`. All must match (h
 
 | Value | Use for |
 |---|---|
-| `user` | Preferences, identity, working style; personal opinions on work quality or agent approach |
-| `project` | Conventions, tech stack, architecture, constraints |
-| `reference` | Domain knowledge, docs, external facts, API details |
-| `task` | Things to track, follow up, or complete |
-| `finding` | Observation, evaluation, or risk; covers audit results, review findings, quality assessments, and retrospective notes; not yet tracked task |
-| `issue` | Known defect or bug |
-| `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
-| `plan` | High-level plan or phased roadmap; use `relations` to link to spawned tasks and decisions; apply moderate `decay_rate` (0.01-0.02) |
+| `user` | Personal preferences, identity, working style; shared repo rules: `project` |
+| `project` | General codebase facts, shared rules, stack, current architecture, constraints; choice rationale: `decision` |
+| `reference` | Reusable domain/external knowledge, docs, API details, research synthesis; general codebase facts: `project` |
+| `task` | Concrete action or follow-up, including unfinished research; multi-step roadmap: `plan` |
+| `finding` | Assessment/risk: comparative evaluations, audit/review results, suspected defects; confirmed bugs: `issue` |
+| `issue` | Confirmed defect, root cause, fix; remediation action: `task` |
+| `decision` | Recorded choice: chosen/rejected options, rationale; recommendation alone: `finding` |
+| `plan` | Multi-step strategy/phased roadmap; single action: `task`; link tasks/decisions via `relations`; moderate `decay_rate` (0.01-0.02) |
 
-Required for every stored memory. Pick closest category; use `project` for general codebase facts when unclear. Both tools accept `memory_type` as filter; combine with `tags`, `status`, and `severity` (attrs key filters) for precise retrieval.
+Required. Classify content, not activity or source. Research/feedback not types. Research: knowledge `reference`, codebase facts `project`, evaluations `finding`, choices `decision`, unfinished work `task`. Feedback: personal preference `user`, shared repo rule `project`, work evaluation `finding`, confirmed bug `issue`.
 
-Feedback disambiguation: personal opinions on agent approach or working style -> `user`; quality or correctness observations about work itself -> `finding` or `issue`.
+Examples: "prefers concise replies" `user`; "repo requires snake_case" `project`; "SQLite supports WAL" `reference`; "our DB enables WAL" `project`; "SQLite looks suitable for local storage" `finding`; "chose SQLite for local storage" `decision`.
+
+Project-local assessment/defect/choice/action/roadmap: specific type, not `project`. Keep problem records `finding`/`issue`; linked remediation work `task`. Confidence tracks uncertain facts; completion doesn't change type. Resolved bug stays `issue`. Split mixed reports only when separate recall useful. Optional `research` tag groups across types; source URLs/files in `refs`.
+
+Both tools accept `memory_type` filter; combine with `tags`, `status`, `severity` for precise retrieval.
 
 ### `attrs`
 

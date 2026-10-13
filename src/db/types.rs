@@ -28,7 +28,7 @@ pub struct Memory {
     /// Unix timestamp (seconds) when it was last seen (or confidence validated).
     /// 0 means the created_at timestamp is used as the baseline.
     pub last_seen_at: i64,
-    /// Classification of the memory's origin or intended use; None only for legacy rows.
+    /// Classification of stored content; None only for legacy rows.
     pub memory_type: Option<MemoryType>,
     /// Type-specific extra fields; serialized to the attrs JSON column.
     pub attrs: MemoryAttrs,
@@ -141,7 +141,7 @@ pub struct CompactMemory {
     pub decay_rate: f64,
     /// Unix timestamp (seconds) when it was last seen (or confidence validated).
     pub last_seen_at: i64,
-    /// Classification of the memory's origin or intended use; None only for legacy rows.
+    /// Classification of stored content; None only for legacy rows.
     pub memory_type: Option<MemoryType>,
     /// Type-specific extra fields; serialized to the attrs JSON column.
     pub attrs: MemoryAttrs,
@@ -181,11 +181,11 @@ pub struct MemorySummary {
     pub id: i64,
     /// One-sentence description for quick recall without reading the full content.
     pub summary: String,
-    /// Classification of the memory's origin or intended use; None only for legacy rows.
+    /// Classification of stored content; None only for legacy rows.
     pub memory_type: Option<MemoryType>,
 }
 
-/// Classifies a memory's intended use, enabling targeted filtering.
+/// Classifies stored content, enabling targeted filtering.
 #[derive(
     Debug,
     Clone,
@@ -202,22 +202,30 @@ pub struct MemorySummary {
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
 pub enum MemoryType {
-    /// Facts about the person: preferences, identity, working style.
+    /// Personal preferences, identity, or working style;
+    /// shared repository rules belong to project.
     User,
-    /// Codebase knowledge: conventions, tech stack, architecture decisions, constraints.
+    /// General codebase facts and shared rules: stack, current architecture, constraints;
+    /// choice rationale belongs to decision.
     #[default]
     Project,
-    /// Domain knowledge: docs, external facts, API details, terminology.
+    /// Reusable external or domain knowledge: docs, API details, research synthesis;
+    /// general codebase facts belong to project.
     Reference,
-    /// Things to track, follow up on, or complete in a future session.
+    /// Concrete action or follow-up, including unfinished research;
+    /// multi-step roadmaps belong to plan.
     Task,
-    /// Discovered problem, audit result, or identified risk; not yet a tracked task.
+    /// Assessment or risk: comparative evaluations, audit/review results, suspected defects;
+    /// confirmed defects belong to issue.
     Finding,
-    /// Known defect or bug.
+    /// Confirmed defect or bug, including root cause and fix;
+    /// remediation actions belong to task.
     Issue,
-    /// Architectural or design decision record: what was chosen, what rejected, and why.
+    /// Recorded choice: chosen or rejected options and rationale;
+    /// a recommendation alone belongs to finding.
     Decision,
-    /// High-level plan or phased roadmap; links to tasks and decisions via relations.
+    /// Multi-step strategy or phased roadmap linking tasks and decisions;
+    /// a single action belongs to task.
     Plan,
 }
 

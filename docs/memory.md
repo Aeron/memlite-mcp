@@ -13,23 +13,39 @@ carry structure.
 
 ## Memory types
 
-The required `memory_type` field classifies a memory's intended use, enabling
-targeted filtering in `memory_list` and `memory_search`.
+The required `memory_type` field classifies a memory's content, enabling
+targeted filtering in `memory_list` and `memory_search`. Classify the result,
+not the activity that produced it or the person who reported it. Use specific
+types for assessments, defects, choices, actions, and roadmaps even when they
+concern this codebase; `project` is for general codebase facts and shared rules.
 
-| Type | Stores |
-|---|---|
-| `user` | Facts about the person: preferences, identity, working style, and personal opinions on work quality or agent approach |
-| `project` | Codebase knowledge: conventions, stack, decisions, constraints |
-| `reference` | Domain knowledge: docs, external facts, API details, terminology |
-| `task` | Things to track, follow up on, or complete in a future session |
-| `finding` | Observation, evaluation, or risk; covers audit results, review findings, quality assessments, and retrospective notes; not yet a tracked task |
-| `issue` | Known defect or bug |
-| `decision` | Architectural or design decision record: what was chosen, what rejected, and why |
-| `plan` | High-level plan or phased roadmap; use `relations` to link to spawned tasks and decisions |
+| Type | Stores | Example |
+|---|---|---|
+| `user` | Personal preferences, identity, or working style; shared repository rules belong to `project` | "Prefers concise replies" |
+| `project` | General codebase facts and shared rules: stack, current architecture, constraints; choice rationale belongs to `decision` | "This repository uses SQLite" |
+| `reference` | Reusable external or domain knowledge: docs, API details, research synthesis; general codebase facts belong to `project` | "SQLite WAL allows readers alongside a writer" |
+| `task` | Concrete action or follow-up, including unfinished research; multi-step roadmaps belong to `plan` | "Benchmark SQLite write throughput" |
+| `finding` | Assessment or risk: comparative evaluations, audit/review results, suspected defects; confirmed defects belong to `issue` | "Write contention may limit throughput" |
+| `issue` | Confirmed defect or bug, including root cause and fix; remediation actions belong to `task` | "Concurrent writes fail because retries are missing" |
+| `decision` | Recorded choice: chosen or rejected options and rationale; a recommendation alone belongs to `finding` | "Chose SQLite over a remote database to keep storage local" |
+| `plan` | Multi-step strategy or phased roadmap; use `relations` to link to tasks and decisions; a single action belongs to `task` | "Measure contention, add retries, then validate under load" |
 
-Feedback disambiguation: personal opinions on agent approach or working style
-go to `user`; quality or correctness observations about the work itself go to
-`finding` or `issue`.
+Research is an activity, not a type. Store reusable knowledge as `reference`,
+codebase facts as `project`, evaluations as `finding`, and recorded choices as
+`decision`. Research still to do is `task`; a research roadmap is `plan`.
+An optional `research` tag groups results across types. Put source URLs or
+file paths in `refs`. Split mixed reports when separate recall would help.
+
+Feedback is a source, not a type. Personal preferences belong to `user`, even
+when expressed as feedback; shared repository rules belong to `project`, even
+when reported by the user. Work evaluations belong to `finding`; confirmed
+bugs belong to `issue`. Recommendations alone are `finding`, not `decision`.
+
+Keep problem records as `finding` or `issue` when adding follow-up work; store
+remediation actions separately as linked `task` records when useful. A fact
+is not a `finding` merely because it was discovered during investigation.
+Use `confidence` for uncertain facts. Completion does not change type:
+resolved defects stay `issue`, completed actions stay `task`.
 
 ## Typed attrs
 

@@ -84,15 +84,20 @@ pub struct StoreItem {
     pub tags: Option<Vec<String>>,
     /// Background rationale for this memory.
     pub context: Option<String>,
-    /// Structured category; required. One of: "user" (preferences, working
-    /// style, opinions on agent approach), "project" (conventions,
-    /// architecture, constraints), "reference" (external or domain facts),
-    /// "task" (follow-ups to complete), "finding" (observation, evaluation,
-    /// or feedback on work quality), "issue" (defect or bug), "decision"
-    /// (what was chosen, what rejected, why), "plan" (phased roadmap).
-    /// Feedback is not a type: opinions on approach go to "user";
-    /// work-quality observations go to "finding" or "issue". Unclear:
-    /// use "project" for general codebase facts.
+    /// Structured category; required. Classify content, not activity or source.
+    /// "user" (personal preferences), "project" (general codebase facts/shared rules),
+    /// "reference" (reusable knowledge/research synthesis), "task" (action),
+    /// "finding" (assessment/risk), "issue" (confirmed defect), "decision"
+    /// (recorded choice/rationale), "plan" (multi-step strategy/roadmap).
+    /// Research: external knowledge is "reference"; codebase facts "project";
+    /// evaluations "finding"; choices "decision"; unfinished research "task".
+    /// Feedback: personal preferences are "user"; shared rules "project";
+    /// work evaluations "finding"; confirmed bugs "issue".
+    /// Keep problem records as "finding"/"issue"; remediation actions are "task".
+    /// Recommendations alone are "finding"; recorded choices are "decision".
+    /// Project-local assessments, defects, choices, actions, and roadmaps use
+    /// their specific types, not "project".
+    /// Use confidence for uncertain facts; completed records keep their type.
     pub memory_type: MemoryType,
     /// Initial confidence score in [0, 1] (default 1.0): 0.5-0.7 for
     /// speculative or inferred information, 0.8-0.9 for believed but
@@ -208,15 +213,20 @@ pub struct UpdateParams {
     /// time-sensitive information.
     #[schemars(range(min = 0.0, max = 1.0))]
     pub decay_rate: Option<f64>,
-    /// Replacement structured category. One of: "user" (preferences, working
-    /// style, opinions on agent approach), "project" (conventions,
-    /// architecture, constraints), "reference" (external or domain facts),
-    /// "task" (follow-ups to complete), "finding" (observation, evaluation,
-    /// or feedback on work quality), "issue" (defect or bug), "decision"
-    /// (what was chosen, what rejected, why), "plan" (phased roadmap).
-    /// Feedback is not a type: opinions on approach go to "user";
-    /// work-quality observations go to "finding" or "issue". Empty string is
-    /// rejected.
+    /// Replacement structured category. Classify content, not activity or source.
+    /// "user" (personal preferences), "project" (general codebase facts/shared rules),
+    /// "reference" (reusable knowledge/research synthesis), "task" (action),
+    /// "finding" (assessment/risk), "issue" (confirmed defect), "decision"
+    /// (recorded choice/rationale), "plan" (multi-step strategy/roadmap).
+    /// Research: external knowledge is "reference"; codebase facts "project";
+    /// evaluations "finding"; choices "decision"; unfinished research "task".
+    /// Feedback: personal preferences are "user"; shared rules "project";
+    /// work evaluations "finding"; confirmed bugs "issue".
+    /// Keep problem records as "finding"/"issue"; remediation actions are "task".
+    /// Recommendations alone are "finding"; recorded choices are "decision".
+    /// Project-local assessments, defects, choices, actions, and roadmaps use
+    /// their specific types, not "project".
+    /// Use confidence for uncertain facts; completed records keep their type.
     pub memory_type: Option<MemoryType>,
     /// Replacement typed metadata; replaces the full set when provided.
     /// Status applies to tasks, findings, or issues; severity to findings or
@@ -282,7 +292,7 @@ mod tests {
                 .is_ok()
             );
         }
-        for memory_type in ["", "unknown", "Project"] {
+        for memory_type in ["", "unknown", "Project", "research", "feedback"] {
             assert!(serde_json::from_value::<StoreParams>(json!({
                 "items": [{"content": "content", "summary": "summary", "memory_type": memory_type}]
             })).is_err());
@@ -292,6 +302,48 @@ mod tests {
                 )
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn parameter_schemas_expose_memory_type_guidance() {
+        for (schema, description_path) in [
+            (
+                serde_json::to_value(schemars::schema_for!(StoreParams)).unwrap(),
+                "/$defs/StoreItem/properties/memory_type/description",
+            ),
+            (
+                serde_json::to_value(schemars::schema_for!(UpdateParams)).unwrap(),
+                "/properties/memory_type/description",
+            ),
+        ] {
+            let description = schema.pointer(description_path).unwrap().as_str().unwrap();
+            for guidance in [
+                "Classify content, not activity or source",
+                "Research:",
+                "Feedback:",
+                "Keep problem records",
+                "Recommendations alone",
+                "Project-local assessments",
+                "Use confidence",
+            ] {
+                assert!(description.contains(guidance), "missing {guidance}");
+            }
+
+            // Checking shared type boundaries alongside field-level guidance
+            let types = schema["$defs"]["MemoryType"].to_string();
+            for guidance in [
+                "shared repository rules belong to project",
+                "choice rationale belongs to decision",
+                "research synthesis",
+                "unfinished research",
+                "confirmed defects belong to issue",
+                "remediation actions belong to task",
+                "a recommendation alone belongs to finding",
+                "a single action belongs to task",
+            ] {
+                assert!(types.contains(guidance), "missing {guidance}");
+            }
         }
     }
 
