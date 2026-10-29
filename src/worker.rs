@@ -65,6 +65,12 @@ struct Handshake {
     project: ProjectSpec,
 }
 
+#[derive(Debug, Deserialize)]
+struct HandshakeEnvelope {
+    protocol: u32,
+    project: serde_json::Value,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct HandshakeResponse {
     error: Option<String>,
@@ -145,6 +151,9 @@ pub(crate) struct Registry {
 impl Registry {
     /// Opens or reuses one project resource set.
     pub(crate) fn project(&self, spec: &ProjectSpec) -> Result<Arc<ProjectHandle>> {
+        if spec.embedding_max_batch_size == 0 {
+            bail!("embedding max batch size must be greater than zero");
+        }
         let mut projects = self
             .projects
             .lock()
@@ -413,7 +422,7 @@ async fn start_worker(paths: &WorkerPaths, guard: WorkerGuard) -> Result<()> {
 }
 
 async fn serve_connection(mut stream: UnixStream, registry: Arc<Registry>) -> Result<()> {
-    let handshake: Handshake = read_frame(&mut stream).await?;
+    let handshake: HandshakeEnvelope = read_frame(&mut stream).await?;
     if handshake.protocol != WORKER_PROTOCOL {
         write_frame(
             &mut stream,
@@ -428,7 +437,8 @@ async fn serve_connection(mut stream: UnixStream, registry: Arc<Registry>) -> Re
         return Ok(());
     }
 
-    let project = match registry.project(&handshake.project) {
+    let project_spec: ProjectSpec = serde_json::from_value(handshake.project)?;
+    let project = match registry.project(&project_spec) {
         Ok(project) => project,
         Err(error) => {
             write_frame(
@@ -512,6 +522,57 @@ mod tests {
 
         assert_eq!(response.error.as_deref(), Some(expected.as_str()));
         serving.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn wrong_protocol_with_empty_project_gets_mismatch_response() {
+        let request = serde_json::json!({
+            "protocol": WORKER_PROTOCOL + 1,
+            "project": {},
+        });
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let registry = Arc::new(Registry::default());
+        let serving = tokio::spawn(serve_connection(server, Arc::clone(&registry)));
+
+        write_frame(&mut client, &request).await.unwrap();
+        let response: HandshakeResponse = read_frame(&mut client).await.unwrap();
+        let expected = format!(
+            "protocol mismatch: worker {WORKER_PROTOCOL}, client {}",
+            WORKER_PROTOCOL + 1
+        );
+
+        assert_eq!(response.error.as_deref(), Some(expected.as_str()));
+        serving.await.unwrap().unwrap();
+        assert!(registry.projects.lock().unwrap().is_empty());
+        assert!(registry.models.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_zero_embedding_batch_before_registering_resources() {
+        let project = tempdir().unwrap();
+        let db_dir = tempdir().unwrap();
+        let mut project_spec = spec(project.path(), db_dir.path());
+        project_spec.embedding_max_batch_size = 0;
+        let request = Handshake {
+            protocol: WORKER_PROTOCOL,
+            project: project_spec,
+        };
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let registry = Arc::new(Registry::default());
+        let serving = tokio::spawn(serve_connection(server, Arc::clone(&registry)));
+
+        write_frame(&mut client, &request).await.unwrap();
+        let response: HandshakeResponse = read_frame(&mut client).await.unwrap();
+
+        assert_eq!(
+            response.error.as_deref(),
+            Some("embedding max batch size must be greater than zero")
+        );
+        serving.await.unwrap().unwrap();
+        assert!(registry.projects.lock().unwrap().is_empty());
+        assert!(registry.models.lock().unwrap().is_empty());
+        assert!(!request.project.db_path.exists());
+        assert!(!request.project.embedding_cache_dir.exists());
     }
 
     #[test]
