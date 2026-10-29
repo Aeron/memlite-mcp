@@ -168,10 +168,25 @@ impl Config {
         Ok(std::fs::canonicalize(path)?)
     }
 
-    /// Returns DB file path for given project path.
+    /// Returns a DB path with a basename slug and 16-character path hash.
     pub fn db_path_for(&self, project_path: &str) -> PathBuf {
-        let hash = Sha256::digest(project_path.as_bytes());
-        self.db_dir().join(format!("{hash:x}.db"))
+        let hash = format!("{:x}", Sha256::digest(project_path.as_bytes()));
+        let basename = Path::new(project_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project");
+        let mut slug = basename
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+            .join("-");
+
+        // Limiting the ASCII slug to leave room for the hash and SQLite sidecar suffixes
+        slug.truncate(80);
+        let slug = slug.trim_end_matches('-');
+        let slug = if slug.is_empty() { "project" } else { slug };
+        self.db_dir().join(format!("{slug}-{}.db", &hash[..16]))
     }
 
     /// Resolves the effective project path from the explicit override or MCP roots.
@@ -367,13 +382,60 @@ mod tests {
     }
 
     #[test]
-    fn db_path_has_64_hex_chars_and_db_extension() {
-        let path = config("/project").db_path_for("/project");
-        let name = path.file_name().unwrap().to_str().unwrap();
-        assert!(name.ends_with(".db"), "expected .db suffix, got '{name}'");
-        let stem = &name[..name.len() - 3];
-        assert_eq!(stem.len(), 64, "expected 64 hex chars, got '{stem}'");
-        assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
+    fn db_path_matches_independent_sha256_example() {
+        let c = config("/home/user/My Project");
+        // Comparing against a fixed SHA256 value independently computed with Python hashlib
+        assert_eq!(
+            c.db_path_for("/home/user/My Project"),
+            c.db_dir().join("my-project-78ce1d89993df547.db")
+        );
+    }
+
+    #[test]
+    fn db_path_sanitizes_basename_and_uses_project_fallback() {
+        let c = config_no_path();
+        let cases = [
+            ("/work/--My__Project...123--", "my-project-123"),
+            ("/work/Caf\u{e9}Team_\u{4e2d}\u{6587}_APP", "caf-team-app"),
+            ("/work/123", "123"),
+            ("/work/Project///", "project"),
+            ("/work/___", "project"),
+            ("/work/\u{4e2d}\u{6587}", "project"),
+            ("/", "project"),
+            ("", "project"),
+            (".", "project"),
+            ("..", "project"),
+        ];
+
+        for (project_path, expected_slug) in cases {
+            let path = c.db_path_for(project_path);
+            let stem = path.file_stem().unwrap().to_str().unwrap();
+            let (slug, hash) = stem.rsplit_once('-').unwrap();
+            assert_eq!(slug, expected_slug, "{project_path:?}");
+            assert_eq!(hash.len(), 16);
+            assert!(
+                hash.bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            );
+            assert_eq!(path.extension().unwrap(), "db");
+        }
+    }
+
+    #[test]
+    fn db_path_caps_slug_and_trims_trailing_hyphens() {
+        let c = config_no_path();
+        let cases = [
+            ("A".repeat(80), "a".repeat(80)),
+            ("A".repeat(100), "a".repeat(80)),
+            (format!("{}-Tail", "A".repeat(79)), "a".repeat(79)),
+        ];
+
+        for (basename, expected_slug) in cases {
+            let path = c.db_path_for(&format!("/work/{basename}"));
+            let stem = path.file_stem().unwrap().to_str().unwrap();
+            let (slug, _) = stem.rsplit_once('-').unwrap();
+            assert_eq!(slug, expected_slug);
+        }
     }
 
     #[test]
@@ -384,10 +446,38 @@ mod tests {
     }
 
     #[test]
-    fn db_path_differs_per_project() {
-        let a = config("/project/a").db_path_for("/project/a");
-        let b = config("/project/b").db_path_for("/project/b");
-        assert_ne!(a.file_name(), b.file_name());
+    fn db_path_hashes_differ_for_equal_sanitized_and_truncated_basenames() {
+        let c = config_no_path();
+        let prefix = "a".repeat(80);
+        let cases = [
+            (
+                "/one/project".to_owned(),
+                "/two/project".to_owned(),
+                "project",
+            ),
+            (
+                "/work/My.Project".to_owned(),
+                "/work/my_project".to_owned(),
+                "my-project",
+            ),
+            (
+                format!("/work/{prefix}first"),
+                format!("/work/{prefix}second"),
+                prefix.as_str(),
+            ),
+        ];
+
+        for (first, second, expected_slug) in cases {
+            let a = c.db_path_for(&first);
+            let b = c.db_path_for(&second);
+            let a_stem = a.file_stem().unwrap().to_str().unwrap();
+            let b_stem = b.file_stem().unwrap().to_str().unwrap();
+            let (a_slug, a_hash) = a_stem.rsplit_once('-').unwrap();
+            let (b_slug, b_hash) = b_stem.rsplit_once('-').unwrap();
+            assert_eq!(a_slug, expected_slug);
+            assert_eq!(b_slug, expected_slug);
+            assert_ne!(a_hash, b_hash);
+        }
     }
 
     #[test]

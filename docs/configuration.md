@@ -67,6 +67,18 @@ For file references inside a multi-root database, prefix each path with its
 repository root directory name, such as `memlite-mcp/src/config.rs`. See
 [references](memory.md#references) for the full convention.
 
+### Database filenames
+
+Each project database uses `<slug>-<hash>.db` inside `--db-dir`. The hash is the
+first 16 lowercase hexadecimal characters of the SHA256 of the resolved full
+project path, using the same hash input as the previous full-hash scheme.
+For example, `/home/user/My Project` selects `my-project-78ce1d89993df547.db`.
+
+The slug is the lowercase ASCII basename, with runs of punctuation or non-ASCII
+characters replaced by single hyphens and leading/trailing hyphens removed.
+It is capped at 80 characters (without a trailing hyphen), falling back to
+`project` when empty or missing. Equal slugs still hash the entire project path.
+
 ## Shared worker election
 
 Every `serve` process starts as a peer. First process for a canonical database
