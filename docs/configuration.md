@@ -32,11 +32,19 @@ truthy env var can still be overridden from the command line.
 
 ## Project identity
 
-MemLite hashes the resolved project path to select its database. Explicit
-relative paths become absolute before hashing, matching GraphLite and avoiding
-separate databases for equivalent relative and absolute inputs. Parent path
-segments are resolved before hashing; paths that resolve to the filesystem
-root still require `--allow-root`.
+GraphLite and MemLite use the same resolution order: explicit CLI flag or env
+var, then the first usable local `file://` MCP root, then the current working
+directory. An explicit project path skips the MCP roots request entirely.
+Localhost authorities and percent-encoded UTF-8 names are supported; remote
+hosts, other schemes, malformed escapes, and URI queries or fragments are skipped.
+
+Relative paths become absolute before database hashing. Parent segments such
+as `/..` are resolved before hashing and validation, using filesystem resolution
+when possible and lexical normalization otherwise. Filesystem-root and home
+directory aliases, including symlinks, require `--allow-root true` or
+`--allow-home true`. Other symlink paths retain their existing database identity.
+Unsupported or malformed roots previously treated as paths now fall back to the
+next usable root or CWD; databases selected by those old strings are not migrated.
 
 MCP workspace roots remain a compatibility fallback. Multi-root hosts may start
 each server process with a different current working directory, so their

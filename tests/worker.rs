@@ -51,13 +51,17 @@ impl ServerProcess {
     }
 
     fn initialize(&mut self) {
+        self.initialize_with_capabilities(json!({}));
+    }
+
+    fn initialize_with_capabilities(&mut self, capabilities: Value) {
         let response = self.request(json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
             "params": {
                 "protocolVersion": "2025-06-18",
-                "capabilities": {},
+                "capabilities": capabilities,
                 "clientInfo": { "name": "worker-test", "version": "1" }
             }
         }));
@@ -87,6 +91,10 @@ impl ServerProcess {
                     panic!("timed out waiting for MCP response {id}: {error}\n{log}")
                 });
             let response: Value = serde_json::from_str(&line).unwrap();
+            assert!(
+                response.get("method").is_none(),
+                "unexpected server request: {response}"
+            );
             if response.get("id") == Some(&id) {
                 return response;
             }
@@ -114,6 +122,15 @@ impl Drop for ServerProcess {
             let _ = child.wait();
         }
     }
+}
+
+#[test]
+fn explicit_project_does_not_request_roots() {
+    let project = tempfile::tempdir().unwrap();
+    let db_dir = tempfile::tempdir().unwrap();
+    let log = db_dir.path().join("explicit.log");
+    let mut server = ServerProcess::start(project.path(), db_dir.path(), &log);
+    server.initialize_with_capabilities(json!({"roots": {"listChanged": true}}));
 }
 
 #[test]

@@ -176,7 +176,7 @@ impl Config {
 
     /// Resolves the effective project path from the explicit override or MCP roots.
     ///
-    /// Priority: explicit arg > first non-empty `file://` root URI > CWD.
+    /// Priority: explicit arg > first local file:// root URI > CWD.
     /// Validates the candidate once: rejects the filesystem root unless `--allow-root` is set,
     /// and rejects the home directory unless `--allow-home` is set.
     pub fn resolve_project_path(&self, root_uris: &[String]) -> Result<String> {
@@ -185,21 +185,7 @@ impl Config {
         } else {
             root_uris
                 .iter()
-                .filter_map(|uri| {
-                    let p = match uri.strip_prefix("file://") {
-                        Some(path) if path.starts_with('/') => decode_percent(path),
-                        Some(path) => {
-                            let (host, rest) = path.split_once('/')?;
-                            if !host.eq_ignore_ascii_case("localhost") {
-                                return None;
-                            }
-                            decode_percent(&format!("/{rest}"))
-                        }
-                        None => uri.to_owned(),
-                    };
-                    (!p.is_empty()).then_some(p)
-                })
-                .next()
+                .find_map(|uri| local_file_uri_path(uri))
                 .or_else(|| {
                     std::env::current_dir()
                         .ok()
@@ -306,32 +292,32 @@ fn is_home_path(path: &str) -> bool {
     }
 }
 
-fn decode_percent(s: &str) -> String {
-    fn hex(b: u8) -> Option<u8> {
-        match b {
-            b'0'..=b'9' => Some(b - b'0'),
-            b'a'..=b'f' => Some(b - b'a' + 10),
-            b'A'..=b'F' => Some(b - b'A' + 10),
-            _ => None,
-        }
+fn local_file_uri_path(uri: &str) -> Option<String> {
+    let path = uri.strip_prefix("file://")?;
+    let path = path
+        .get(..9)
+        .filter(|host| host.eq_ignore_ascii_case("localhost"))
+        .map_or(path, |_| &path[9..]);
+    if !path.starts_with('/') || path.contains(['?', '#']) {
+        return None;
     }
 
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
-        {
-            out.push((hi << 4) | lo);
-            i += 3;
+    // Decoding percent escapes as bytes to preserve UTF-8 file names
+    let mut decoded = Vec::with_capacity(path.len());
+    let mut bytes = path.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = (bytes.next()? as char).to_digit(16)? as u8;
+            let low = (bytes.next()? as char).to_digit(16)? as u8;
+            decoded.push((high << 4) | low);
         } else {
-            out.push(bytes[i]);
-            i += 1;
+            decoded.push(byte);
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    if decoded.contains(&0) {
+        return None;
+    }
+    String::from_utf8(decoded).ok()
 }
 
 #[cfg(test)]
@@ -450,6 +436,52 @@ mod tests {
         let c = config_no_path();
         let uris = vec!["file:///tmp/my%20project".to_string()];
         assert_eq!(c.resolve_project_path(&uris).unwrap(), "/tmp/my project");
+    }
+
+    #[test]
+    fn resolve_skips_unusable_root_uris() {
+        let uris = [
+            "",
+            "https://example.com/project",
+            "relative-project",
+            "file://",
+            "file://remote.example.com/project",
+            "file://localhost",
+            "file:///bad%",
+            "file:///bad%GG",
+            "file:///bad%FF",
+            "file:///bad%00",
+            "file:///project?query",
+            "file:///project#fragment",
+            "file:///valid",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            config_no_path().resolve_project_path(&uris).unwrap(),
+            "/valid"
+        );
+    }
+
+    #[test]
+    fn resolve_decodes_utf8_local_root_uri() {
+        assert_eq!(
+            config_no_path()
+                .resolve_project_path(&[
+                    "file://LOCALHOST/first%20project/caf%C3%A9%20%23%25".into()
+                ])
+                .unwrap(),
+            "/first project/café #%"
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_cwd_for_non_file_roots() {
+        assert_eq!(
+            config_no_path()
+                .resolve_project_path(&["https://example.com/project".into()])
+                .unwrap(),
+            std::env::current_dir().unwrap().to_string_lossy()
+        );
     }
 
     #[test]
