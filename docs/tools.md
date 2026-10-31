@@ -1,200 +1,213 @@
-# Tools Reference
+# Tools reference
 
-This document describes every MCP tool the server exposes. For the shape of
-a memory record (types, typed attrs, trust and decay, relations,
-references), see [memory.md](memory.md). For installation, the
-full CLI shape, and configuration, see [configuration.md](configuration.md).
+The server exposes the MCP tools below. See [memory.md](memory.md) for memory
+types, typed attributes, trust and decay, relations, and references. See
+[configuration.md](configuration.md) for the full CLI reference and
+configuration, or the [README](../README.md#build-and-install) for installation.
 
 MCP requests and tool arguments use JSON. `memory_list` and `memory_search`
-return deterministic block text with literal prose; other successful
-structured tool content uses [TOON v3.0](https://toonformat.dev). Tool errors
-remain plain text. All output formats omit null and empty collection fields.
+return deterministic block text with literal prose. Other successful
+structured tool content uses [TOON v3.0](https://toonformat.dev). Tools return
+errors as plain text. All output formats omit null and empty collection fields.
 
-Memory types, typed-attribute filters, and traversal directions use enum schemas.
-Invalid enum values return MCP `invalid_params` errors before tool execution;
-the CLI rejects them during argument parsing. Relation kinds remain free-form.
+Memory types, typed-attribute filters, and traversal directions use enum
+schemas. MCP rejects invalid enum values with `invalid_params` errors before
+running the tool. The CLI rejects them during argument parsing. Relation
+kinds remain free-form.
 
-MCP tool operations may pass through elected shared worker. Proxying is
-transparent to tool schemas and output. A request overlapping worker failover can
-return one transport error; retry it because in-flight writes are never replayed.
+MCP tool operations may pass through an elected shared worker. Proxying does
+not change tool schemas or output. A request that overlaps worker failover
+can return one transport error. The worker never replays in-flight requests
+because a write may already have committed. Check whether a write took
+effect before retrying it.
 
 ## Direct CLI
 
-Every tool below is also available as `memlite-mcp tool <name>` (names omit
-the `memory_` prefix), with one exception: `tool store` stores a single
-memory per invocation, while MCP `memory_store` keeps the batch interface for
-1 to 100 atomic inserts. See [configuration.md](configuration.md) for the
-full command, option, and flag reference.
+Every tool below is also available as `memlite-mcp tool <name>`. CLI names
+omit the `memory_` prefix. The store command differs: `tool store` stores one
+memory per invocation, while MCP `memory_store` accepts 1 to 100 atomic
+inserts. See [configuration.md](configuration.md) for the full command,
+option, and flag reference.
 
 ## memory_store
 
-Stores 1–100 memories atomically: all items are embedded in a single ONNX
-pass and inserted in one transaction (all succeed or all fail). Returns
-`{"ids": [...]}` in input order.
+The server embeds 1 to 100 memories in one batch request and inserts them
+in one transaction. Inference can split that request into smaller batches
+according to the [model batch cap](configuration.md#embedding-models).
+All inserts succeed or all fail. The tool returns `{"ids": [...]}` in input
+order.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `items` | yes | Array of 1–100 memory objects |
+| `items` | yes | Provide an array of 1 to 100 memory objects. |
 
-Each item:
+Each item accepts the following fields.
 
 | Field | Required | Description |
 |---|---|---|
-| `content` | yes | Full text to embed and store |
-| `memory_type` | yes | One of the eight [memory types](memory.md#memory-types) |
-| `summary` | yes | One-sentence description for quick recall; blank values are rejected |
-| `tags` | no | Category labels for grouping (e.g. `["architecture", "auth"]`) |
-| `context` | no | Background rationale for this memory |
-| `confidence` | no | Initial confidence score in [0, 1] (default 1.0) |
-| `decay_rate` | no | Per-day confidence decay rate in [0, 1] (default 0.0) |
-| `attrs` | no | Type-specific fields; see [typed attrs](memory.md#typed-attrs) |
-| `relations` | no | Outgoing directed links; see [relations](memory.md#relations) |
-| `refs` | no | External reference pointers; see [references](memory.md#references) |
+| `content` | yes | Provide the full text to embed and store. |
+| `memory_type` | yes | Choose one of the eight [memory types](memory.md#memory-types). |
+| `summary` | yes | Describe the memory in one sentence for quick recall. The server rejects blank values. |
+| `tags` | no | Group memories with category labels, such as `["architecture", "auth"]`. |
+| `context` | no | Explain the rationale for this memory. |
+| `confidence` | no | Set the initial confidence score in [0, 1]. The default is 1.0. |
+| `decay_rate` | no | Set the per-day confidence decay rate in [0, 1]. The default is 0.0. |
+| `attrs` | no | Provide type-specific fields. See [typed attrs](memory.md#typed-attrs). |
+| `relations` | no | Provide outgoing directed links. See [relations](memory.md#relations). |
+| `refs` | no | Provide external references. See [references](memory.md#references). |
 
 ## memory_search
 
-Two-stage semantic search: cosine vector search first, word-overlap re-rank
-second. Unfiltered queries use the DiskANN vector index. Filtered queries use
-an exact cosine scan so filters apply before candidate selection. Results are
-ordered nearest first and include a rounded `distance` and
-`effective_confidence`, RFC 3339 timestamps, folded relations, and an optional
-compact `freshness` warning.
+Search first selects candidates by cosine similarity, then reorders them by
+whole-word overlap between the query and memory content. Word overlap
+determines the final order; cosine distance breaks ties. Unfiltered queries
+use the DiskANN vector index. Filtered queries use an exact cosine scan so
+filters apply before candidate selection.
 
-Compact by default: each result carries its required summary. Pass
-`include_content: true` for full context and content; full results omit the
-then-redundant summary.
+Lower `distance` values indicate closer cosine matches, but results need not
+follow distance order after word-overlap ranking. Search does not apply a
+distance cutoff. Results include rounded `distance` and
+`effective_confidence` values, RFC 3339 timestamps, folded relations, and an
+optional compact `freshness` warning.
+
+Each result includes its required summary by default. Pass
+`include_content: true` for full context and content. Full results omit the
+summary.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `query` | yes | Natural-language query; ranked by cosine similarity |
-| `limit` | no | Maximum results (default 10, max 100) |
-| `include_content` | no | Full context and content per result (default false) |
-| `tags` | no | Only memories carrying all given tags (AND semantics) |
-| `memory_type` | no | Only memories of the given type |
-| `status`, `severity`, `priority`, `outcome`, `phase` | no | [Typed attrs](memory.md#typed-attrs) filters |
-| `refs_contain` | no | Only memories whose `refs` contain this substring |
+| `query` | yes | Provide a natural-language query. |
+| `limit` | no | Return at most this many results. The default is 10; the maximum is 100. |
+| `include_content` | no | Include full context and content in each result. The default is false. |
+| `tags` | no | Return only memories that carry every given tag. |
+| `memory_type` | no | Return only memories of this type. |
+| `status`, `severity`, `priority`, `outcome`, `phase` | no | Filter by [typed attrs](memory.md#typed-attrs). |
+| `refs_contain` | no | Return only memories with a `refs` entry that contains this literal substring. |
 
 ## memory_list
 
-Paginated list, newest first. Returns block text with RFC 3339 timestamps,
-folded relations, decay details only when active, rounded
-`effective_confidence`, and an optional compact `freshness` warning.
+The tool lists memories newest first and supports pagination. It returns
+block text with RFC 3339 timestamps, folded relations, decay details only
+when active, rounded `effective_confidence`, and an optional compact
+`freshness` warning.
 
-`include_content` defaults to true; full output omits the redundant summary.
-Pass false for compact selection output, then fetch selected full memories
-with `memory_list(ids=[...])`.
+`include_content` defaults to true. Full output omits the summary. Pass false
+for compact selection output, then fetch selected full memories with
+`memory_list(ids=[...])`.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `limit` | no | Maximum results per page (default 20, max 100) |
-| `offset` | no | Zero-based pagination offset (default 0) |
-| `ids` | no | Exact numeric identifiers to fetch (max 100); missing identifiers are omitted; results stay ordered newest first, not in input order |
-| `include_content` | no | Full context and content per result (default true) |
-| `tags` | no | Only memories carrying all given tags (AND semantics) |
-| `memory_type` | no | Only memories of the given type |
-| `status`, `severity`, `priority`, `outcome`, `phase` | no | [Typed attrs](memory.md#typed-attrs) filters |
-| `refs_contain` | no | Only memories whose `refs` contain this substring |
+| `limit` | no | Return at most this many results per page. The default is 20; the maximum is 100. |
+| `offset` | no | Set the zero-based pagination offset. The default is 0. |
+| `ids` | no | Provide up to 100 exact numeric memory identifiers. The tool omits missing identifiers and returns results newest first, not in input order. |
+| `include_content` | no | Include full context and content in each result. The default is true. |
+| `tags` | no | Return only memories that carry every given tag. |
+| `memory_type` | no | Return only memories of this type. |
+| `status`, `severity`, `priority`, `outcome`, `phase` | no | Filter by [typed attrs](memory.md#typed-attrs). |
+| `refs_contain` | no | Return only memories with a `refs` entry that contains this literal substring. |
 
 ## memory_update
 
-Updates any field of a memory in place. Providing `content` triggers
-re-embedding. Any update resets the decay clock (`last_seen_at`).
+The tool updates any field of a memory in place. Providing `content` triggers
+re-embedding. Any update resets the decay clock by setting `last_seen_at` to now.
 
-Clearing semantics: pass `""` to clear `context`; pass `{}` to clear `attrs`
-or `relations`; pass `[]` to clear `refs`. Blank summaries are rejected.
-`attrs`, `relations`, and `refs` are full-set replacements, not merges.
+Pass `""` to clear `context`, `{}` to clear `attrs` or `relations`, and `[]`
+to clear `refs`. The server rejects blank summaries. Updates replace the
+full `attrs`, `relations`, and `refs` sets rather than merging them.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `id` | yes | Numeric identifier of the memory to update |
-| `content` | no | Replacement content; triggers re-embedding |
-| `summary` | no | Replacement summary; blank values are rejected |
-| `tags` | no | Replacement tags |
-| `context` | no | Replacement context |
-| `confidence` | no | Replacement confidence; clamped to [0, 1] |
-| `decay_rate` | no | Replacement decay rate; clamped to [0, 1] |
-| `memory_type` | no | Replacement type; empty string is rejected |
-| `attrs` | no | Replacement attrs set |
-| `relations` | no | Replacement relations set |
-| `refs` | no | Replacement refs set |
+| `id` | yes | Provide the numeric identifier of the memory to update. |
+| `content` | no | Replace the content and trigger re-embedding. |
+| `summary` | no | Replace the summary. The server rejects blank values. |
+| `tags` | no | Replace the tags. |
+| `context` | no | Replace the context. |
+| `confidence` | no | Replace the confidence score. The server clamps it to [0, 1]. |
+| `decay_rate` | no | Replace the decay rate. The server clamps it to [0, 1]. |
+| `memory_type` | no | Replace the type. The server rejects an empty string. |
+| `attrs` | no | Replace the full set of typed attributes. |
+| `relations` | no | Replace the full set of outgoing relations. |
+| `refs` | no | Replace the full set of references. |
 
 ## memory_delete
 
-Deletes a memory by numeric identifier and returns `{deleted: true, id}` when
-removed or `{deleted: false, id}` when missing. Prefer setting `attrs.status`
-to `resolved` over deletion for anything with history value.
+The tool deletes a memory by numeric identifier. It returns
+`{deleted: true, id}` when it removes the memory or `{deleted: false, id}`
+when the memory does not exist. Set `attrs.status` to `resolved` instead of
+deleting memories that provide useful history.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `id` | yes | Numeric identifier of the memory to delete |
+| `id` | yes | Provide the numeric identifier of the memory to delete. |
 
 ## memory_revalidate
 
-Resets the decay clock (`last_seen_at = now`) on a list of memories without
-changing any other field. Returns the count of memories actually updated.
-Use after confirming multiple memories are still accurate in the same
-session.
+The tool resets the decay clock on a list of memories by setting
+`last_seen_at = now`. It changes no other field and returns the count of
+memories it updated. Use it after confirming that multiple memories are
+still accurate in the same session.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `ids` | yes | 1–100 numeric identifiers of memories to revalidate |
+| `ids` | yes | Provide 1 to 100 numeric identifiers of memories to revalidate. |
 
 ## memory_tags
 
-Returns all tags as a compact tag-to-count object. Takes no parameters.
-Useful before `memory_store` to reuse existing tags and keep the taxonomy
-consistent.
+The tool returns all tags as a compact tag-to-count object and takes no
+parameters. Call it before `memory_store` to reuse existing tags and keep
+tag names consistent.
 
 ## memory_neighbors
 
-Returns immediate in-neighbors and out-neighbors of a memory as compact
-selection rows: `{outgoing: [{id, kind, memory_type, summary}], incoming:
+The tool returns a memory's immediate incoming and outgoing neighbors as
+compact selection rows: `{outgoing: [{id, kind, memory_type, summary}], incoming:
 [...]}`. Fetch selected full memories with `memory_list(ids=[...])`.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `id` | yes | Numeric identifier of the memory to get neighbors for |
-| `kind` | no | Relation kind filter (e.g. `blocks`); all kinds when omitted |
+| `id` | yes | Provide the numeric identifier of the memory to inspect. |
+| `kind` | no | Filter by a relation kind, such as `blocks`. Omit it to include all kinds. |
 
 ## memory_traverse
 
-BFS traversal from a start memory. Returns
+The tool traverses the graph breadth first from a start memory and returns
 `{start_id, nodes: [{id, depth, via_kind, memory_type, summary}], edges}`.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `start_id` | yes | Numeric identifier of the start memory |
-| `depth` | no | BFS depth limit (default 2, max 5) |
-| `kind` | no | Only traverse edges with this exact kind |
-| `direction` | no | `out` (default), `in`, or `both` |
+| `start_id` | yes | Provide the numeric identifier of the start memory. |
+| `depth` | no | Limit the breadth-first traversal depth. The default is 2; the maximum is 5. |
+| `kind` | no | Traverse only edges with this exact kind. |
+| `direction` | no | Choose `out`, `in`, or `both`. The default is `out`. |
 
 ## memory_path
 
-Finds the shortest directed path between two memories via outgoing
-relations. Returns `{found, path: [{id, via_kind, memory_type, summary}]}`;
-the path starts at the source and each step carries the relation kind used
-to arrive.
+The tool finds the shortest directed path between two memories by following
+outgoing relations. It returns
+`{found, path: [{id, via_kind, memory_type, summary}]}`. The path starts at
+the source. Each step carries the relation kind used to reach it.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `from_id` | yes | Numeric identifier of the start memory |
-| `to_id` | yes | Numeric identifier of the destination memory |
-| `max_hops` | no | Maximum hops to explore (default 6, max 10) |
+| `from_id` | yes | Provide the numeric identifier of the start memory. |
+| `to_id` | yes | Provide the numeric identifier of the destination memory. |
+| `max_hops` | no | Limit how many hops to explore. The default is 6; the maximum is 10. |
 
 ## memory_hubs
 
-Returns the top-N memories by total relation degree (in + out) as
-`[{id, summary, memory_type, out_degree, in_degree}]`, ordered by total
-degree descending. These are the hub memories the rest of the graph revolves
-around; useful for orientation at the start of a session.
+The tool returns the most connected memories as
+`[{id, summary, memory_type, out_degree, in_degree}]`. It adds the incoming
+and outgoing relation counts to get each memory's total degree, then orders
+memories by total degree from highest to lowest. Use these memories to
+orient yourself at the start of a session.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `top_n` | no | Number of top hubs to return (default 10, max 50) |
+| `top_n` | no | Set how many top hubs to return. The default is 10; the maximum is 50. |
 
 ## memory_stats
 
-Returns graph-level statistics:
+The tool returns graph-level statistics as
 `{total_memories, by_type: {type: count}, total_relations, relation_kinds}`.
-Takes no parameters. All counts are global and reflect the entire project
-DB. Good starting point for understanding the shape of the memory graph.
+It takes no parameters. All counts are global and cover the entire project
+database. Use them to check the size and structure of the memory graph.

@@ -1,170 +1,108 @@
 # MemLite MCP
 
-A local-only MCP server and command-line manager for persistent, searchable
-agent memory, backed by **libsql** (SQLite with native vector search) and
-**fastembed** (on-device ONNX embeddings; no API keys, no cloud).
+A local-only MCP server and command-line manager for persistent, searchable agent
+memory. It uses [libSQL](https://github.com/tursodatabase/libsql) for SQLite storage
+with native vector search and [FastEmbed](https://github.com/Anush008/fastembed-rs)
+to generate ONNX embeddings on the device.
 
 ## Motivation
 
-AI agents are stateless by design. Every new conversation starts cold: no
-memory of what was figured out last session, what decisions were made, what
-dead ends were already explored. For quick, self-contained tasks that is fine.
-For anything longer — an evolving codebase, an ongoing investigation, a project
-with accumulated conventions — it becomes a real friction point. The agent keeps
-rediscovering the same things, and you keep re-explaining them.
+AI agents are stateless by design. Without persistent memory, an agent in a new
+conversation has no record of what was figured out last session, what decisions were
+made, or which approaches had already failed. For quick, self-contained tasks that is
+fine. For an evolving codebase, an ongoing investigation, or a project with accumulated
+conventions, the repetition wastes time. The agent keeps rediscovering the same things,
+and you keep re-explaining them.
 
-The standard answer is some cloud memory service. That means API keys, a
-dependency on a third-party endpoint, and context leaving the machine. None of
-that felt right for a tool I wanted to run silently in the background across
-all my local projects.
+A pretty pivotal problem, but is it a solved one yet? Well... there are some
+attempts for sure:
 
-MemLite MCP takes the other approach: the DB is a per-project SQLite file on
-disk, the embeddings are generated locally with a bundled ONNX model, and
-nothing ever leaves the machine. Per-project isolation means agents working on
-different codebases do not bleed into each other. And since only
-`memory_store` actually creates the DB file, projects you never ask the agent
-to remember anything about do not accumulate empty database files.
+- Markdown files. Those work as far as a text-file store goes: no extra attributes,
+  no vector search, no memory graph or dependencies out of the box. It's the bare
+  minimum. Can we do better?
+- Cloud services. Somewhat featureful, but they require API keys and context
+  leaving the machine. Plus, a dependency on a third-party endpoint and an internet
+  connection. It feels like pricey overkill. Can we do local instead?
+- Self-hosted solutions. A bit better, but still bulky. I don't think we need to
+  manage a bunch of containers here. Can we do without a zoo?
+- Anything simpler? Kinda. But the ones I found either require third-party runtimes
+  (Node/Bun, Python) and package managers (npm/npx, uv/uvx), or separate
+  storage/search services (ChromaDB, Milvus, Qdrant, MongoDB, SurrealDB, Neo4j).
+  Why though? Can a single binary do it all?
+- Fully self-contained binaries. I found very few, and none ticked all my boxes.
+
+I wanted a tiny and performant local-only MCP solution. Nothing theoretical.
+Something that would significantly improve my agentic workflow right after the
+first draft build. I like Rust and libSQL; with native support for vector search
+and indexes, libSQL was a perfect fit and an obvious choice. Everything else was
+born naturally from my day-to-day personal and professional workflows. So, voila!
 
 ## Features
 
-- **Local-only, no API keys**: one SQLite file per project, on-device ONNX embeddings; nothing leaves the machine
-- **Semantic search**: DiskANN vector retrieval plus keyword re-rank; exact cosine scan when filters are present
-- **Knowledge graph**: directed relations between memories, with traversal, shortest path, neighbor, hub, and statistics tools
-- **Confidence and decay**: per-memory trust score with optional time decay and revalidation
-- **Structured records**: eight memory types, typed status/severity/priority attrs, tags, and external references — all filterable
-- **Batch store**: up to 100 memories in one batched embedding operation; atomic insert
-- **Compact output**: readable block text for prose-heavy results, [TOON](https://toonformat.dev) for the rest
-- **Per-project isolation**: one DB per project path; all agents on the same project share the same DB
-- **Direct CLI management**: inspect, search, update, and remove memories without an MCP client
-- **Shared worker election**: ordinary `serve` processes elect one worker per database directory; proxies promote automatically if it exits
-- **Resource sharing**: active projects keep one lazy database handle each; embedding models load lazily once per selected model when cache and batch settings match
+- **Local-only**: SQLite storage and on-device ONNX embeddings
+- **Semantic search**: DiskANN retrieval plus keyword reranking; exact cosine scan with metadata filters
+- **Knowledge graph**: directed relations, neighbors, traversal, shortest paths, hubs, and statistics
+- **Confidence and decay**: per-memory trust scores, optional time decay, and revalidation
+- **Structured records**: eight memory types, typed attributes, tags, references, and metadata filters
+- **Batch storage**: up to 100 memories per MCP request; batched embeddings and atomic inserts
+- **Compact output**: readable search/list results, [TOON](https://toonformat.dev) for other structured results, optional CLI JSON
+- **Per-project isolation**: one database per project path, shared by agents on that project
+- **Direct CLI management**: all 12 MCP tools without an MCP client
+- **Shared worker election**: one worker per database directory; automatic proxy takeover on exit
+- **Resource sharing**: lazy per-project database handles and shared embedding models for matching settings
+- **Four embedding models**: English-first BGE v1.5 variants and multilingual `bge-m3`
 
-## Build
+## Build and install
+
+The build requires Rust 1.89 or newer and a native build toolchain. MemLite uses Unix
+sockets and file locks for its shared worker.
+
+Clone the repository, then build or install from the checkout:
 
 ```sh
-cargo build --release
+git clone https://github.com/Aeron/memlite-mcp.git
+cd memlite-mcp
+cargo build --release --locked
 ```
 
-The embedding model is downloaded on the first `memory_store` or
-`memory_search` call, not at server start, and cached for fully offline use
-afterwards. See [docs/configuration.md](docs/configuration.md) for cache
-locations.
+The build produces `target/release/memlite-mcp`. To install it into Cargo's
+binary directory instead:
 
-## Configuration
+```sh
+cargo install --path . --locked
+```
 
-The defaults are fine for single-root setups. Run the MCP server with
-`memlite-mcp serve`. Multi-root workspaces should set one stable absolute
-`MEMLITE_PROJECT_PATH` so every server process selects the same database. The
-other option worth a look is `--embedding-model`: English-first BGE v1.5 models
-are available, along with multilingual `bge-m3` for memories spanning 100+
-languages. `--embedding-max-batch-size` caps inference batches below each
-model's conservative tier limit.
+Cargo's binary directory must be on your `PATH` to run the installed command.
 
-For all flags, env vars, multi-root setup, and the embedding models table, see
-[docs/configuration.md](docs/configuration.md).
+## Use
 
-## MCP server
+Configure your MCP client to run `memlite-mcp serve`. MemLite uses the first
+usable local MCP root, then the server's working directory. Run direct CLI
+commands from the project directory to use its memories.
 
-MCP host configurations must invoke the `serve` subcommand:
+The first embedding operation downloads the model, then uses a local cache for
+offline use. Memory storage and inference stay on your machine. Your MCP client
+still controls what it sends to its language-model provider.
 
 ```sh
 memlite-mcp serve
-```
-
-The server exposes 12 `memory_*` tools: store, search, list, update, delete,
-revalidate, tags, and five graph tools (neighbors, traverse, path, hubs,
-stats).
-
-All `serve` processes are peers. First process for a database directory elects
-itself as shared worker; later processes retain their editor-facing MCP sessions
-and proxy memory operations over a private Unix socket. One worker can host many
-projects, with one lazy database handle per active project and one lazy embedding
-model instance per selected model when cache and batch settings match. Read-only
-sessions still do not create empty project databases. If worker exits, one proxy promotes itself
-and others reconnect automatically. A request active during failover can fail
-once and should be retried.
-
-## Direct CLI
-
-The same operations are available under the singular `tool` namespace. Tool
-names omit the redundant `memory_` prefix:
-
-```sh
 memlite-mcp tool list --limit 10 --include-content false
-memlite-mcp tool list 55 --format json
-memlite-mcp tool search "CLI interface plan"
-memlite-mcp tool update 55 --phase completed
-memlite-mcp tool delete 55
+memlite-mcp tool --format json search "project conventions" --limit 5
 ```
 
-Text output is the default. Add `--format json` for scripts. Global project,
-storage, embedding, and logging flags work before or after nested commands.
-Run `memlite-mcp tool <command> --help` for exact arguments.
+See [client setup](docs/clients.md) for Claude Code, Codex, Pi, OpenCode, Kilo,
+Hermes, and Zed. See [configuration and CLI reference](docs/configuration.md)
+for all arguments, environment variables, model choices, and direct commands.
 
-For the full command and flag reference, see
-[docs/configuration.md](docs/configuration.md). For the memory model (types,
-typed attrs, trust and decay, relations, references), see
-[docs/memory.md](docs/memory.md). For per-tool parameters, see
-[docs/tools.md](docs/tools.md).
+## Documentation
 
-## Benchmarks
+- [Memory model](docs/memory.md)
+- [MCP tools](docs/tools.md)
+- [Benchmarks and measured results](docs/benchmarks.md)
 
-The output format benchmark compares byte/character size and encode latency
-of TOON and block text against compact JSON for representative tool
-payloads; TOON cases also assert lossless round trips:
+## Acknowledgments
 
-```sh
-cargo bench --bench toon_format -- --noplot
-```
-
-A reported `toon_ratio` or `block_ratio` below 1.0 means that format is
-smaller than compact JSON for the case.
-
-The embedding model benchmark compares embedding-only cosine quality, raw
-vector payload, and steady-state inference for production model
-configurations. It uses raw queries and raw memory text without prompts or
-benchmark-specific normalization. The default runs only
-`bge-small-en-v1.5`:
-
-```sh
-cargo bench --bench embedding_models -- --noplot
-```
-
-Select one or more models with a comma-separated list:
-
-```sh
-EMBEDDING_BENCH_MODELS=bge-base-en-v1.5,bge-m3 cargo bench --bench embedding_models -- --noplot
-```
-
-Run every supported production model explicitly:
-
-```sh
-EMBEDDING_BENCH_MODELS=all cargo bench --bench embedding_models -- --noplot
-```
-
-`EMBEDDING_BENCH_CACHE_DIR` overrides the model cache. Without it, the
-benchmark uses the same operating system cache directory as MemLite. The first
-run for a model may download files; `cached_init_duration_ms` can therefore
-include download time on a cold cache. Later runs measure initialization from
-the populated cache.
-
-Quality output is split into English semantic paraphrases,
-multilingual/cross-lingual retrieval, and long memories whose relevant detail
-appears late in the text. `recall_at_1` and `recall_at_3` report the fraction of
-queries whose labeled memory appears in the first one or three results. `mrr`
-is mean reciprocal rank. The cosine margin is the labeled memory score minus
-the strongest non-relevant score; larger positive values indicate clearer
-separation. Model output also reports dimensions, raw float bytes per vector,
-raw float MiB per 100,000 vectors, initial corpus and query embedding
-durations, and Criterion steady-state timings for one query and a batch of 32
-short memories. Raw vector figures exclude SQLite and vector-index overhead,
-model files, and runtime memory.
-
-This synthetic corpus isolates embedding behavior. It does not exercise
-DiskANN candidate selection or MemLite's word-overlap reranking, so use results
-as a model-level signal rather than an end-to-end production score. Validate a
-candidate on representative project memories before changing the default.
-
-Running all models is opt-in because the combined downloads and inference cost
-are large. `bge-m3` alone is roughly 2.3 GB, while the production default is the
-much smaller `bge-small-en-v1.5`.
+- **[RMCP](https://github.com/modelcontextprotocol/rust-sdk)** by [Model Context Protocol](https://github.com/modelcontextprotocol): the official Rust MCP SDK
+- **[libSQL](https://github.com/tursodatabase/libsql)** by [Turso](https://github.com/tursodatabase): SQLite storage with native vector search
+- **[FastEmbed](https://github.com/Anush008/fastembed-rs)** by [Anush](https://github.com/Anush008) and contributors: local ONNX embedding inference
+- **[BGE models](https://huggingface.co/BAAI)** by [BAAI](https://www.baai.ac.cn/en): the embedding models behind semantic search
