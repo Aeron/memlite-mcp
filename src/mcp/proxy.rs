@@ -37,7 +37,7 @@ impl ProxyServer {
     pub async fn run(self) -> anyhow::Result<()> {
         let shutdown = Arc::clone(&self.shutdown);
         let service = self.serve(rmcp::transport::stdio()).await?;
-        tracing::info!("memlite-mcp listening; project path resolves on initialize");
+        tracing::info!("memlite listening; project path resolves on initialize");
 
         tokio::select! {
             result = service.waiting() => {

@@ -1,4 +1,4 @@
-//! End-to-end benchmarks for the memlite-mcp MCP tools.
+//! End-to-end benchmarks for the memlite MCP tools.
 //!
 //! Spawns the server binary as a child process and drives it via JSON-RPC
 //! over stdio, measuring round-trip latency per tool call at steady state.
@@ -35,7 +35,7 @@ const SEED_CONTENT: &[&str] = &[
     "ML inference pipeline: feature normalization and model serving latency",
 ];
 
-/// Drives a spawned memlite-mcp process via synchronous JSON-RPC over stdio.
+/// Drives a spawned memlite process via synchronous JSON-RPC over stdio.
 ///
 /// Communicates using newline-delimited JSON (one complete object per line),
 /// which is the MCP stdio transport format.
@@ -54,10 +54,8 @@ impl McpClient {
     /// File-based SQLite is used (not in-memory) so all connections from the
     /// spawned process share the same schema after migrations run.
     fn new(db_dir: &Path) -> Self {
-        // env!("CARGO_BIN_EXE_memlite-mcp") is set by Cargo when building benches;
-        // it points to the binary compiled under [profile.bench], which inherits
-        // [profile.release] so the binary is release-quality.
-        let binary = env!("CARGO_BIN_EXE_memlite-mcp");
+        // Using Cargo's bench-profile executable, which inherits the release profile
+        let binary = env!("CARGO_BIN_EXE_memlite");
         let mut child = Command::new(binary)
             .args(["serve", "--project-path", "/bench", "--db-dir"])
             .arg(db_dir)
@@ -66,7 +64,7 @@ impl McpClient {
             // suppressing server tracing output so it does not appear in bench output
             .stderr(Stdio::null())
             .spawn()
-            .expect("failed to spawn memlite-mcp");
+            .expect("failed to spawn memlite");
         let stdin = BufWriter::new(child.stdin.take().unwrap());
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let mut c = McpClient {
@@ -133,7 +131,7 @@ impl McpClient {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        panic!("memlite-mcp did not become ready within 5 s");
+        panic!("memlite did not become ready within 5 s");
     }
 
     fn send_raw(&mut self, msg: &Value) {

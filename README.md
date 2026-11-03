@@ -65,7 +65,7 @@ cd memlite-mcp
 cargo build --release --locked
 ```
 
-The build produces `target/release/memlite-mcp`. To install it into Cargo's
+The build produces `target/release/memlite`. To install it into Cargo's
 binary directory instead:
 
 ```sh
@@ -76,7 +76,7 @@ Cargo's binary directory must be on your `PATH` to run the installed command.
 
 ## Use
 
-Configure your MCP client to run `memlite-mcp serve`. MemLite uses the first
+Configure your MCP client to run `memlite serve`. MemLite uses the first
 usable local MCP root, then the server's working directory. Run direct CLI
 commands from the project directory to use its memories.
 
@@ -85,9 +85,9 @@ offline use. Memory storage and inference stay on your machine. Your MCP client
 still controls what it sends to its language-model provider.
 
 ```sh
-memlite-mcp serve
-memlite-mcp tool list --limit 10 --include-content false
-memlite-mcp tool --format json search "project conventions" --limit 5
+memlite serve
+memlite tool list --limit 10 --include-content false
+memlite tool --format json search "project conventions" --limit 5
 ```
 
 See [client setup](docs/clients.md) for Claude Code, Codex, Pi, OpenCode, Kilo,

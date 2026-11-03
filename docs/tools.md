@@ -23,7 +23,7 @@ effect before retrying it.
 
 ## Direct CLI
 
-Every tool below is also available as `memlite-mcp tool <name>`. CLI names
+Every tool below is also available as `memlite tool <name>`. CLI names
 omit the `memory_` prefix. The store command differs: `tool store` stores one
 memory per invocation, while MCP `memory_store` accepts 1 to 100 atomic
 inserts. See [configuration.md](configuration.md) for the full command,

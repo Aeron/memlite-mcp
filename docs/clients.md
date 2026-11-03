@@ -9,14 +9,14 @@ Upstream documentation and source were checked on October 31, 2026.
 ## Shared setup
 
 Build the binary with `cargo build --release --locked` from the MemLite repository.
-The executable is `target/release/memlite-mcp`.
+The executable is `target/release/memlite`.
 
-Replace `/absolute/path/to/memlite-mcp` in the examples with the absolute path to
+Replace `/absolute/path/to/memlite` in the examples with the absolute path to
 your built executable. If you installed the binary on `PATH`, you can use
-`memlite-mcp` instead. Merge entries into existing configuration files rather
+`memlite` instead. Merge entries into existing configuration files rather
 than replacing other settings.
 
-Register `memlite-mcp serve`, not the binary alone. Clients with separate command
+Register `memlite serve`, not the binary alone. Clients with separate command
 and argument fields need `"args": ["serve"]`. Clients with a command array include
 `"serve"` after the executable.
 
@@ -41,7 +41,7 @@ Both clients accept this JSON shape:
 {
   "mcpServers": {
     "memlite": {
-      "command": "/absolute/path/to/memlite-mcp",
+      "command": "/absolute/path/to/memlite",
       "args": ["serve"]
     }
   }
@@ -58,7 +58,7 @@ For private registration without a project file, run this from the target projec
 
 ```sh
 claude mcp add --scope local --transport stdio memlite -- \
-  /absolute/path/to/memlite-mcp serve
+  /absolute/path/to/memlite serve
 ```
 
 Claude Code stores local-scope registrations in `~/.claude.json` under the project
@@ -80,11 +80,11 @@ support, so its configuration may differ. See [Pi's MCP documentation][pi].
 
 On Pi versions without native MCP, ask the agent to run MemLite's direct CLI
 through its [built-in `bash` tool][pi-bash]. Run these commands from the project
-directory with `memlite-mcp` on `PATH`:
+directory with `memlite` on `PATH`:
 
 ```sh
-memlite-mcp tool --format json list --limit 10 --include-content false
-memlite-mcp tool --format json search "project conventions" --limit 5
+memlite tool --format json list --limit 10 --include-content false
+memlite tool --format json search "project conventions" --limit 5
 ```
 
 This route does not use MCP and needs no bridge. The singular `tool` namespace
@@ -97,7 +97,7 @@ user-level settings from `~/.codex/config.toml`.
 
 ```toml
 [mcp_servers.memlite]
-command = "/absolute/path/to/memlite-mcp"
+command = "/absolute/path/to/memlite"
 args = ["serve"]
 tool_timeout_sec = 300
 ```
@@ -118,7 +118,7 @@ Add this entry to `opencode.jsonc` at the project root. The global file is
     "servers": {
       "memlite": {
         "type": "local",
-        "command": ["/absolute/path/to/memlite-mcp", "serve"]
+        "command": ["/absolute/path/to/memlite", "serve"]
       }
     }
   }
@@ -141,7 +141,7 @@ Current Kilo Code and OpenCode 1 use a server map directly under `mcp`:
   "mcp": {
     "memlite": {
       "type": "local",
-      "command": ["/absolute/path/to/memlite-mcp", "serve"],
+      "command": ["/absolute/path/to/memlite", "serve"],
       "timeout": 300000
     }
   }
@@ -171,7 +171,7 @@ Hermes profile's `config.yaml`:
 ```yaml
 mcp_servers:
   memlite:
-    command: "/absolute/path/to/memlite-mcp"
+    command: "/absolute/path/to/memlite"
     args: ["serve"]
     timeout: 300
     connect_timeout: 60
@@ -196,7 +196,7 @@ at `~/.config/zed/settings.json` on macOS and Linux.
 {
   "context_servers": {
     "memlite": {
-      "command": "/absolute/path/to/memlite-mcp",
+      "command": "/absolute/path/to/memlite",
       "args": ["serve"],
       "timeout": 300
     }

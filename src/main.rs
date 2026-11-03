@@ -24,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve => {
             info!(
                 project = config.explicit_project_path().unwrap_or("<auto>"),
-                "starting memlite-mcp"
+                "starting memlite"
             );
             ProxyServer::new(config).run().await
         }

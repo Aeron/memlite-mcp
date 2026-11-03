@@ -1,6 +1,6 @@
 # Configuration and CLI reference
 
-Run `memlite-mcp serve` for the MCP server or `memlite-mcp tool <command>`
+Run `memlite serve` for the MCP server or `memlite tool <command>`
 for direct memory management. Both use the same project database.
 
 This reference covers commands, flags, environment variables, and storage.
@@ -11,7 +11,7 @@ for memory records, and [tools.md](tools.md) for tool behavior.
 
 Shared options accept both CLI flags and environment variables. Flags take
 precedence. Global flags work before or after nested commands under both
-`serve` and `tool`. Run `memlite-mcp --help` for generated usage.
+`serve` and `tool`. Run `memlite --help` for generated usage.
 
 | Flag | Environment variable | Default | Description |
 |---|---|---|---|
@@ -170,7 +170,7 @@ See [benchmarks.md](benchmarks.md#embedding-models) for model comparisons.
 ## Commands
 
 ```
-memlite-mcp [GLOBAL OPTIONS] <COMMAND>
+memlite [GLOBAL OPTIONS] <COMMAND>
 ```
 
 | Command | Description |
@@ -178,7 +178,7 @@ memlite-mcp [GLOBAL OPTIONS] <COMMAND>
 | [`serve`](#serve) | Runs the MCP server over stdio |
 | [`tool`](#tool) | Runs one memory tool directly against the project database |
 
-A subcommand is required; `memlite-mcp` alone prints usage and exits.
+A subcommand is required; `memlite` alone prints usage and exits.
 
 ### `serve`
 
@@ -186,7 +186,7 @@ Runs the MCP server over stdio. Takes no options beyond the
 [global options](#global-options).
 
 ```sh
-memlite-mcp serve
+memlite serve
 ```
 
 MCP clients must invoke this subcommand. The server exposes 12 `memory_*`
@@ -200,18 +200,18 @@ the result to stdout. CLI command names omit the MCP tools' `memory_`
 prefix.
 
 ```sh
-memlite-mcp tool list --limit 10 --include-content false
-memlite-mcp tool list 55 --format json
-memlite-mcp tool search "CLI interface plan"
-memlite-mcp tool update 55 --phase completed
-memlite-mcp tool delete 55
+memlite tool list --limit 10 --include-content false
+memlite tool list 55 --format json
+memlite tool search "CLI interface plan"
+memlite tool update 55 --phase completed
+memlite tool delete 55
 ```
 
 Use the same explicit project path as the MCP client when both should
 share memories. Text output is the default. Use JSON for scripts.
 
 ```
-memlite-mcp tool [--format <text|json>] <tool-command>
+memlite tool [--format <text|json>] <tool-command>
 ```
 
 | Option | Default | Description |
@@ -228,7 +228,7 @@ Conventions shared by every subcommand below:
 - `--include-content` and `--reversible` require `true` or `false`.
 - `tool store` stores one memory per invocation. MCP `memory_store` accepts
   1 to 100 atomic inserts.
-- Run `memlite-mcp tool <command> --help` for generated usage.
+- Run `memlite tool <command> --help` for generated usage.
 
 Each subcommand below wraps the identically named MCP tool; see
 [tools.md](tools.md) for full parameter semantics, defaults, and behavior.
@@ -238,7 +238,7 @@ Each subcommand below wraps the identically named MCP tool; see
 Stores one memory. Wraps [`memory_store`](tools.md#memory_store).
 
 ```
-memlite-mcp tool store <content> --memory-type <type> --summary <summary> [options]
+memlite tool store <content> --memory-type <type> --summary <summary> [options]
 ```
 
 | Argument | Kind | Description |
@@ -261,7 +261,7 @@ Searches memories by semantic similarity. Wraps
 [`memory_search`](tools.md#memory_search).
 
 ```
-memlite-mcp tool search <query> [options]
+memlite tool search <query> [options]
 ```
 
 | Argument | Kind | Description |
@@ -279,7 +279,7 @@ memlite-mcp tool search <query> [options]
 Lists memories newest first. Wraps [`memory_list`](tools.md#memory_list).
 
 ```
-memlite-mcp tool list [ids...] [options]
+memlite tool list [ids...] [options]
 ```
 
 | Argument | Kind | Description |
@@ -299,7 +299,7 @@ Lists tags and occurrence counts. Wraps [`memory_tags`](tools.md#memory_tags).
 Takes no arguments beyond `--format`.
 
 ```sh
-memlite-mcp tool tags
+memlite tool tags
 ```
 
 #### `tool delete`
@@ -307,7 +307,7 @@ memlite-mcp tool tags
 Deletes one memory. Wraps [`memory_delete`](tools.md#memory_delete).
 
 ```
-memlite-mcp tool delete <id>
+memlite tool delete <id>
 ```
 
 | Argument | Kind | Description |
@@ -319,7 +319,7 @@ memlite-mcp tool delete <id>
 Updates one memory. Wraps [`memory_update`](tools.md#memory_update).
 
 ```
-memlite-mcp tool update <id> [options]
+memlite tool update <id> [options]
 ```
 
 | Argument | Kind | Description |
@@ -347,7 +347,7 @@ Resets confidence decay clocks. Wraps
 [`memory_revalidate`](tools.md#memory_revalidate).
 
 ```
-memlite-mcp tool revalidate <ids...>
+memlite tool revalidate <ids...>
 ```
 
 | Argument | Kind | Description |
@@ -360,7 +360,7 @@ Lists immediate incoming and outgoing neighbors. Wraps
 [`memory_neighbors`](tools.md#memory_neighbors).
 
 ```
-memlite-mcp tool neighbors <id> [options]
+memlite tool neighbors <id> [options]
 ```
 
 | Argument | Kind | Description |
@@ -374,7 +374,7 @@ Traverses the relation graph breadth first. Wraps
 [`memory_traverse`](tools.md#memory_traverse).
 
 ```
-memlite-mcp tool traverse <start_id> [options]
+memlite tool traverse <start_id> [options]
 ```
 
 | Argument | Kind | Description |
@@ -390,7 +390,7 @@ Finds the shortest directed path between memories. Wraps
 [`memory_path`](tools.md#memory_path).
 
 ```
-memlite-mcp tool path <from_id> <to_id> [options]
+memlite tool path <from_id> <to_id> [options]
 ```
 
 | Argument | Kind | Description |
@@ -404,7 +404,7 @@ memlite-mcp tool path <from_id> <to_id> [options]
 Lists the most connected memories. Wraps [`memory_hubs`](tools.md#memory_hubs).
 
 ```
-memlite-mcp tool hubs [options]
+memlite tool hubs [options]
 ```
 
 | Argument | Kind | Description |
@@ -417,5 +417,5 @@ Shows graph-level statistics. Wraps [`memory_stats`](tools.md#memory_stats).
 Takes no arguments beyond `--format`.
 
 ```sh
-memlite-mcp tool stats
+memlite tool stats
 ```

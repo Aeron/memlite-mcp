@@ -19,7 +19,7 @@ struct ServerProcess {
 
 impl ServerProcess {
     fn start(project: &std::path::Path, db_dir: &std::path::Path, log: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_memlite-mcp"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_memlite"))
             .arg("serve")
             .arg("--project-path")
             .arg(project)

@@ -59,7 +59,7 @@ strip = true
 panic = "abort"
 
 [[bin]]
-name = "memlite-mcp"
+name = "memlite"
 path = "src/main.rs"
 
 [profile.bench]

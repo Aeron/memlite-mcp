@@ -574,7 +574,7 @@ mod tests {
 
     async fn test_server() -> MemServer {
         let Cli { config, .. } = Cli::try_parse_from([
-            "memlite-mcp",
+            "memlite",
             "serve",
             "--project-path",
             "/tmp/memlite-mcp-server-test",

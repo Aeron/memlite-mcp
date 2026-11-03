@@ -21,7 +21,7 @@ use crate::{
 
 /// Parses top-level server and memory management commands.
 #[derive(Parser)]
-#[command(name = "memlite-mcp", version, about)]
+#[command(name = "memlite", version, about)]
 pub(crate) struct Cli {
     #[command(flatten)]
     pub(crate) config: Config,
@@ -783,13 +783,11 @@ mod tests {
     #[test]
     fn parses_serve_and_tool_namespaces() {
         assert!(matches!(
-            Cli::try_parse_from(["memlite-mcp", "serve"])
-                .unwrap()
-                .command,
+            Cli::try_parse_from(["memlite", "serve"]).unwrap().command,
             Command::Serve
         ));
         assert!(matches!(
-            Cli::try_parse_from(["memlite-mcp", "tool", "list"])
+            Cli::try_parse_from(["memlite", "tool", "list"])
                 .unwrap()
                 .command,
             Command::Tool(_)
@@ -799,7 +797,7 @@ mod tests {
     #[test]
     fn parses_global_options_after_nested_subcommands() {
         let cli = Cli::try_parse_from([
-            "memlite-mcp",
+            "memlite",
             "tool",
             "list",
             "--format",
@@ -821,29 +819,19 @@ mod tests {
             ("--outcome", "accepted"),
             ("--phase", "active"),
         ] {
-            assert!(Cli::try_parse_from(["memlite-mcp", "tool", "list", flag, value]).is_ok());
-            assert!(Cli::try_parse_from(["memlite-mcp", "tool", "list", flag, "unknown"]).is_err());
+            assert!(Cli::try_parse_from(["memlite", "tool", "list", flag, value]).is_ok());
+            assert!(Cli::try_parse_from(["memlite", "tool", "list", flag, "unknown"]).is_err());
+            assert!(Cli::try_parse_from(["memlite", "tool", "update", "1", flag, value]).is_ok());
             assert!(
-                Cli::try_parse_from(["memlite-mcp", "tool", "update", "1", flag, value]).is_ok()
-            );
-            assert!(
-                Cli::try_parse_from(["memlite-mcp", "tool", "update", "1", flag, "unknown"])
-                    .is_err()
+                Cli::try_parse_from(["memlite", "tool", "update", "1", flag, "unknown"]).is_err()
             );
         }
         assert!(
-            Cli::try_parse_from([
-                "memlite-mcp",
-                "tool",
-                "traverse",
-                "1",
-                "--direction",
-                "both"
-            ])
-            .is_ok()
+            Cli::try_parse_from(["memlite", "tool", "traverse", "1", "--direction", "both"])
+                .is_ok()
         );
         assert!(
-            Cli::try_parse_from(["memlite-mcp", "tool", "traverse", "1", "--direction", "inn"])
+            Cli::try_parse_from(["memlite", "tool", "traverse", "1", "--direction", "inn"])
                 .is_err()
         );
     }

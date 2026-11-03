@@ -1,7 +1,7 @@
 use std::{path::Path, process::Command};
 
 fn run_stats(project: &Path, db_dir: &Path, log_file: Option<&Path>) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_memlite-mcp"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_memlite"));
     command
         .args(["tool", "stats", "--format", "json"])
         .arg("--project-path")
@@ -13,6 +13,28 @@ fn run_stats(project: &Path, db_dir: &Path, log_file: Option<&Path>) -> std::pro
         command.arg("--log-file").arg(log_file);
     }
     command.output().unwrap()
+}
+
+#[test]
+fn help_and_version_use_memlite_name() {
+    let output = Command::new(env!("CARGO_BIN_EXE_memlite"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.contains("Usage: memlite "), "{help}");
+
+    // Checking the version name independently of the Cargo package name
+    let output = Command::new(env!("CARGO_BIN_EXE_memlite"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("memlite {}\n", env!("CARGO_PKG_VERSION"))
+    );
 }
 
 #[test]
@@ -34,7 +56,7 @@ fn tool_json_output_omits_logs() {
 fn tool_delete_missing_memory_reports_false() {
     let project = tempfile::tempdir().unwrap();
     let db_dir = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_memlite-mcp"))
+    let output = Command::new(env!("CARGO_BIN_EXE_memlite"))
         .args(["tool", "delete", "999", "--format", "json"])
         .arg("--project-path")
         .arg(project.path())
