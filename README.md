@@ -72,6 +72,14 @@ binary directory instead:
 cargo install --path . --locked
 ```
 
+On Apple Silicon macOS, the bundled ONNX Runtime objects target macOS 13.4. Set
+`MACOSX_DEPLOYMENT_TARGET` to `13.4` or newer for either command so Rust and native
+dependencies use the same minimum version:
+
+```sh
+MACOSX_DEPLOYMENT_TARGET=13.4 cargo build --release --locked
+```
+
 Cargo's binary directory must be on your `PATH` to run the installed command.
 
 ## Use

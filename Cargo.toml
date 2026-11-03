@@ -10,7 +10,7 @@ keywords = ["mcp", "memory", "agent", "embeddings", "sqlite"]
 license = "Zlib"
 readme = "README.md"
 repository = "https://github.com/Aeron/memlite-mcp"
-include = ["/src/**/*", "/docs/**/*.md", "/LICENSE", "/README.md"]
+include = ["/src/**/*", "/docs/**/*.md", "/build.rs", "/LICENSE", "/README.md"]
 
 [dependencies]
 # MCP server: official Rust SDK with stdio transport and tool macros
