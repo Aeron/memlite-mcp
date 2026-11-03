@@ -82,6 +82,25 @@ MACOSX_DEPLOYMENT_TARGET=13.4 cargo build --release --locked
 
 Cargo's binary directory must be on your `PATH` to run the installed command.
 
+## Development
+
+With [just](https://just.systems/) installed, run `just` to list available commands.
+The recipes default `MACOSX_DEPLOYMENT_TARGET` to `13.4` while preserving an existing
+environment override.
+
+```sh
+just check
+just release
+just install
+just run --help
+just test -- --test-threads=1
+just bench --bench toon_format -- --noplot
+```
+
+`just check` checks formatting, runs Clippy on all targets, and runs tests. Build,
+install, lint, test, and benchmark recipes forward extra arguments to Cargo;
+`just run` forwards them to MemLite.
+
 ## Use
 
 Configure your MCP client to run `memlite serve`. MemLite uses the first
