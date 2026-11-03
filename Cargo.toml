@@ -2,7 +2,7 @@
 name = "memlite-mcp"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.92"
 authors = ["Eugene \"Aeron\" Glybin"]
 description = "Persistent agent memory MCP server and CLI using local SQLite storage and ONNX embeddings."
 categories = ["command-line-utilities", "development-tools"]
@@ -20,7 +20,7 @@ rmcp = { version = "1.6.0", features = ["client", "server", "transport-io", "mac
 libsql = { version = "0.9.30", default-features = false, features = ["core"] }
 
 # Embeddings: local ONNX inference (BAAI/bge-small-en-v1.5, 384 dims)
-fastembed = { version = "6.0.0", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
+fastembed = { version = "7.5.0", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
 
 # Async runtime
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

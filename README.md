@@ -54,7 +54,7 @@ born naturally from my day-to-day personal and professional workflows. So, voila
 
 ## Build and install
 
-The build requires Rust 1.89 or newer and a native build toolchain. MemLite uses Unix
+The build requires Rust 1.92 or newer and a native build toolchain. MemLite uses Unix
 sockets and file locks for its shared worker.
 
 Clone the repository, then build or install from the checkout:
