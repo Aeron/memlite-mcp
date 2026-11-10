@@ -58,12 +58,11 @@ pub async fn run(
     let version = transaction_user_version(&tx).await?;
 
     if version > SCHEMA_VERSION {
-        tracing::warn!(
-            db_version = version,
-            code_version = SCHEMA_VERSION,
-            "database schema is newer than this binary; some fields may be unrecognised"
-        );
-    } else if version < SCHEMA_VERSION {
+        return Err(anyhow!(
+            "database schema version {version} is newer than supported version {SCHEMA_VERSION}; upgrade memlite before opening this database"
+        ));
+    }
+    if version < SCHEMA_VERSION {
         if embedding_dimensions == 0 {
             return Err(anyhow!("embedding dimensions must be greater than zero"));
         }
@@ -189,6 +188,58 @@ mod tests {
         run(&conn, "test-model", 2).await.unwrap();
         run(&conn, "test-model", 2).await.unwrap();
         assert_eq!(user_version(&conn).await.unwrap(), SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn open_rejects_newer_schema_without_changes() {
+        let file = NamedTempFile::new().unwrap();
+        let conn = Builder::new_local(file.path())
+            .build()
+            .await
+            .unwrap()
+            .connect()
+            .unwrap();
+        run(&conn, "test-model", 2).await.unwrap();
+
+        // Preparing future-schema data with missing model metadata
+        conn.execute(
+            "insert into memories (content, summary, created_at, updated_at)
+             values ('future content', 'future summary', 1, 1)",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute("delete from meta", ()).await.unwrap();
+        let version = SCHEMA_VERSION + 1;
+        conn.execute(&format!("pragma user_version = {version}"), ())
+            .await
+            .unwrap();
+
+        let error = crate::db::MemoryStore::open(file.path(), "test-model", 2)
+            .await
+            .err()
+            .expect("newer schema should fail to open");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "database schema version {version} is newer than supported version {SCHEMA_VERSION}; upgrade memlite before opening this database"
+            )
+        );
+
+        // Checking rejection leaves memory data, metadata and version unchanged
+        assert_eq!(user_version(&conn).await.unwrap(), version);
+        let mut rows = conn
+            .query(
+                "select content, summary, (select count(*) from meta) from memories",
+                (),
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!(row.get::<String>(0).unwrap(), "future content");
+        assert_eq!(row.get::<String>(1).unwrap(), "future summary");
+        assert_eq!(row.get::<i64>(2).unwrap(), 0);
+        assert!(rows.next().await.unwrap().is_none());
     }
 
     #[tokio::test]
