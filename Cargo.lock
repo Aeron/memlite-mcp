@@ -1612,6 +1612,7 @@ dependencies = [
  "libsql",
  "mimalloc",
  "rmcp",
+ "rustix 1.1.5",
  "schemars",
  "serde",
  "serde_json",

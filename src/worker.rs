@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
+    fs::{DirBuilder, File, OpenOptions},
     io::ErrorKind,
-    os::unix::fs::{FileTypeExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, Weak},
     time::{Duration, Instant},
@@ -218,10 +218,38 @@ impl WorkerPaths {
     fn new(dir: PathBuf) -> Self {
         let hash = format!("{:x}", Sha256::digest(dir.as_os_str().as_encoded_bytes()));
         Self {
-            socket: PathBuf::from("/tmp").join(format!("memlite-{}.sock", &hash[..32])),
+            socket: PathBuf::from("/tmp")
+                .join(format!("memlite-{}", &hash[..32]))
+                .join("worker.sock"),
             lock: dir.join("worker.lock"),
             dir,
         }
+    }
+
+    fn prepare_socket_dir(&self) -> Result<()> {
+        let dir = self.socket.parent().expect("worker socket has a parent");
+        match DirBuilder::new().mode(0o700).create(dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("creating shared worker socket directory {}", dir.display())
+                });
+            }
+        }
+
+        // Rejecting pre-created paths instead of repairing a possibly hostile directory
+        let metadata = std::fs::symlink_metadata(dir)?;
+        if !metadata.is_dir()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o777 != 0o700
+        {
+            bail!(
+                "refusing untrusted shared worker socket directory {}: expected a directory owned by the current user with mode 0700",
+                dir.display()
+            );
+        }
+        Ok(())
     }
 }
 
@@ -327,6 +355,7 @@ impl Remote {
     }
 
     async fn connect_or_elect(&self) -> Result<ClientService> {
+        self.paths.prepare_socket_dir()?;
         std::fs::create_dir_all(&self.paths.dir)?;
         let started = Instant::now();
         let mut last_error: String;
@@ -496,6 +525,101 @@ mod tests {
         assert!(WorkerGuard::try_acquire(&path).unwrap().is_some());
     }
 
+    #[test]
+    fn socket_directory_is_private_and_reusable() {
+        let db_dir = tempdir().unwrap();
+        let paths = WorkerPaths::new(db_dir.path().to_path_buf());
+        let dir = paths.socket.parent().unwrap();
+        paths.prepare_socket_dir().unwrap();
+        paths.prepare_socket_dir().unwrap();
+
+        let metadata = std::fs::symlink_metadata(dir).unwrap();
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.mode() & 0o777, 0o700);
+        assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn connection_rejects_permissive_socket_directory_before_handshake() {
+        for mode in [0o755, 0o770, 0o707] {
+            let project = tempdir().unwrap();
+            let db_dir = tempdir().unwrap();
+            let paths = WorkerPaths::new(db_dir.path().to_path_buf());
+            let dir = paths.socket.parent().unwrap();
+            std::fs::create_dir(dir).unwrap();
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            let listener = UnixListener::bind(&paths.socket).unwrap();
+
+            let error = Remote::connect(
+                db_dir.path().to_path_buf(),
+                spec(project.path(), db_dir.path()),
+            )
+            .await
+            .err()
+            .expect("untrusted socket directory must be rejected");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("untrusted shared worker socket directory")
+            );
+            assert_eq!(std::fs::metadata(dir).unwrap().mode() & 0o777, mode);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err()
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_rejects_symlinked_socket_directory_before_handshake() {
+        let project = tempdir().unwrap();
+        let db_dir = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        let paths = WorkerPaths::new(db_dir.path().to_path_buf());
+        let dir = paths.socket.parent().unwrap();
+        std::os::unix::fs::symlink(target.path(), dir).unwrap();
+        let listener = UnixListener::bind(&paths.socket).unwrap();
+
+        let error = Remote::connect(
+            db_dir.path().to_path_buf(),
+            spec(project.path(), db_dir.path()),
+        )
+        .await
+        .err()
+        .expect("symlinked socket directory must be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("untrusted shared worker socket directory")
+        );
+        assert!(std::fs::symlink_metadata(dir).unwrap().is_symlink());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+        std::fs::remove_file(dir).unwrap();
+    }
+
+    #[test]
+    fn socket_directory_rejects_files_and_dangling_symlinks() {
+        let db_dir = tempdir().unwrap();
+        let mut paths = WorkerPaths::new(db_dir.path().to_path_buf());
+        paths.socket = db_dir.path().join("socket-dir/worker.sock");
+        let dir = paths.socket.parent().unwrap();
+        std::fs::write(dir, b"").unwrap();
+        assert!(paths.prepare_socket_dir().is_err());
+        std::fs::remove_file(dir).unwrap();
+
+        std::os::unix::fs::symlink(db_dir.path().join("missing"), dir).unwrap();
+        assert!(paths.prepare_socket_dir().is_err());
+    }
+
     #[tokio::test]
     async fn previous_protocol_without_batch_field_gets_mismatch_response() {
         let project = tempdir().unwrap();
@@ -593,6 +717,8 @@ mod tests {
         let project = tempdir().unwrap();
         let db_dir = tempdir().unwrap();
         let paths = WorkerPaths::new(db_dir.path().to_path_buf());
+        paths.prepare_socket_dir().unwrap();
+
         let listener = UnixListener::bind(&paths.socket).unwrap();
         let stalled = tokio::spawn(async move {
             let (_stream, _) = listener.accept().await.unwrap();
@@ -612,7 +738,7 @@ mod tests {
 
         assert!(remote.peer().await.is_ok());
         stalled.abort();
-        std::fs::remove_file(paths.socket).unwrap();
+        std::fs::remove_dir_all(paths.socket.parent().unwrap()).unwrap();
     }
 
     #[test]

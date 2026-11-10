@@ -110,8 +110,13 @@ still hash the entire project path.
 Every `serve` process starts as a peer. The first process for a canonical
 database directory takes `worker.lock` and runs memory operations for
 connected MCP sessions. Later processes retain their client-facing MCP
-session and proxy tool operations over a private mode-0600 Unix socket in
-`/tmp`. There is no separate daemon command or detached process.
+session and proxy tool operations over a mode-0600 Unix socket at
+`/tmp/memlite-<hash>/worker.sock`. The hash is the first 32 hexadecimal
+characters of the SHA256 of the canonical database directory path. MemLite
+creates the socket directory with mode 0700 and verifies its ownership and
+permissions before connecting. Symlinks, other owners, and other modes are
+rejected without changing the existing path. There is no separate daemon
+command or detached process.
 
 The worker keeps one lazy database handle per active project. Read-only
 sessions do not open or create absent databases. Embedding models also load

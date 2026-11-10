@@ -40,6 +40,7 @@ strum = { version = "0.27", features = ["derive"] }
 # Utilities
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "6"
+rustix = { version = "1", features = ["process"] }
 sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
