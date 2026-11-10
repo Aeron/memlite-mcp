@@ -3,6 +3,7 @@ use anyhow::{Result, anyhow};
 /// SQL statements grouped by source schema version
 const MIGRATIONS: &[&[&str]] = &[&[
     "create table memories (
+        id           integer primary key autoincrement,
         content      text not null,
         summary      text not null,
         tags         text not null default '[]',

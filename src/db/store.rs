@@ -1280,6 +1280,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn identifiers_survive_deletion_vacuum_and_reopen() {
+        let (store, tmp) = fresh().await;
+        let first = store
+            .insert("first", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        let deleted = store
+            .insert("deleted", &V2, InsertOptions::default())
+            .await
+            .unwrap();
+        assert!(store.delete(deleted).await.unwrap());
+        let surviving = store
+            .insert("surviving", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        assert!(surviving > deleted);
+        assert!(!store.delete(deleted).await.unwrap());
+        assert!(store.delete(first).await.unwrap());
+
+        // Checking maintenance with a gap before the surviving identifier
+        store
+            .write_conn
+            .lock()
+            .await
+            .execute("vacuum", ())
+            .await
+            .unwrap();
+        let memories = store.list(FilterOptions::default(), 10, 0).await.unwrap();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].id, surviving);
+        assert!(store.delete(surviving).await.unwrap());
+        drop(store);
+
+        // Checking the persisted sequence after every memory has been deleted
+        let store = MemoryStore::open(tmp.path(), "test-model", 2)
+            .await
+            .unwrap();
+        let next = store
+            .insert("next", &V1, InsertOptions::default())
+            .await
+            .unwrap();
+        assert!(next > surviving);
+    }
+
+    #[tokio::test]
     async fn delete_missing_returns_false() {
         let (store, _tmp) = fresh().await;
         assert!(!store.delete(999).await.unwrap());

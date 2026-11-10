@@ -8,6 +8,12 @@ Each memory requires `content`, `summary`, and `memory_type`. Optional fields
 are `tags`, `context`, `confidence`, `decay_rate`, `attrs`, `relations`, and
 `refs`.
 
+## Memory identifiers
+
+Each memory has a stable numeric identifier within its project database.
+Deletion does not make that identifier available for a later memory, and
+SQLite maintenance preserves surviving identifiers.
+
 ## Memory types
 
 The required `memory_type` field classifies a memory's content.
