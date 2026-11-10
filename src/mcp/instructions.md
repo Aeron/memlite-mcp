@@ -152,4 +152,4 @@ Delete only when fully obsolete or factually wrong with nothing salvageable. Con
 
 ## Shared worker
 
-Ordinary server processes elect one shared worker per database directory. Other processes proxy memory operations while retaining their client MCP sessions. Worker holds one lazy database per active project and loads each selected embedding model lazily once across projects when cache settings match. If it exits, one proxy promotes automatically and others reconnect. Retry a request that overlaps failover.
+Ordinary server processes elect one shared worker per database directory. Other processes proxy memory operations while retaining their client MCP sessions. Worker holds one lazy database per active project and loads each selected embedding model lazily once across projects when cache settings match. If it exits, one proxy promotes automatically and others reconnect. In-flight requests are not replayed because a write may already have committed. Check whether a write took effect before retrying it.
