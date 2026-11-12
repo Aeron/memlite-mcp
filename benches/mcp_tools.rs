@@ -214,6 +214,7 @@ impl McpClient {
 impl Drop for McpClient {
     fn drop(&mut self) {
         let _ = self._child.kill();
+        let _ = self._child.wait();
     }
 }
 
@@ -245,11 +246,11 @@ fn seed(client: &mut McpClient, count: usize) {
     }
 }
 
-fn seeded_client(count: usize) -> (TempDir, McpClient) {
+fn seeded_client(count: usize) -> (McpClient, TempDir) {
     let tmp = TempDir::new_in("/tmp").unwrap();
     let mut client = McpClient::new(tmp.path());
     seed(&mut client, count);
-    (tmp, client)
+    (client, tmp)
 }
 
 fn bench_write(c: &mut Criterion) {
@@ -259,11 +260,11 @@ fn bench_write(c: &mut Criterion) {
     let mut state = None;
     group.bench_function("warm", |b| {
         // Initializing one process lazily for this matched benchmark
-        let (_, client) = state.get_or_insert_with(|| {
+        let (client, _) = state.get_or_insert_with(|| {
             let tmp = TempDir::new_in("/tmp").unwrap();
             let mut client = McpClient::new(tmp.path());
             client.store("warmup", &[]);
-            (tmp, client)
+            (client, tmp)
         });
         b.iter(|| client.store(BENCH_CONTENT, &["bench"]));
     });
@@ -279,7 +280,7 @@ fn bench_search(c: &mut Criterion) {
     for &n in &[100usize, 1_000, 10_000, 100_000] {
         let mut state = None;
         group.bench_with_input(BenchmarkId::new("n", n), &n, |b, &n| {
-            let (_, client) = state.get_or_insert_with(|| seeded_client(n));
+            let (client, _) = state.get_or_insert_with(|| seeded_client(n));
             b.iter(|| client.search(BENCH_QUERY, 10));
         });
     }
@@ -292,7 +293,7 @@ fn bench_list(c: &mut Criterion) {
     for (name, include_content) in [("full", true), ("compact", false)] {
         let mut state = None;
         group.bench_function(name, |b| {
-            let (_, client) = state.get_or_insert_with(|| seeded_client(100));
+            let (client, _) = state.get_or_insert_with(|| seeded_client(100));
             b.iter(|| client.list(20, include_content));
         });
     }
@@ -303,7 +304,7 @@ fn bench_tags(c: &mut Criterion) {
     let mut group = c.benchmark_group("tags");
     let mut state = None;
     group.bench_function("n100", |b| {
-        let (_, client) = state.get_or_insert_with(|| seeded_client(100));
+        let (client, _) = state.get_or_insert_with(|| seeded_client(100));
         b.iter(|| client.tags());
     });
     group.finish();

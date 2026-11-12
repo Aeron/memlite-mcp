@@ -139,9 +139,15 @@ Sessions sharing a project must select the same model, batch cap, and cache
 directory. Conflicting settings fail during initialization. Database
 metadata also rejects a different model for an already populated project.
 
-When the worker exits, the operating system releases its lock. One
-connected proxy becomes the worker and the others reconnect. Client MCP
-sessions remain open. The worker does not replay in-flight requests
+On normal shutdown, the worker removes its socket before the operating
+system releases its lock. The lock file stays in place so peers always
+lock the same file. Forced termination can leave a stale socket; the next
+elected worker replaces it while holding the lock. Test and benchmark
+sockets live inside their managed temporary database directories and are
+removed with those directories.
+
+When the worker exits, one connected proxy becomes the worker and the
+others reconnect. Client MCP sessions remain open. The worker does not replay in-flight requests
 because a write may already have committed. A request during failover can
 fail. Check whether a write took effect before retrying it.
 

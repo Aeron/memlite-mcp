@@ -249,6 +249,7 @@ impl WorkerPaths {
 
 struct WorkerGuard {
     _file: File,
+    socket: Option<PathBuf>,
 }
 
 impl WorkerGuard {
@@ -260,9 +261,24 @@ impl WorkerGuard {
             .write(true)
             .open(path)?;
         match file.try_lock().map_err(std::io::Error::from) {
-            Ok(()) => Ok(Some(Self { _file: file })),
+            Ok(()) => Ok(Some(Self {
+                _file: file,
+                socket: None,
+            })),
             Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(None),
             Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        // Unlinking before releasing the lock so a successor cannot lose its socket
+        if let Some(socket) = &self.socket
+            && let Err(error) = std::fs::remove_file(socket)
+            && error.kind() != ErrorKind::NotFound
+        {
+            tracing::warn!(%error, socket = %socket.display(), "shared worker socket cleanup failed");
         }
     }
 }
@@ -405,7 +421,7 @@ impl Remote {
     }
 }
 
-async fn start_worker(paths: &WorkerPaths, guard: WorkerGuard) -> Result<()> {
+async fn start_worker(paths: &WorkerPaths, mut guard: WorkerGuard) -> Result<()> {
     match std::fs::symlink_metadata(&paths.socket) {
         Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(&paths.socket)?,
         Ok(_) => bail!(
@@ -418,6 +434,7 @@ async fn start_worker(paths: &WorkerPaths, guard: WorkerGuard) -> Result<()> {
 
     let listener = UnixListener::bind(&paths.socket)
         .with_context(|| format!("binding shared worker socket {}", paths.socket.display()))?;
+    guard.socket = Some(paths.socket.clone());
     std::fs::set_permissions(&paths.socket, std::fs::Permissions::from_mode(0o600))?;
     let registry = Arc::new(Registry::default());
     tracing::info!(socket = %paths.socket.display(), "shared worker elected");
@@ -526,6 +543,35 @@ mod tests {
         assert!(WorkerGuard::try_acquire(&path).unwrap().is_none());
         drop(first);
         assert!(WorkerGuard::try_acquire(&path).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_election_preserves_non_socket_paths() {
+        let db_dir = tempfile::tempdir_in("/tmp").unwrap();
+        let paths = WorkerPaths::new(db_dir.path().to_path_buf());
+        let target = db_dir.path().join("keep");
+        std::fs::write(&target, b"keep").unwrap();
+
+        for symlink in [false, true] {
+            if symlink {
+                std::os::unix::fs::symlink(&target, &paths.socket).unwrap();
+            } else {
+                std::fs::write(&paths.socket, b"keep").unwrap();
+            }
+            let guard = WorkerGuard::try_acquire(&paths.lock).unwrap().unwrap();
+            let error = start_worker(&paths, guard).await.unwrap_err();
+
+            assert!(error.to_string().contains("refusing to replace non-socket"));
+            assert_eq!(std::fs::read(&paths.socket).unwrap(), b"keep");
+            assert_eq!(
+                std::fs::symlink_metadata(&paths.socket)
+                    .unwrap()
+                    .is_symlink(),
+                symlink
+            );
+            assert!(WorkerGuard::try_acquire(&paths.lock).unwrap().is_some());
+            std::fs::remove_file(&paths.socket).unwrap();
+        }
     }
 
     #[test]

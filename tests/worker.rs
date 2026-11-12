@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 struct ServerProcess {
     child: Option<Child>,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     stdout: Receiver<String>,
     log: PathBuf,
 }
@@ -44,7 +44,7 @@ impl ServerProcess {
         });
         Self {
             child: Some(child),
-            stdin,
+            stdin: Some(stdin),
             stdout: rx,
             log: log.to_path_buf(),
         }
@@ -102,9 +102,23 @@ impl ServerProcess {
     }
 
     fn send(&mut self, message: Value) {
-        serde_json::to_writer(&mut self.stdin, &message).unwrap();
-        self.stdin.write_all(b"\n").unwrap();
-        self.stdin.flush().unwrap();
+        let stdin = self.stdin.as_mut().unwrap();
+        serde_json::to_writer(&mut *stdin, &message).unwrap();
+        stdin.write_all(b"\n").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    fn shutdown(&mut self) {
+        self.stdin.take();
+        for _ in 0..100 {
+            if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
+                assert!(status.success(), "server exited with {status}");
+                self.child.take();
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!("server did not exit after stdin closed");
     }
 
     fn kill(&mut self) {
@@ -131,6 +145,30 @@ fn explicit_project_does_not_request_roots() {
     let log = db_dir.path().join("explicit.log");
     let mut server = ServerProcess::start(project.path(), db_dir.path(), &log);
     server.initialize_with_capabilities(json!({"roots": {"listChanged": true}}));
+}
+
+#[test]
+fn shutdown_removes_socket_and_allows_restart() {
+    let project = tempfile::tempdir().unwrap();
+    let db_dir = tempfile::tempdir_in("/tmp").unwrap();
+    let log = db_dir.path().join("shutdown.log");
+    let socket = db_dir.path().join("worker.sock");
+    let lock = db_dir.path().join("worker.lock");
+
+    for _ in 0..2 {
+        let mut server = ServerProcess::start(project.path(), db_dir.path(), &log);
+        server.initialize();
+        assert!(socket.exists());
+        assert!(lock.exists());
+
+        server.shutdown();
+        assert!(!socket.exists(), "worker left its socket after shutdown");
+        assert!(lock.exists(), "removing lock path breaks election safety");
+    }
+
+    let path = db_dir.path().to_path_buf();
+    db_dir.close().unwrap();
+    assert!(!path.exists(), "test left its database directory behind");
 }
 
 #[test]
