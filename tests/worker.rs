@@ -127,7 +127,7 @@ impl Drop for ServerProcess {
 #[test]
 fn explicit_project_does_not_request_roots() {
     let project = tempfile::tempdir().unwrap();
-    let db_dir = tempfile::tempdir().unwrap();
+    let db_dir = tempfile::tempdir_in("/tmp").unwrap();
     let log = db_dir.path().join("explicit.log");
     let mut server = ServerProcess::start(project.path(), db_dir.path(), &log);
     server.initialize_with_capabilities(json!({"roots": {"listChanged": true}}));
@@ -137,7 +137,7 @@ fn explicit_project_does_not_request_roots() {
 fn proxies_share_worker_and_promote_after_worker_exit() {
     let project_a = tempfile::tempdir().unwrap();
     let project_b = tempfile::tempdir().unwrap();
-    let db_dir = tempfile::tempdir().unwrap();
+    let db_dir = tempfile::tempdir_in("/tmp").unwrap();
     let log_a = db_dir.path().join("a.log");
     let log_b = db_dir.path().join("b.log");
 

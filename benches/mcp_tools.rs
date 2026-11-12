@@ -246,7 +246,7 @@ fn seed(client: &mut McpClient, count: usize) {
 }
 
 fn seeded_client(count: usize) -> (TempDir, McpClient) {
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new_in("/tmp").unwrap();
     let mut client = McpClient::new(tmp.path());
     seed(&mut client, count);
     (tmp, client)
@@ -260,7 +260,7 @@ fn bench_write(c: &mut Criterion) {
     group.bench_function("warm", |b| {
         // Initializing one process lazily for this matched benchmark
         let (_, client) = state.get_or_insert_with(|| {
-            let tmp = TempDir::new().unwrap();
+            let tmp = TempDir::new_in("/tmp").unwrap();
             let mut client = McpClient::new(tmp.path());
             client.store("warmup", &[]);
             (tmp, client)

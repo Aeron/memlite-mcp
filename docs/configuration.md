@@ -111,12 +111,23 @@ Every `serve` process starts as a peer. The first process for a canonical
 database directory takes `worker.lock` and runs memory operations for
 connected MCP sessions. Later processes retain their client-facing MCP
 session and proxy tool operations over a mode-0600 Unix socket at
-`/tmp/memlite-<hash>/worker.sock`. The hash is the first 32 hexadecimal
-characters of the SHA256 of the canonical database directory path. MemLite
-creates the socket directory with mode 0700 and verifies its ownership and
-permissions before connecting. Symlinks, other owners, and other modes are
-rejected without changing the existing path. There is no separate daemon
-command or detached process.
+`<db-dir>/worker.sock`, beside `worker.lock`. No temporary socket directory
+or path hash is needed. The canonical database directory must belong to
+the current effective user and must not allow group or other write access.
+Modes such as 0700 and 0755 are accepted without changing permissions.
+Both ends verify peer credentials before exchanging protocol data, including
+on systems that do not enforce socket permission bits. One worker serves
+one user per database directory; different users must use separate directories.
+There is no separate daemon command or detached process.
+
+The canonical socket path must fit the operating system's Unix socket limit
+(103 bytes on macOS, 107 on Linux). Longer paths fail immediately with a
+request to use a shorter `--db-dir`. A shorter symlink alias does not help
+because the database directory is canonicalized.
+
+When upgrading from temporary socket paths, stop all existing `serve`
+processes sharing the database directory before starting upgraded processes.
+Old and new peers share the lock but cannot connect to each other's sockets.
 
 The worker keeps one lazy database handle per active project. Read-only
 sessions do not open or create absent databases. Embedding models also load
