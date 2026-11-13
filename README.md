@@ -154,6 +154,17 @@ for all arguments, environment variables, model choices, and direct commands.
 - [MCP tools](docs/tools.md)
 - [Benchmarks and measured results](docs/benchmarks.md)
 
+## Contributing
+
+You’re welcome to fork MemLite, report bugs, suggest improvements, and submit
+pull requests. Please be kind and respectful of everyone’s time. Maintainers
+and authors don’t owe you a response, support, a fix, or acceptance of your
+contribution. Participation is an invitation to collaborate, not an obligation
+for anyone else.
+
+AI-assisted contributions are welcome, but you remain responsible for what you
+submit. Read and follow the [AI usage policy](AI_POLICY.md) before contributing.
+
 ## Acknowledgments
 
 - **[RMCP](https://github.com/modelcontextprotocol/rust-sdk)** by [Model Context
