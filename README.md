@@ -81,6 +81,23 @@ experience.
 - **Four embedding models**: English-first BGE v1.5 variants and multilingual
   `bge-m3`
 
+## Prebuilt binaries
+
+Download an archive and its matching SHA-256 checksum from
+[GitHub Releases](https://github.com/Aeron/memlite-mcp/releases). Extract the
+archive and put `memlite` on your `PATH`.
+
+Available targets:
+
+- Linux x86-64: `x86_64-unknown-linux-gnu`
+- Linux ARM64: `aarch64-unknown-linux-gnu`
+- Apple Silicon macOS 13.4 or newer: `aarch64-apple-darwin`
+
+Linux binaries are built on Ubuntu 24.04 and require compatible GNU libc,
+OpenSSL, and C++ runtime libraries. They are not static musl builds. The locked
+ONNX Runtime dependency has no prebuilt musl or Intel macOS library; those
+release targets are omitted. Windows is unsupported by the Unix worker.
+
 ## Build and install
 
 The build requires Rust 1.92 or newer and a native build toolchain. MemLite uses
@@ -90,8 +107,8 @@ Clone the repository, then build or install from the checkout:
 
 ```sh
 git clone https://github.com/Aeron/memlite-mcp.git
-cd memlite-mcp cargo
-build --release --locked
+cd memlite-mcp
+cargo build --release --locked
 ```
 
 The build produces `target/release/memlite`. To install it into Cargo’s binary
@@ -153,6 +170,26 @@ for all arguments, environment variables, model choices, and direct commands.
 - [Memory model](docs/memory.md)
 - [MCP tools](docs/tools.md)
 - [Benchmarks and measured results](docs/benchmarks.md)
+
+## Releasing
+
+1. Update `Cargo.toml` and `Cargo.lock`, then commit the version change.
+2. Push a tag matching the package version exactly, such as `0.1.0` (no `v`
+   prefix). The Release Draft workflow validates the version and creates a
+   draft with generated notes.
+3. Review and publish the draft on GitHub. The Binaries workflow tests and
+   builds each native target, uploads archives with SHA-256 checksums, then
+   publishes the Cargo package.
+
+Configure the repository Actions secret `CARGO_REGISTRY_TOKEN` with crates.io
+publication rights. An exact crate version already on crates.io is skipped
+successfully; registry and publication errors still fail the job. Binary
+uploads do not depend on crate publication.
+
+To rebuild an existing release, run the Binaries workflow manually and supply
+its published tag. It checks out that tag, replaces the binary assets, and
+skips crate publication if the version already exists. Rerunning Release Draft
+leaves an existing release unchanged.
 
 ## Contributing
 
