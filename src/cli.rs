@@ -15,7 +15,7 @@ use crate::{
     output::{
         compact_list_json, hubs_json, list_json, neighbors_json, path_json,
         render_compact_list_results, render_list_results, render_search_results, render_toon,
-        search_json, stats_json, traverse_json,
+        search_json, stats_json, terminal_text, traverse_json,
     },
 };
 
@@ -753,14 +753,14 @@ fn relations(values: Vec<Relation>) -> Vec<(i64, String)> {
 
 fn write_memories(format: OutputFormat, json: Value, text: &str) -> Result<()> {
     match format {
-        OutputFormat::Text => write_text(text),
+        OutputFormat::Text => write_text(&terminal_text(text)),
         OutputFormat::Json => write_value(format, json),
     }
 }
 
 fn write_value(format: OutputFormat, value: Value) -> Result<()> {
     let text = match format {
-        OutputFormat::Text => render_toon(value)?,
+        OutputFormat::Text => terminal_text(&render_toon(value)?),
         OutputFormat::Json => serde_json::to_string_pretty(&value)?,
     };
     write_text(&text)
