@@ -83,9 +83,10 @@ experience.
 
 ## Prebuilt binaries
 
-Download an archive and its matching SHA-256 checksum from
+Download a binary-only `.tar.gz` archive and its matching SHA-256 checksum from
 [GitHub Releases](https://github.com/Aeron/memlite-mcp/releases). Extract the
-archive and put `memlite` on your `PATH`.
+archive and put `memlite` on your `PATH`. Archives contain only the executable;
+read the documentation in this repository.
 
 Available targets:
 
@@ -180,8 +181,8 @@ for all arguments, environment variables, model choices, and direct commands.
    prefix). The Release Draft workflow validates the version and creates a
    draft with generated notes.
 3. Review and publish the draft on GitHub. The Binaries workflow tests and
-   builds each native target, uploads archives with SHA-256 checksums, then
-   publishes the Cargo package.
+   builds each native target, uploads binary-only archives with SHA-256 checksums,
+   then publishes the Cargo package.
 
 Configure the repository Actions secret `CARGO_REGISTRY_TOKEN` with crates.io
 publication rights. An exact crate version already on crates.io is skipped

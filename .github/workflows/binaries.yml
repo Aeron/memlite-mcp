@@ -81,7 +81,6 @@ jobs:
           build-tool: cargo
           locked: true
           checksum: sha256
-          include: LICENSE,README.md,docs
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: refs/tags/${{ env.RELEASE_TAG }}
 
