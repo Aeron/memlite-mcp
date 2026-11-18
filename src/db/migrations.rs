@@ -55,13 +55,8 @@ pub async fn run(
     let tx = conn
         .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
         .await?;
-    let version = transaction_user_version(&tx).await?;
+    let version = check_version(&tx).await?;
 
-    if version > SCHEMA_VERSION {
-        return Err(anyhow!(
-            "database schema version {version} is newer than supported version {SCHEMA_VERSION}; upgrade memlite before opening this database"
-        ));
-    }
     if version < SCHEMA_VERSION {
         if embedding_dimensions == 0 {
             return Err(anyhow!("embedding dimensions must be greater than zero"));
@@ -144,20 +139,28 @@ async fn user_version(conn: &libsql::Connection) -> Result<usize> {
     Ok(version as usize)
 }
 
-async fn transaction_user_version(tx: &libsql::Transaction) -> Result<usize> {
-    let mut rows = tx.query("pragma user_version", ()).await?;
+/// Rejects unsupported newer schemas without changing database settings or data.
+pub(super) async fn check_version(conn: &libsql::Connection) -> Result<usize> {
+    let mut rows = conn.query("pragma user_version", ()).await?;
     let row = rows
         .next()
         .await?
         .ok_or_else(|| anyhow!("pragma user_version returned no row"))?;
-    let version: i64 = row.get(0)?;
-    Ok(version as usize)
+    let version = row.get::<i64>(0)? as usize;
+    if version > SCHEMA_VERSION {
+        return Err(anyhow!(
+            "database schema version {version} is newer than supported version {SCHEMA_VERSION}; upgrade memlite before opening this database"
+        ));
+    }
+    Ok(version)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
-    use libsql::Builder;
+    use libsql::{Builder, OpenFlags};
     use tempfile::NamedTempFile;
 
     async fn mem_conn() -> libsql::Connection {
@@ -192,7 +195,8 @@ mod tests {
 
     #[tokio::test]
     async fn open_rejects_newer_schema_without_changes() {
-        let file = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = NamedTempFile::new_in(dir.path()).unwrap();
         let conn = Builder::new_local(file.path())
             .build()
             .await
@@ -200,6 +204,20 @@ mod tests {
             .connect()
             .unwrap();
         run(&conn, "test-model", 2).await.unwrap();
+        let mut rows = conn
+            .query("pragma journal_mode = delete", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next()
+                .await
+                .unwrap()
+                .unwrap()
+                .get::<String>(0)
+                .unwrap(),
+            "delete"
+        );
+        drop(rows);
 
         // Preparing future-schema data with missing model metadata
         conn.execute(
@@ -215,6 +233,11 @@ mod tests {
             .await
             .unwrap();
 
+        drop(conn);
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let before = std::fs::read(file.path()).unwrap();
+
         let error = crate::db::MemoryStore::open(file.path(), "test-model", 2)
             .await
             .err()
@@ -225,6 +248,40 @@ mod tests {
                 "database schema version {version} is newer than supported version {SCHEMA_VERSION}; upgrade memlite before opening this database"
             )
         );
+
+        // Checking rejection leaves journal mode, permissions and database bytes unchanged
+        assert_eq!(
+            std::fs::metadata(file.path()).unwrap().permissions().mode() & 0o7777,
+            0o644
+        );
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut sidecar = file.path().as_os_str().to_os_string();
+            sidecar.push(suffix);
+            assert!(!std::path::Path::new(&sidecar).exists());
+        }
+        let conn = Builder::new_local(file.path())
+            .flags(OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .build()
+            .await
+            .unwrap()
+            .connect()
+            .unwrap();
+        let mut rows = conn.query("pragma journal_mode", ()).await.unwrap();
+        assert_eq!(
+            rows.next()
+                .await
+                .unwrap()
+                .unwrap()
+                .get::<String>(0)
+                .unwrap(),
+            "delete"
+        );
+        drop(rows);
+        assert_eq!(std::fs::read(file.path()).unwrap(), before);
 
         // Checking rejection leaves memory data, metadata and version unchanged
         assert_eq!(user_version(&conn).await.unwrap(), version);
@@ -240,6 +297,26 @@ mod tests {
         assert_eq!(row.get::<String>(1).unwrap(), "future summary");
         assert_eq!(row.get::<i64>(2).unwrap(), 0);
         assert!(rows.next().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn run_rejects_newer_schema_inside_transaction() {
+        let conn = mem_conn().await;
+        run(&conn, "test-model", 2).await.unwrap();
+        conn.execute("delete from meta", ()).await.unwrap();
+        let version = SCHEMA_VERSION + 1;
+        conn.execute(&format!("pragma user_version = {version}"), ())
+            .await
+            .unwrap();
+
+        let error = run(&conn, "test-model", 2).await.unwrap_err();
+        assert!(error.to_string().contains("newer than supported"));
+        assert_eq!(user_version(&conn).await.unwrap(), version);
+        let mut rows = conn.query("select count(*) from meta", ()).await.unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

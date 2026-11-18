@@ -46,6 +46,28 @@ The database directory contains one database file per project, plus the
 shared worker's lock. The model cache can be shared across projects.
 `--db-dir` and `--embedding-cache-dir` override these defaults.
 
+### Database permissions
+
+On macOS and Linux, both direct commands and the shared worker create missing
+database directories with mode `0700` and new database files with mode `0600`.
+This does not depend on a restrictive process umask. SQLite creates new WAL,
+SHM, and rollback-journal files using the database file's mode, so new private
+databases also have private sidecars. Missing directory ancestors are created
+with `0700`; existing ancestors are never chmodded.
+
+Directory symlinks are supported and resolved for shared worker identity;
+MemLite does not change the target directory's existing mode. Dangling
+directory symlinks fail. Database and sidecar paths that are symlinks or
+non-regular files are rejected before SQLite opens them, including dangling
+file symlinks. Use trusted parent directories: these path checks do not defend
+against concurrent path replacement by someone who can write those directories.
+Unix modes do not provide encryption or manage filesystem ACLs, backups, model
+caches, or log-file permissions.
+
+A schema-version preflight rejects databases from newer MemLite versions before
+applying persistent pragmas such as WAL mode. Migrations recheck the version
+inside their write transaction before changing schema or model metadata.
+
 ## Project identity
 
 MemLite resolves the project path in this order:

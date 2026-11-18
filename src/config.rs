@@ -1,5 +1,6 @@
 use std::{
-    fs::OpenOptions,
+    fs::{DirBuilder, OpenOptions},
+    os::unix::fs::DirBuilderExt,
     path::{Component, Path, PathBuf},
     sync::Mutex,
 };
@@ -164,7 +165,7 @@ impl Config {
     /// Creates and returns canonical shared database directory.
     pub fn prepare_db_dir(&self) -> Result<PathBuf> {
         let path = self.db_dir();
-        std::fs::create_dir_all(&path)?;
+        create_private_dir_all(&path)?;
         Ok(std::fs::canonicalize(path)?)
     }
 
@@ -286,6 +287,11 @@ impl Config {
     }
 }
 
+/// Creates missing directories with owner-only access, preserving existing modes.
+pub(crate) fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
+    DirBuilder::new().recursive(true).mode(0o700).create(path)
+}
+
 fn absolute_path(path: PathBuf) -> PathBuf {
     std::path::absolute(&path).unwrap_or(path)
 }
@@ -337,6 +343,8 @@ fn local_file_uri_path(uri: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
     use super::*;
 
     fn config(project_path: &str) -> Config {
@@ -365,6 +373,93 @@ mod tests {
             log_file: None,
             log_level: LogLevel::Info,
         }
+    }
+
+    #[test]
+    fn prepare_db_dir_creates_private_directories_without_changing_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut config = config_no_path();
+        let path = root.path().join("new/data");
+        config.db_dir = Some(path.clone());
+
+        assert_eq!(
+            config.prepare_db_dir().unwrap(),
+            path.canonicalize().unwrap()
+        );
+        for dir in [root.path().join("new"), path] {
+            assert_eq!(
+                std::fs::metadata(dir).unwrap().permissions().mode() & 0o7777,
+                0o700
+            );
+        }
+        assert_eq!(
+            std::fs::metadata(root.path()).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+    }
+
+    #[test]
+    fn prepare_db_dir_preserves_existing_custom_directory_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("existing");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut config = config_no_path();
+        config.db_dir = Some(path.clone());
+
+        assert_eq!(
+            config.prepare_db_dir().unwrap(),
+            path.canonicalize().unwrap()
+        );
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+    }
+
+    #[test]
+    fn prepare_db_dir_resolves_directory_symlinks_without_chmod() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let alias = root.path().join("alias");
+        symlink(&target, &alias).unwrap();
+        let mut config = config_no_path();
+        config.db_dir = Some(alias.join("data"));
+
+        assert_eq!(
+            config.prepare_db_dir().unwrap(),
+            target.join("data").canonicalize().unwrap()
+        );
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::metadata(target.join("data"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700
+        );
+        assert!(std::fs::symlink_metadata(alias).unwrap().is_symlink());
+    }
+
+    #[test]
+    fn prepare_db_dir_rejects_dangling_directory_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("missing");
+        let alias = root.path().join("alias");
+        symlink(&target, &alias).unwrap();
+        let mut config = config_no_path();
+        config.db_dir = Some(alias.clone());
+
+        assert!(config.prepare_db_dir().is_err());
+        assert!(!target.exists());
+        assert!(std::fs::symlink_metadata(alias).unwrap().is_symlink());
     }
 
     #[test]

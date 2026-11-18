@@ -1,7 +1,9 @@
-use std::{path::Path, time::Duration};
+use std::{
+    fs::OpenOptions, io::ErrorKind, os::unix::fs::OpenOptionsExt, path::Path, time::Duration,
+};
 
 use anyhow::{Result, anyhow};
-use libsql::{Builder, Connection, Database, Value};
+use libsql::{Builder, Connection, Database, OpenFlags, Value};
 use tokio::sync::Mutex;
 
 use super::helpers::{
@@ -19,6 +21,19 @@ use super::types::{
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 const VECTOR_INDEX_NAME: &str = "memories_embedding_idx";
+
+/// Rejects symlinks and non-regular files without following or changing their targets.
+fn check_database_file(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(anyhow!(
+            "refusing database path {}: expected a regular file, not a symlink or special file",
+            path.display()
+        )),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
 
 async fn validate_relation_targets(tx: &libsql::Transaction, ids: &[i64]) -> Result<()> {
     // Finding missing identifiers with one native JSON table query
@@ -56,11 +71,36 @@ impl MemoryStore {
     /// Opens (or creates) a local SQLite DB at `path`.
     pub async fn open(path: &Path, model_name: &str, embedding_dimensions: usize) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
+            crate::config::create_private_dir_all(parent)?;
         }
-        let db = Builder::new_local(path).build().await?;
+
+        // Rejecting redirected sidecars before SQLite can open or recover them
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            check_database_file(Path::new(&sidecar))?;
+        }
+
+        // Reserving new files privately so SQLite journals inherit owner-only access
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+        {
+            Ok(_) => (),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => check_database_file(path)?,
+            Err(error) => return Err(error.into()),
+        }
+        let db = Builder::new_local(path)
+            .flags(OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .build()
+            .await?;
         let write_conn = db.connect()?;
         write_conn.busy_timeout(BUSY_TIMEOUT)?;
+
+        // Rejecting newer schemas before persistent pragmas, with a transactional recheck below
+        super::migrations::check_version(&write_conn).await?;
         write_conn.query("pragma journal_mode = wal", ()).await?;
         write_conn
             .execute("pragma synchronous = normal", ())
@@ -1046,6 +1086,8 @@ impl MemoryStore {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
     use tempfile::NamedTempFile;
 
     use super::*;
@@ -1057,6 +1099,132 @@ mod tests {
             .await
             .unwrap();
         (store, tmp)
+    }
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[tokio::test]
+    async fn open_creates_private_database_and_sidecars() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = root.path().join("new/data/memory.db");
+        let _store = MemoryStore::open(&path, "test-model", 2).await.unwrap();
+
+        assert_eq!(mode(root.path()), 0o755);
+        assert_eq!(mode(&root.path().join("new")), 0o700);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        for file in [
+            path.clone(),
+            path.with_extension("db-wal"),
+            path.with_extension("db-shm"),
+        ] {
+            assert_eq!(mode(&file), 0o600, "{}", file.display());
+        }
+    }
+
+    #[tokio::test]
+    async fn open_preserves_existing_file_and_directory_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = root.path().join("memory.db");
+        std::fs::write(&path, []).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let store = MemoryStore::open(&path, "test-model", 2).await.unwrap();
+        let _second = MemoryStore::open(&path, "test-model", 2).await.unwrap();
+
+        assert_eq!(mode(root.path()), 0o755);
+        for file in [
+            path.clone(),
+            path.with_extension("db-wal"),
+            path.with_extension("db-shm"),
+        ] {
+            assert_eq!(mode(&file), 0o640, "{}", file.display());
+        }
+        drop(store);
+    }
+
+    #[tokio::test]
+    async fn open_preserves_existing_sidecar_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("memory.db");
+        let _store = MemoryStore::open(&path, "test-model", 2).await.unwrap();
+        for extension in ["db-wal", "db-shm"] {
+            std::fs::set_permissions(
+                path.with_extension(extension),
+                std::fs::Permissions::from_mode(0o640),
+            )
+            .unwrap();
+        }
+        let _second = MemoryStore::open(&path, "test-model", 2).await.unwrap();
+
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&path.with_extension("db-wal")), 0o640);
+        assert_eq!(mode(&path.with_extension("db-shm")), 0o640);
+    }
+
+    #[tokio::test]
+    async fn open_rejects_database_symlinks_without_changing_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"untouched").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let path = root.path().join("memory.db");
+        symlink(&target, &path).unwrap();
+
+        let error = MemoryStore::open(&path, "test-model", 2)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("expected a regular file"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+        assert_eq!(mode(&target), 0o644);
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_symlink());
+
+        std::fs::remove_file(&target).unwrap();
+        assert!(MemoryStore::open(&path, "test-model", 2).await.is_err());
+        assert!(!target.exists());
+        assert!(std::fs::symlink_metadata(path).unwrap().is_symlink());
+    }
+
+    #[tokio::test]
+    async fn open_rejects_sidecar_symlinks_before_creating_database() {
+        for extension in ["db-wal", "db-shm", "db-journal"] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("memory.db");
+            let target = root.path().join("target");
+            std::fs::write(&target, b"untouched").unwrap();
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let sidecar = path.with_extension(extension);
+            symlink(&target, &sidecar).unwrap();
+
+            let error = MemoryStore::open(&path, "test-model", 2)
+                .await
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("expected a regular file"));
+            assert!(!path.exists());
+            assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+            assert_eq!(mode(&target), 0o644);
+            assert!(std::fs::symlink_metadata(&sidecar).unwrap().is_symlink());
+
+            std::fs::remove_file(&target).unwrap();
+            assert!(MemoryStore::open(&path, "test-model", 2).await.is_err());
+            assert!(!target.exists());
+            assert!(!path.exists());
+            assert!(std::fs::symlink_metadata(sidecar).unwrap().is_symlink());
+        }
+    }
+
+    #[tokio::test]
+    async fn open_rejects_non_regular_database_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let error = MemoryStore::open(root.path(), "test-model", 2)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("expected a regular file"));
     }
 
     #[tokio::test]
