@@ -68,7 +68,7 @@ impl MemServer {
     /// Embeds all items through one batched FastEmbed call. Returns identifiers in input order.
     /// Fails atomically: if any item is invalid or any insert fails, nothing is written.
     #[tool(
-        description = "Store one or more memories in one call. Before storing, call memory_tags to reuse the taxonomy, then memory_search for the same concept; if distance < 0.15, update the existing memory instead. Store only information that will save meaningful future effort. Embeds all items through one batched FastEmbed call and inserts them atomically. Returns {\"ids\":[...]} in input order. All succeed or all fail. Maximum 100 items."
+        description = "Store one or more memories in one call. Before storing, call memory_tags to reuse the taxonomy, then memory_search for the same concept; if distance < 0.15, inspect the full record and update only if it records the same fact or decision. Store only information that will save meaningful future effort. Embeds all items through one batched FastEmbed call and inserts them atomically. Returns {\"ids\":[...]} in input order. All succeed or all fail. Maximum 100 items."
     )]
     async fn memory_store(
         &self,
@@ -142,11 +142,11 @@ impl MemServer {
         tool_ok(serde_json::json!({ "ids": ids }))
     }
 
-    /// Embeds `query` and returns the closest stored memories ordered by cosine distance.
+    /// Embeds `query` and returns related memories reranked by keyword overlap.
     ///
     /// Skips embedding entirely when no DB file exists yet.
     #[tool(
-        description = "Search memories by semantic similarity before investigating, debugging, or implementing. Returns closest matches ordered by cosine distance: <0.15 likely same concept, <0.40 related, 0.40-0.70 weak, >0.70 unrelated. effective_confidence >=0.8 is reliable, 0.5-0.8 warrants caution, <0.5 is potentially stale. Content is omitted by default; compact results include the required summary. Pass include_content=true for full context and content; full results omit redundant summary."
+        description = "Search memories by semantic similarity before investigating, debugging, or implementing. Cosine selects candidates; keyword overlap determines final order, cosine breaks ties. Distances may be out of order; no relevance cutoff. Distance: <0.15 likely same concept, <0.40 related, 0.40-0.70 weak, >0.70 unrelated. effective_confidence >=0.8 is reliable, 0.5-0.8 warrants caution, <0.5 is potentially stale. Content is omitted by default; compact results include the required summary. Pass include_content=true for full context and content; full results omit redundant summary."
     )]
     async fn memory_search(
         &self,

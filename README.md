@@ -139,7 +139,8 @@ just check
 just release
 just install
 just run --help
-just test -- --test-threads=1 just bench --bench toon_format -- --noplot
+just test -- --test-threads=1
+just bench --bench toon_format -- --noplot
 ```
 
 `just check` checks formatting, runs Clippy on all targets, and runs tests.
@@ -157,7 +158,8 @@ offline use. Memory storage and inference stay on your machine. Your MCP client
 still controls what it sends to its language-model provider.
 
 ```sh
-memlite serve memlite tool list --limit 10 --include-content false
+memlite serve
+memlite tool list --limit 10 --include-content false
 memlite tool --format json search "project conventions" --limit 5
 ```
 
