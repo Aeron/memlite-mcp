@@ -444,12 +444,18 @@ async fn store(config: &Config, format: OutputFormat, args: StoreArgs) -> Result
 
     let relations = relations(args.relations);
     let attrs = args.attrs.value();
-    let store = open_store(config, true)
-        .await?
-        .expect("create mode must open a store");
-
+    // Validating existing storage before inference without creating an absent database
+    let store = open_store(config, false).await?;
     let embedding = embedding(config);
     let (content, vector) = embedding.embed_owned(args.content).await?;
+
+    // Creating new storage only after embedding succeeds
+    let store = match store {
+        Some(store) => store,
+        None => open_store(config, true)
+            .await?
+            .expect("create mode must open a store"),
+    };
     let ids = store
         .insert_batch(vec![BatchInsertItem {
             content,
