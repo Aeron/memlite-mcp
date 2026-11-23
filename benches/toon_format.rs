@@ -5,7 +5,7 @@ use std::{fmt::Write, hint::black_box};
 use criterion::{Criterion, criterion_group, criterion_main};
 use serde_json::{Value, json};
 
-const PROSE: &str = "Investigated MCP result serialization for agent memory.\nRoot cause: repeated object keys consume context while prose fields require careful quoting.\nDecision: preserve the JSON-RPC envelope and encode only structured tool text as TOON v3.0.";
+const PROSE: &str = "Investigated MCP result serialization for agent memory.\nRoot cause: repeated object keys consume context while prose fields require careful quoting.\nDecision: preserve the JSON-RPC envelope and encode only structured tool text as TOON v4.1.";
 
 fn search_payload() -> Value {
     let rows: Vec<_> = (0..20)

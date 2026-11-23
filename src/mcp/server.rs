@@ -633,6 +633,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn structured_tool_output_uses_canonical_toon_arrays() {
+        for (input, text) in [
+            (serde_json::json!([]), "[]"),
+            (serde_json::json!({"ids": [1, 2]}), "ids[2]: 1,2"),
+        ] {
+            let result = tool_ok(input.clone()).unwrap();
+            assert_eq!(result_text(&result), text);
+            let actual: serde_json::Value = serde_toon::from_str(result_text(&result)).unwrap();
+            assert_eq!(actual, input);
+        }
+    }
+
     #[tokio::test]
     async fn memory_store_rejects_blank_summary_before_embedding() {
         let result = test_server()

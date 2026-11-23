@@ -2049,7 +2049,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_orders_by_cosine_distance() {
-        let (store, _tmp) = fresh().await;
+        let (store, tmp) = fresh().await;
         // V1=[1,0] and V2=[0,1] are orthogonal unit vectors; cosine distance
         // between V1 and V1 is 0, between V1 and V2 is 1
         let id1 = store
@@ -2058,6 +2058,12 @@ mod tests {
             .unwrap();
         let id2 = store
             .insert("second", &V2, InsertOptions::default())
+            .await
+            .unwrap();
+
+        // Reopening the database to exercise persisted vector index compatibility
+        drop(store);
+        let store = MemoryStore::open(tmp.path(), "test-model", 2)
             .await
             .unwrap();
 

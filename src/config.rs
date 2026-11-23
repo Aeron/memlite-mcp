@@ -171,7 +171,12 @@ impl Config {
 
     /// Returns a DB path with a basename slug and 16-character path hash.
     pub fn db_path_for(&self, project_path: &str) -> PathBuf {
-        let hash = format!("{:x}", Sha256::digest(project_path.as_bytes()));
+        let digest = Sha256::digest(project_path.as_bytes());
+        let hash = u64::from_be_bytes(
+            digest[..8]
+                .try_into()
+                .expect("SHA-256 has at least 8 bytes"),
+        );
         let basename = Path::new(project_path)
             .file_name()
             .and_then(|name| name.to_str())
@@ -187,7 +192,7 @@ impl Config {
         slug.truncate(80);
         let slug = slug.trim_end_matches('-');
         let slug = if slug.is_empty() { "project" } else { slug };
-        self.db_dir().join(format!("{slug}-{}.db", &hash[..16]))
+        self.db_dir().join(format!("{slug}-{hash:016x}.db"))
     }
 
     /// Resolves the effective project path from the explicit override or MCP roots.
@@ -478,12 +483,14 @@ mod tests {
 
     #[test]
     fn db_path_matches_independent_sha256_example() {
-        let c = config("/home/user/My Project");
-        // Comparing against a fixed SHA256 value independently computed with Python hashlib
-        assert_eq!(
-            c.db_path_for("/home/user/My Project"),
-            c.db_dir().join("my-project-78ce1d89993df547.db")
-        );
+        // Comparing against fixed SHA256 values independently computed with Python hashlib
+        for (project, filename) in [
+            ("/home/user/My Project", "my-project-78ce1d89993df547.db"),
+            ("/work/project-10", "project-10-0dfd1cd0a1a3c92b.db"),
+        ] {
+            let c = config(project);
+            assert_eq!(c.db_path_for(project), c.db_dir().join(filename));
+        }
     }
 
     #[test]

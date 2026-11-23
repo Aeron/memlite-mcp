@@ -8,8 +8,9 @@ types, typed attributes, trust and decay, relations, and references. See
 
 MCP requests and tool arguments use JSON. `memory_list` and `memory_search`
 return deterministic block text with literal prose. Other successful
-structured tool content uses [TOON v3.0](https://toonformat.dev). Tools return
-errors as plain text. All output formats omit null and empty collection fields.
+structured tool content uses the [TOON v4.1 Working Draft](https://toonformat.dev).
+Tools return errors as plain text. All output formats omit null and empty
+collection fields.
 
 Memory types, typed-attribute filters, and traversal directions use enum
 schemas. MCP rejects invalid enum values with `invalid_params` errors before

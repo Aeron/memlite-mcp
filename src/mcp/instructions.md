@@ -4,7 +4,7 @@ Local agent memory store. Server-side embeddings from plain text.
 
 Runtime tool descriptions + JSON schemas: exact params, limits, defaults, return behavior. This guide: workflow + field meaning only. No duplicate param reference; avoids drift from server.
 
-List/search outputs: literal block text. Other structured outputs: TOON v3.0. Inputs: JSON. Errors: plain text.
+List/search outputs: literal block text. Other structured outputs: TOON v4.1. Inputs: JSON. Errors: plain text.
 
 ## Workflow
 

@@ -17,7 +17,7 @@ include = ["/src/**/*", "/docs/**/*.md", "/build.rs", "/LICENSE", "/README.md"]
 rmcp = { version = "1.6.0", features = ["client", "server", "transport-io", "macros", "schemars"] }
 
 # Database: libsql (SQLite fork) with built-in vector functions
-libsql = { version = "0.9.30", default-features = false, features = ["core"] }
+libsql = { version = "0.10.0", default-features = false, features = ["core"] }
 
 # Embeddings: local ONNX inference (BAAI/bge-small-en-v1.5, 384 dims)
 fastembed = { version = "7.5.0", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
@@ -28,20 +28,20 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-serde_toon_format = "0.1"
+serde_toon_format = "0.2.0"
 schemars = "1"
 
 # Error handling
 anyhow = "1"
 
 # Enum string conversion
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 
 # Utilities
 clap = { version = "4", features = ["derive", "env"] }
-dirs = "6"
+dirs = "7.0.0"
 rustix = { version = "1", features = ["process"] }
-sha2 = "0.10"
+sha2 = "0.11.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
