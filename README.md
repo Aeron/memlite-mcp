@@ -107,11 +107,21 @@ permissions, project paths, shared workers, and embedding models.
 
 ## Contributing
 
-You’re welcome to fork MemLite, report bugs, suggest improvements, and submit
-pull requests. Please be kind and respectful of everyone’s time. Maintainers
-and authors don’t owe you a response, support, a fix, or acceptance of your
-contribution. Participation is an invitation to collaborate, not an obligation
-for anyone else.
+Start in [GitHub Discussions](https://github.com/Aeron/memlite-mcp/discussions)
+to report a bug, suggest an improvement, ask a question, or propose a
+contribution. Search existing discussions and issues first.
+
+Maintainers create issues from discussions once they confirm a bug or accept a
+well-scoped improvement. The issue tracker is for actionable work.
+
+Only collaborators can open issues and pull requests for now. You’re welcome
+to fork MemLite and share a branch in the relevant discussion for review.
+Discuss your approach before starting work.
+
+Please be kind and respectful of everyone’s time. Maintainers and authors
+don’t owe you a response, support, a fix, or acceptance of your contribution.
+Participation is an invitation to collaborate, not an obligation for anyone
+else.
 
 AI-assisted contributions are welcome, but you remain responsible for what you
 submit. Read and follow the [AI usage policy](AI_POLICY.md) before contributing.

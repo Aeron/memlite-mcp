@@ -1,0 +1,56 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search [discussions](https://github.com/Aeron/memlite-mcp/discussions) and
+        [issues](https://github.com/Aeron/memlite-mcp/issues) before posting.
+        Maintainers create issues after confirming a bug.
+
+        Read and follow the [AI usage policy](https://github.com/Aeron/memlite-mcp/blob/main/AI_POLICY.md).
+        Remove secrets, private paths, and memory contents from your report.
+  - type: input
+    id: version
+    attributes:
+      label: MemLite version
+      description: Run `memlite --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include your operating system, version, and CPU architecture. For MCP problems, include the client and its version.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include commands or MCP tool calls, relevant configuration, and a minimal example with synthetic data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect MemLite to do?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What did MemLite do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Include relevant logs or error messages, if available. Check for private data before posting.
+      render: text
+  - type: textarea
+    id: ai-assistance
+    attributes:
+      label: AI assistance
+      description: If you used AI for this report, name the tool and describe how you used it.
