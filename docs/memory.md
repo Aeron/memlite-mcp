@@ -2,7 +2,7 @@
 
 The MCP tools and direct CLI use the same memory store and follow the same
 rules. See [tools.md](tools.md) for the MCP tools and
-[configuration.md](configuration.md) for the CLI.
+[cli.md](cli.md) for the CLI.
 
 Each memory requires `content`, `summary`, and `memory_type`. Optional fields
 are `tags`, `context`, `confidence`, `decay_rate`, `attrs`, `relations`, and

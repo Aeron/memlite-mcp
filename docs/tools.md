@@ -2,8 +2,9 @@
 
 The server exposes the MCP tools below. See [memory.md](memory.md) for memory
 types, typed attributes, trust and decay, relations, and references. See
-[configuration.md](configuration.md) for the full CLI reference and
-configuration, or the [README](../README.md#build-and-install) for installation.
+[CLI reference](cli.md) for direct commands,
+[configuration](configuration.md) for storage and model settings, or the
+[README](../README.md#usage) for installation.
 
 MCP requests and tool arguments use JSON. `memory_list` and `memory_search`
 return deterministic block text with literal prose. Other successful
@@ -26,8 +27,7 @@ effect before retrying it.
 Every tool below is also available as `memlite tool <name>`. CLI names
 omit the `memory_` prefix. The store command differs: `tool store` stores one
 memory per invocation, while MCP `memory_store` accepts 1 to 100 atomic
-inserts. See [configuration.md](configuration.md) for the full command,
-option, and flag reference.
+inserts. See the [CLI reference](cli.md) for commands, options, and flags.
 
 ## memory_store
 
