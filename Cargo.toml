@@ -1,6 +1,6 @@
 [package]
 name = "memlite-mcp"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.92"
 authors = ["Eugene \"Aeron\" Glybin"]
@@ -81,4 +81,3 @@ harness = false
 [[bench]]
 name = "embedding_models"
 harness = false
-
