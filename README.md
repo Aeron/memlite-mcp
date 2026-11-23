@@ -81,118 +81,43 @@ experience.
 - **Four embedding models**: English-first BGE v1.5 variants and multilingual
   `bge-m3`
 
-## Prebuilt binaries
+## Usage
 
-Download a binary-only `.tar.gz` archive and its matching SHA-256 checksum from
-[GitHub Releases](https://github.com/Aeron/memlite-mcp/releases). Extract the
-archive and put `memlite` on your `PATH`. Archives contain only the executable;
-read the documentation in this repository.
+MemLite runs as a standalone `memlite` binary. Download it from the
+[releases page](https://github.com/Aeron/memlite-mcp/releases) or install with
+Homebrew.
 
-Available targets:
+For Cargo installation, source builds, and development commands, see the
+[building guide](docs/building.md).
 
-- Linux x86-64: `x86_64-unknown-linux-gnu`
-- Linux ARM64: `aarch64-unknown-linux-gnu`
-- Apple Silicon macOS 13.4 or newer: `aarch64-apple-darwin`
-
-Linux binaries are built on Ubuntu 24.04 and require compatible GNU libc,
-OpenSSL, and C++ runtime libraries. They are not static musl builds. The locked
-ONNX Runtime dependency has no prebuilt musl or Intel macOS library; those
-release targets are omitted. Windows is unsupported by the Unix worker.
-
-## Build and install
-
-The build requires Rust 1.92 or newer and a native build toolchain. MemLite uses
-Unix sockets and file locks for its shared worker.
-
-Clone the repository, then build or install from the checkout:
+Install with Homebrew:
 
 ```sh
-git clone https://github.com/Aeron/memlite-mcp.git
-cd memlite-mcp
-cargo build --release --locked
+brew install aeron/tap/memlite-mcp
 ```
 
-The build produces `target/release/memlite`. To install it into Cargo’s binary
-directory instead:
+Configure your MCP client to run `memlite serve`. No special `AGENTS.md`
+instructions are required. You can optionally add `Use MemLite MCP for memory.`
+
+See [client setup](docs/clients.md) for Claude Code, Codex, Pi, OpenCode, Kilo,
+Hermes, and Zed.
+
+You can also manage memories directly from the CLI:
 
 ```sh
-cargo install --path . --locked
-```
-
-On Apple Silicon macOS, the bundled ONNX Runtime objects target macOS 13.4. Set
-`MACOSX_DEPLOYMENT_TARGET` to `13.4` or newer for either command so Rust and
-native dependencies use the same minimum version:
-
-```sh
-MACOSX_DEPLOYMENT_TARGET=13.4 cargo build --release --locked
-```
-
-Cargo’s binary directory must be on your `PATH` to run the installed command.
-
-## Development
-
-With [just](https://just.systems/) installed, run `just` to list available
-commands. The recipes default `MACOSX_DEPLOYMENT_TARGET` to `13.4` while
-preserving an existing environment override.
-
-```sh
-just check
-just release
-just install
-just run --help
-just test -- --test-threads=1
-just bench --bench toon_format -- --noplot
-```
-
-`just check` checks formatting, runs Clippy on all targets, and runs tests.
-Build, install, lint, test, and benchmark recipes forward extra arguments to
-Cargo; `just run` forwards them to MemLite.
-
-## Use
-
-Configure your MCP client to run `memlite serve`. MemLite uses the first usable
-local MCP root, then the server’s working directory. Run direct CLI commands
-from the project directory to use its memories.
-
-The first embedding operation downloads the model, then uses a local cache for
-offline use. Memory storage and inference stay on your machine. Your MCP client
-still controls what it sends to its language-model provider.
-
-```sh
-memlite serve
 memlite tool list --limit 10 --include-content false
 memlite tool --format json search "project conventions" --limit 5
 ```
 
-See [client setup](docs/clients.md) for Claude Code, Codex, Pi, OpenCode, Kilo,
-Hermes, and Zed. See [configuration and CLI reference](docs/configuration.md)
-for all arguments, environment variables, model choices, and direct commands.
+The [CLI reference](docs/cli.md) covers commands, flags, and
+environment variables. See [configuration](docs/configuration.md) for storage,
+permissions, project paths, shared workers, and embedding models.
 
-## Documentation
+### Other documentation
 
 - [Memory model](docs/memory.md)
 - [MCP tools](docs/tools.md)
 - [Benchmarks and measured results](docs/benchmarks.md)
-
-## Releasing
-
-1. Update `Cargo.toml` and `Cargo.lock`, then commit the version change.
-2. Push a tag matching the package version exactly, such as `0.1.0` (no `v`
-   prefix). The Release Draft workflow validates the version and creates a
-   draft with generated notes.
-3. Review and publish the draft on GitHub. The Binaries workflow tests and
-   builds each native target, uploads binary-only archives with SHA-256 checksums,
-   then publishes the Cargo package.
-
-Configure the repository Actions secret `CARGO_REGISTRY_TOKEN` with crates.io
-publication rights. An exact crate version already on crates.io is skipped
-successfully; registry and publication errors still fail the job. Binary
-uploads do not depend on crate publication.
-
-To rebuild an existing release, run the Binaries workflow manually and supply
-its published tag. It checks out that tag, replaces the binary assets, and
-skips crate publication if the version already exists. Rerunning Release Draft
-leaves an existing release unchanged.
 
 ## Contributing
 
