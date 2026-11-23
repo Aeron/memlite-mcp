@@ -73,14 +73,13 @@ jobs:
           cargo test --locked --target "$TARGET"
           cargo build --release --locked --target "$TARGET"
           "target/$TARGET/release/memlite" --version
-      - name: Upload binary and checksum
+      - name: Upload binary
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: memlite
           target: ${{ matrix.target }}
           build-tool: cargo
           locked: true
-          checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: refs/tags/${{ env.RELEASE_TAG }}
 
