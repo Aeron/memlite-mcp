@@ -8,53 +8,39 @@ embeddings on the device.
 
 ## Motivation
 
-AI agents are stateless by design. Without persistent memory, an agent in a new
-conversation has no recollection of what was figured out last session, what
-decisions were made, or which approaches had already failed. For quick,
-self-contained tasks that is fine. For an evolving codebase, an ongoing
-investigation, or a project with accumulated conventions, the repetition wastes
-time. The agent keeps rediscovering the same things, and you keep re-explaining
-them.
+AI agents are stateless by design. Without persistent memory, an agent loses the
+decisions, failed approaches, and project conventions worked out in previous
+sessions. For a quick, self-contained task, that is fine. For an evolving
+codebase or an ongoing investigation, it means repeated work: the agent keeps
+rediscovering things, and you keep re-explaining them.
 
-Thus, the memory problem. A pretty essential one, but is it solved? Well… there
-are some attempts for sure:
+There are ways to give agents memory, but I wanted one with fewer trade-offs:
 
-- Markdown files. Those work as far as a text-file store goes: no meta
-  attributes, no vector search, no memory relations out of the box, no reranking
-  and decay, etc. It’s the barest minimum. Can we do better?
-- Cloud services. Somewhat featureful, but they require authentication and
-  context leaving the machine. Plus, an extra dependency on a third-party
-  endpoint and an internet connection. It feels like pricey overkill. Can we do
-  local instead?
-- Self-hosted variants. A bit better, but still bulky. I don’t think we need to
-  manage a bunch of containers here. Can we do without a zoo?
-- Local-first tools. Usually, those either require third-party runtimes
-  (Node/Bun, Python) and package managers (npm/npx, uv/uvx), or separate
-  storage/search solutions (ChromaDB, Milvus, Qdrant, MongoDB, SurrealDB,
-  Neo4j). But why though? Can a single binary do it all?
-- Self-contained binaries. They exist, but none ticked all my hypothetical
-  boxes. Why rely on Markdown files still? Why a full-text search instead of a
-  vector one?
-- Harness-specific plugins and wrappers. Also exist and have good candidates,
-  yet we’re tying ourselves to a single tool; suboptimal. Can we simply stick to
-  MCP?
+- **Markdown files** are easy to read and edit, but semantic search, proper
+  structured metadata, relations, and confidence decay need something beyond
+  plain text.
+- **Cloud services** can offer those features, but I prefer to keep memory on my
+  machine, without another account or a hosted service dependency.
+- **Self-hosted and local tools** get closer, but I did not want containers, a
+  separate database server, or another language runtime or package manager.
+- **Standalone binaries** fit the deployment model, but the ones I found did not
+  combine the storage, retrieval, and memory features I wanted.
+- **Harness-specific plugins** can integrate deeply with one tool, but I wanted
+  memory that could stay with the project no matter the tools.
 
-All I wanted is a tiny and performant harness-agnostic local MCP solution.
-Nothing theoretical. Something that would solve the problem and significantly
-improve my agentic workflow right after the first draft build. And not a whole
-knowledge graph super monstrosity. Just something that does one thing and does
-it very well.
+The goal was simple: a tiny, fast, harness-agnostic local MCP server. Something
+useful from the first working build, without a whole stack to maintain or
+needless complexity.
 
-What can we do about it? For local storage approaches, I like libSQL and it
-already has native support for vector search/indexes. It also suits the idea of
-having a single, portable SQLite database file per project, which is nice. Looks
-like a perfect fit and an obvious choice. And Rust as a backend, of course.
-Plus, fast on-CPU text embedding generation with suitable models already exist.
+The building blocks were already there. libSQL provides SQLite storage with
+native vector search, keeping memories in a portable database per project. Local
+embedding models make semantic retrieval possible on the CPU. Rust brings those
+pieces together in a single binary.
+
 Everything else was born naturally from my day-to-day personal and professional
 workflows.
 
-So, voilà! I hope you’ll find it useful and enjoyable for your developer
-experience.
+So, voilà! I hope you’ll find it useful and enjoyable.
 
 ## Features
 
