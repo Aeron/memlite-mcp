@@ -88,6 +88,13 @@ instructions are required. You can optionally add `Use MemLite MCP for memory.`
 See [client setup](docs/clients.md) for Claude Code, Codex, Pi, OpenCode, Kilo,
 Hermes, and Zed.
 
+> [!IMPORTANT]
+> The default embedding model, `bge-small-en-v1.5`, is English-first.
+> If your memories or search queries use other languages, choose the
+> multilingual model with `--embedding-model bge-m3`.
+> Changing models for an existing project requires a fresh database.
+> See [embedding models](docs/configuration.md#embedding-models) for details.
+
 You can also manage memories directly from the CLI:
 
 ```sh
